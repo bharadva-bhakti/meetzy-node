@@ -1,38 +1,52 @@
 const axios = require('axios');
-const { SMSGateway } = require('../models');
+const { db } = require('../models');
+const SMSGateway = db.SMSGateway;
 
-let gateways = null;
+let gatewayCache = null;
+let lastLoadTime = null;
+const CACHE_TTL = 5 * 60 * 1000;
 
-const loadGateways = async () => {
+const loadGateway = async () => {
   try {
-    gateways = await SMSGateway.findOne({
-      where: { enabled: true },
-      order: [['created_at', 'DESC']]
-    });
-    
-    console.log(gateways ? `Loaded gateway: ${gateways.name}` : 'No SMS gateway found');
+    const gateway = await SMSGateway.findOne({ enabled: true }).sort({ created_at: -1 }).lean();
+
+    gatewayCache = gateway;
+    lastLoadTime = Date.now();
+
+    console.log(gateway ? `Loaded custom SMS gateway: ${gateway.name}` : 'No enabled custom SMS gateway found');
+    return gateway;
   } catch (error) {
-    console.error('Error loading SMS gateways:', error);
+    console.error('Error loading custom SMS gateway:', error);
+    return null;
   }
+};
+
+const getGateway = async () => {
+  if (!gatewayCache || (Date.now() - lastLoadTime > CACHE_TTL)) {
+    await loadGateway();
+  }
+  return gatewayCache;
 };
 
 const buildHeaders = (gateway) => {
   const headers = {};
   const customConfig = gateway.custom_config || {};
-  const auth = gateway.auth_type;
+  const auth = gateway.auth_type || [];
 
   const hasSID = Array.isArray(auth) ? auth.includes('SID') : auth === 'SID';
   const hasAuthToken = Array.isArray(auth) ? auth.includes('AUTH_TOKEN') : auth === 'AUTH_TOKEN';
   const hasCustomKeys = Array.isArray(auth) ? auth.includes('CUSTOM_KEYS') : auth === 'CUSTOM_KEYS';
 
-  if (hasSID && hasAuthToken) {
+  if (hasSID && hasAuthToken && gateway.account_sid && gateway.auth_token) {
     const authString = Buffer.from(`${gateway.account_sid}:${gateway.auth_token}`).toString('base64');
     headers['Authorization'] = `Basic ${authString}`;
   }
 
-  if (hasCustomKeys) {
-    (customConfig.headers || []).forEach(header => {
-      headers[header.key] = header.value;
+  if (hasCustomKeys && customConfig.headers) {
+    customConfig.headers.forEach((header) => {
+      if (header.key && header.value) {
+        headers[header.key] = header.value;
+      }
     });
   }
 
@@ -46,87 +60,89 @@ const buildBody = (gateway, to, message) => {
 
   if (bodyType === 'json') {
     const body = {};
-    
+
     body[fieldMappings.to_field || 'To'] = to;
     body[fieldMappings.message_field || 'Body'] = message;
     body[fieldMappings.from_field || 'From'] = gateway.from_number;
-    
-    (customConfig.body_fields || []).forEach(field => {
-      body[field.key] = field.value;
-    });
+
+    if (customConfig.body_fields) {
+      customConfig.body_fields.forEach((field) => {
+        if (field.key) body[field.key] = field.value;
+      });
+    }
 
     return body;
-    
   } else {
     const formData = new URLSearchParams();
-    
+
     formData.append(fieldMappings.to_field || 'To', to);
     formData.append(fieldMappings.message_field || 'Body', message);
     formData.append(fieldMappings.from_field || 'From', gateway.from_number);
-    
-    (customConfig.body_fields || []).forEach(field => {
-      formData.append(field.key, field.value);
-    });
+
+    if (customConfig.body_fields) {
+      customConfig.body_fields.forEach((field) => {
+        if (field.key) formData.append(field.key, field.value);
+      });
+    }
 
     return formData.toString();
   }
 };
 
 const buildRequestConfig = (gateway, to, message) => {
-  const config = {
-    method: gateway.method,
+  const headers = buildHeaders(gateway);
+  const data = buildBody(gateway, to, message);
+
+  return {
+    method: gateway.method || 'POST',
     url: gateway.base_url,
-    timeout: 10000
+    headers: {
+      ...headers,
+      ...(data instanceof URLSearchParams ? { 'Content-Type': 'application/x-www-form-urlencoded' } : {}),
+    },
+    data,
+    timeout: 10000,
   };
-
-  config.headers = buildHeaders(gateway);
-
-  config.data = buildBody(gateway, to, message);
-
-  return config;
 };
 
 const sendViaGateway = async (gateway, to, message) => {
   const config = buildRequestConfig(gateway, to, message);
   const response = await axios(config);
-  
-  return { 
-    success: true, 
-    messageId: response.data.sid || `msg-${Date.now()}`,
-    gateway: gateway.name 
+
+  return {
+    success: true,
+    messageId: response.data.sid || response.data.message_id || `msg-${Date.now()}`,
+    gateway: gateway.name,
   };
 };
 
 const sendSMS = async (to, message) => {
-  if (!gateways) {
-    await loadGateways();
-  }
-
-  const gateway = gateways;
+  const gateway = await getGateway();
 
   if (!gateway) {
-    throw new Error('No SMS gateway configured');
+    throw new Error('No enabled custom SMS gateway configured');
   }
 
   try {
-    console.log(`Attempting to send SMS via ${gateway.name}`);
+    console.log(`Sending SMS via custom gateway: ${gateway.name}`);
     const result = await sendViaGateway(gateway, to, message);
     console.log(`SMS sent successfully via ${gateway.name}`);
     return result;
   } catch (error) {
-    console.error(`SMS failed via ${gateway.name}:`, error.message);
+    console.error(`Custom SMS failed via ${gateway.name}:`, error.response?.data || error.message);
     throw new Error('SMS sending failed');
   }
 };
 
 const refreshGateways = async () => {
-  gateways = [];
-  await loadGateways();
+  gatewayCache = null;
+  lastLoadTime = null;
+  await loadGateway();
 };
 
 module.exports = {
   sendSMS,
   sendViaGateway,
   refreshGateways,
-  loadGateways
+  loadGateway,
 };

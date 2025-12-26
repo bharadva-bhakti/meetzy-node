@@ -1,47 +1,56 @@
-const { User, Session, OTPLog, Setting } = require('../models');
+const { db } = require('../models');
+const User = db.User;
+const Session = db.Session;
+const OTPLog = db.OTPLog;
+const Setting = db.Setting;
+
 const { generateToken } = require('../utils/jwt');
 const { sendMail } = require('../utils/mail');
 const { sendTwilioSMS } = require('../services/twilioService');
 const { sendSMS } = require('../services/customSMSService');
 
 function generateOTP() {
-  const otp = process.env.DEMO === 'true' ? 123456 : Math.floor(100000 + Math.random() * 900000).toString();
-  return otp;
+  return process.env.DEMO === 'true' ? '123456' : Math.floor(100000 + Math.random() * 900000).toString();
 };
 
 async function getSettings() {
-  const settings = await Setting.findOne();
-  if (!settings) {
-    throw new Error('Settings not defined');
-  }
+  const settings = await Setting.findOne().lean();
+  if (!settings) throw new Error('Settings not defined');
   return settings;
 };
 
 async function checkMaintenanceAccess(ip) {
   const settings = await getSettings();
-
-  if (settings.canAccessDuringMaintenance && !settings.canAccessDuringMaintenance(ip)) {
+  if (settings.maintenance_mode && !settings.maintenance_allowed_ips?.includes(ip)) {
     throw new Error('MAINTENANCE_MODE');
   }
-
   return settings;
 };
 
 async function findUserByIdentifier(identifier) {
-  const clean = identifier.replace(/\s+/g, '').trim();
-  const users = await User.findAll();
-  for (const u of users) {
-    const email = (u.email || '').toLowerCase().trim();
-    const phone = (u.phone || '').trim();
-    const full = `${u.country_code || ''}${phone}`.replace(/\s+/g, '');
+  const clean = identifier.replace(/\s+/g, '').trim().toLowerCase();
+  const isEmail = isEmailIdentifier(clean);
+  const isPhone = isPhoneIdentifier(clean);
 
-    if (clean.toLowerCase() === email || clean === phone || clean === full) {
-      return u;
+  if (isEmail) {
+    return await User.findOne({ email: clean });
+  }
+
+  if (isPhone) {
+    const phoneNumber = clean;
+    for (let i = 2; i <= 5; i++) {
+      const code = phoneNumber.slice(0, i);
+      const number = phoneNumber.slice(i);
+      if (!/^\d{4,14}$/.test(number)) continue;
+
+      const user = await User.findOne({ country_code: code, phone: number });
+      if (user) return user;
     }
   }
+
   return null;
 };
-  
+
 async function sendOtp(sendType, sendValue, subject, updateType, updateValue) {
   const otp = generateOTP();
 
@@ -50,7 +59,7 @@ async function sendOtp(sendType, sendValue, subject, updateType, updateValue) {
     phone: sendType === 'phone' ? sendValue : (updateType === 'phone' ? updateValue : null),
     otp,
     verified: false,
-    expires_at: new Date(Date.now() + 5 * 60 * 1000)
+    expires_at: new Date(Date.now() + 5 * 60 * 1000),
   });
 
   if (process.env.DEMO === 'true') return { demo: true, otp };
@@ -61,7 +70,7 @@ async function sendOtp(sendType, sendValue, subject, updateType, updateValue) {
   if (sendType === 'email') {
     sent = await sendMail(sendValue, subject, msg);
   } else {
-    const settings = await Setting.findOne({ raw: true });
+    const settings = await getSettings();
     const gw = settings.sms_gateway?.toLowerCase();
     sent = gw === 'custom' ? await sendSMS(sendValue, msg) : await sendTwilioSMS(sendValue, msg);
   }
@@ -71,7 +80,7 @@ async function sendOtp(sendType, sendValue, subject, updateType, updateValue) {
 
 const isEmailIdentifier = (identifier) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(identifier);
 const isPhoneIdentifier = (identifier) => /^\+[1-9]\d{6,14}$/.test(identifier);
-  
+
 async function verifyOtpForUser(identifier, otp) {
   const clean = identifier.replace(/\s+/g, '').trim().toLowerCase();
   if (!isEmailIdentifier(clean) && !isPhoneIdentifier(clean)) {
@@ -79,26 +88,21 @@ async function verifyOtpForUser(identifier, otp) {
   }
 
   const record = await OTPLog.findOne({
-    where: {
-      otp,
-      verified: false,
-      ...(isEmailIdentifier(clean) ? { email: clean } : {}),
-      ...(isPhoneIdentifier(clean) ? { phone: clean } : {})
-    },
-    order: [['created_at', 'DESC']]
-  });
+    otp,
+    verified: false,
+    ...(isEmailIdentifier(clean) ? { email: clean } : {}),
+    ...(isPhoneIdentifier(clean) ? { phone: clean } : {}),
+    expires_at: { $gt: new Date() },
+  }).sort({ created_at: -1 });
 
-  
-  if (!record) return { error: 'Invalid OTP' };
-  if (new Date() > record.expires_at) return { error: 'OTP expired' };
-
+  if (!record) return { error: 'Invalid or expired OTP' };
   return { otpRecord: record };
 };
 
-async function getTestEmailHtml(){
+async function getTestEmailHtml() {
   const timestamp = new Date().toLocaleString();
   const settings = await getSettings();
-  
+
   return `
     <!DOCTYPE html>
     <html>
@@ -215,18 +219,19 @@ async function getTestEmailHtml(){
 };
 
 const getUserByIdentifier = async (identifier, authMethod) => {
-  if (isEmailIdentifier(identifier) && ['email', 'both'].includes(authMethod)) {
-    return await User.findOne({ where: { email: identifier.toLowerCase().trim() } });
+  const clean = identifier.trim().toLowerCase();
+  if (isEmailIdentifier(clean) && ['email', 'both'].includes(authMethod)) {
+    return await User.findOne({ email: clean });
   }
 
-  if (isPhoneIdentifier(identifier) && ['phone', 'both'].includes(authMethod)) {
-    const phone = identifier.trim();
+  if (isPhoneIdentifier(clean) && ['phone', 'both'].includes(authMethod)) {
+    const phoneNumber = clean;
     for (let i = 2; i <= 5; i++) {
-      const code = phone.slice(0, i);
-      const number = phone.slice(i);
+      const code = phoneNumber.slice(0, i);
+      const number = phoneNumber.slice(i);
       if (!/^\d{4,14}$/.test(number)) continue;
 
-      const user = await User.findOne({ where: { country_code: code, phone: number } });
+      const user = await User.findOne({ country_code: code, phone: number });
       if (user) return user;
     }
   }
@@ -236,18 +241,21 @@ const getUserByIdentifier = async (identifier, authMethod) => {
 
 const manageSession = async (user, req, agenda, expirationDays = 7) => {
   const sessionLimit = 10;
-  const activeSessions = await Session.findAll({
-    where: { user_id: user.id, status: 'active', device_info: req.headers['user-agent'] },
-    order: [['created_at', 'ASC']],
-  });
+  const activeSessions = await Session.find({
+    user_id: user._id,
+    status: 'active',
+    device_info: req.headers['user-agent'],
+  }).sort({ created_at: 1 });
 
-  if (activeSessions.length >= sessionLimit) await activeSessions[0].destroy();
+  if (activeSessions.length >= sessionLimit) {
+    await activeSessions[0].deleteOne();
+  }
 
   const expires_at = new Date(Date.now() + expirationDays * 24 * 60 * 60 * 1000);
 
-  const token = generateToken({ id: user.id, email: user.email });
+  const token = generateToken({ id: user._id, email: user.email });
   await Session.create({
-    user_id: user.id,
+    user_id: user._id,
     session_token: token,
     device_info: req.headers['user-agent'],
     ip_address: req.ip,
@@ -255,7 +263,7 @@ const manageSession = async (user, req, agenda, expirationDays = 7) => {
     expires_at,
   });
 
-  await user.update({ last_login: new Date() });
+  await User.updateOne({ _id: user._id }, { last_login: new Date() });
   return token;
 };
 
@@ -270,5 +278,5 @@ module.exports = {
   getUserByIdentifier,
   manageSession,
   isEmailIdentifier,
-  isPhoneIdentifier
+  isPhoneIdentifier,
 };

@@ -25,10 +25,10 @@ app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
-// const authRoutes = require('./routes/auth.routes');
+const authRoutes = require('./routes/auth.routes');
 // const authController = require('./controllers/auth.controller');
 // const accountRoutes = require('./routes/account.routes');
-// const userRoutes = require('./routes/user.routes');
+const userRoutes = require('./routes/user.routes');
 // const groupRoutes = require('./routes/group.routes');
 // const messageRoutes = require('./routes/message.routes');
 // const friendRoutes = require('./routes/friend.routes');
@@ -62,9 +62,9 @@ app.get('/api/demo', (req, res) => {
 
 // app.get('/auth/google/callback', authController.saveToken);
 // app.post('/api/send-test-email', authController.sendTestMail);
-// app.use('/api/auth', authRoutes);
+app.use('/api/auth', authRoutes);
 // app.use('/api/account', accountRoutes);
-// app.use('/api/user', userRoutes);
+app.use('/api/user', userRoutes);
 // app.use('/api/group', groupRoutes);
 // app.use('/api/message',messageRoutes);
 // app.use('/api/friend',friendRoutes);

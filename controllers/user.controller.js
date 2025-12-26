@@ -2,6 +2,7 @@ const bcrypt = require('bcryptjs');
 const fs = require('fs');
 const path = require('path');
 const { db } = require('../models');
+const { mongoose } = require('mongoose');
 
 const User = db.User;
 const UserSetting = db.UserSetting;
@@ -172,7 +173,7 @@ exports.deleteUser = async (req, res) => {
       return res.status(400).json({ message: 'User IDs array is required' });
     }
 
-    const objectIds = ids.map(id => mongoose.Types.ObjectId(id));
+    const objectIds = ids.map(id => new mongoose.Types.ObjectId(id));
 
     const result = await User.deleteMany({ _id: { $in: objectIds } });
 
