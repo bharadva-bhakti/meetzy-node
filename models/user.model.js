@@ -98,7 +98,6 @@ const UserSchema = new Schema(
   }
 );
 
-UserSchema.index({ email: 1 });
 UserSchema.index({ status: 1 });
 UserSchema.index({ role: 1 });
 UserSchema.index({ last_seen: 1 });

@@ -2,7 +2,6 @@
 const mongoose = require('mongoose');
 const fs = require('fs');
 const path = require('path');
-const createDefaultAdmin = require('../utils/createDefaultAdmin');
 const config = require('../config/config');
 
 const env = process.env.NODE_ENV || 'development';
@@ -10,9 +9,6 @@ const mongoUri = config[env].mongoUri;
 
 const basename = path.basename(__filename);
 const db = {};
-db.mongoose = mongoose;
-
-// db.User = require('./user.model');
 
 fs.readdirSync(__dirname)
   .filter(file => {
@@ -36,8 +32,6 @@ const connectDB = async () => {
   try {
     await mongoose.connect(mongoUri);
     console.log('MongoDB connected successfully');
-
-    // await createDefaultAdmin();
 
     return db;
   } catch (err) {

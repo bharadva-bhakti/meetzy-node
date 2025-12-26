@@ -6,8 +6,7 @@ const GroupSettingSchema = new Schema(
     group_id: {
       type: Schema.Types.ObjectId,
       ref: 'Group',
-      required: true,
-      unique: true,
+      required: true
     },
     allow_edit_info: {
       type: String,

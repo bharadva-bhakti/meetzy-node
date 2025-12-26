@@ -1,33 +1,36 @@
-const { Wallpaper } = require('../models');
-const { Op } = require('sequelize');
-const path = require('path');
+const { db } = require('../models');
+const Wallpaper = db.Wallpaper;
 const fs = require('fs');
+const path = require('path');
 
-exports.getAllWallpapers = async (req,res) => {
+exports.getAllWallpapers = async (req, res) => {
   const page = parseInt(req.query.page) || 1;
   const limit = parseInt(req.query.limit) || 10;
-  const offset = (page - 1) * limit;
+  const skip = (page - 1) * limit;
   const search = req.query.search || '';
   const sortField = req.query.sort_by || 'created_at';
-  const sortOrder = req.query.sort_order?.toUpperCase() === 'ASC' ? 'ASC' : 'DESC';
+  const sortOrder = req.query.sort_order?.toUpperCase() === 'ASC' ? 1 : -1;
 
   try {
     const allowedSortFields = ['id', 'name', 'status', 'created_at', 'updated_at'];
     const safeSortField = allowedSortFields.includes(sortField) ? sortField : 'created_at';
-    const where = search ? { [Op.or]: [{ Name: { [Op.like]: `%${search}%` } }] } : { };
 
-    const { count, rows: wallpapers } = await Wallpaper.findAndCountAll({
-      where,
-      order: [[safeSortField, sortOrder]],
-      limit,
-      offset,
-    });
+    const query = search ? { name: { $regex: search, $options: 'i' } } : {};
+
+    const [wallpapers, total] = await Promise.all([
+      Wallpaper.find(query)
+        .sort({ [safeSortField]: sortOrder })
+        .skip(skip)
+        .limit(limit)
+        .lean(),
+      Wallpaper.countDocuments(query),
+    ]);
 
     res.status(200).json({
-      total: count,
-      totalPages: Math.ceil(count / parseInt(limit)),
-      page: parseInt(page),
-      limit: parseInt(limit),
+      total,
+      totalPages: Math.ceil(total / limit),
+      page,
+      limit,
       wallpapers,
     });
   } catch (error) {
@@ -37,14 +40,14 @@ exports.getAllWallpapers = async (req,res) => {
 };
 
 exports.createWallpaper = async (req, res) => {
-  const { name, status, isDefault=false } = req.body;
+  const { name, status, isDefault = false } = req.body;
   const file = req.file;
 
   try {
     if (!file) return res.status(400).json({ message: 'Please provide wallpaper.' });
 
-    if (isDefault) {
-      await Wallpaper.update({ is_default: false }, { where: { is_default: true } });
+    if (isDefault === 'true' || isDefault === true) {
+      await Wallpaper.updateMany({ is_default: true }, { is_default: false });
     }
 
     const filePath = file.path;
@@ -59,11 +62,11 @@ exports.createWallpaper = async (req, res) => {
       name,
       wallpaper: filePath,
       metadata,
-      status,
-      is_default: isDefault
+      status: status !== undefined ? status : true,
+      is_default: isDefault === 'true' || isDefault === true,
     });
 
-    return res.status(200).json({ message: 'wallpaper created successfully.', wallpaper });
+    return res.status(200).json({ message: 'Wallpaper created successfully.', wallpaper });
   } catch (error) {
     console.error('Error in createWallpaper:', error);
     return res.status(500).json({ message: 'Internal server error' });
@@ -77,28 +80,34 @@ exports.updateWallpaper = async (req, res) => {
   try {
     if (!id) return res.status(400).json({ message: 'Id is required.' });
 
-    const wallpaper = await Wallpaper.findByPk(id);
+    const wallpaper = await Wallpaper.findById(id);
     if (!wallpaper) return res.status(404).json({ message: 'Wallpaper not found.' });
-    
-    if (Boolean(isDefault)) {
-      await Wallpaper.update({ is_default: false }, { where: { is_default: true } });
+
+    const setDefault = isDefault === 'true' || isDefault === true;
+    if (setDefault) {
+      await Wallpaper.updateMany({ is_default: true }, { is_default: false });
     }
 
-    const updated = { name, status, is_default: Boolean(isDefault) || false };
+    const updateData = {
+      name,
+      status: status !== undefined ? status : wallpaper.status,
+      is_default: setDefault,
+    };
 
     if (req.file) {
-      const file = req.file;
-      updated.wallpaper = file.path;
-      updated.metadata = {
-        file_size: file.size,
-        original_name: file.originalname,
-        mime_type: file.mimetype,
-        path: file.path,
+      updateData.wallpaper = req.file.path;
+      updateData.metadata = {
+        file_size: req.file.size,
+        original_name: req.file.originalname,
+        mime_type: req.file.mimetype,
+        path: req.file.path,
       };
     }
 
-    await wallpaper.update(updated);
-    return res.status(200).json({ message: 'Wallpaper updated successfully.', wallpaper });
+    await wallpaper.updateOne(updateData);
+    const updatedWallpaper = await Wallpaper.findById(id);
+
+    return res.status(200).json({ message: 'Wallpaper updated successfully.', wallpaper: updatedWallpaper });
   } catch (error) {
     console.error('Error in updateWallpaper:', error);
     return res.status(500).json({ message: 'Internal server error' });
@@ -108,33 +117,36 @@ exports.updateWallpaper = async (req, res) => {
 exports.updateWallpaperStatus = async (req, res) => {
   const { id } = req.params;
   const { status, isDefault } = req.body;
-  
+
   try {
     if (!id) return res.status(400).json({ message: 'Id is required.' });
 
-    const wallpaper = await Wallpaper.findByPk(id);
+    const wallpaper = await Wallpaper.findById(id);
     if (!wallpaper) return res.status(404).json({ message: 'Wallpaper not found.' });
-    
-    if(status !== 'undefined' && (status === false && wallpaper.is_default)){
-      return res.status(400).json({message: 'You can not deactive default wallpaper'})
+
+    const newStatus = status !== undefined ? Boolean(status) : wallpaper.status;
+    const newIsDefault = isDefault !== undefined ? Boolean(isDefault) : wallpaper.is_default;
+
+    if (!newStatus && wallpaper.is_default) {
+      return res.status(400).json({ message: 'You cannot deactivate the default wallpaper' });
     }
-    
-    if (Boolean(isDefault) === false) {
-      const defaultWallpaper = await Wallpaper.findOne({ where: { id: { [Op.ne] : id }, is_default: true }});
-      if (!defaultWallpaper) {
+
+    if (!newIsDefault) {
+      const otherDefault = await Wallpaper.findOne({ _id: { $ne: id }, is_default: true });
+      if (!otherDefault) {
         return res.status(400).json({ message: 'At least one wallpaper must remain as the default.' });
       }
     }
 
-    if(Boolean(isDefault) && wallpaper.status === false){
-      return res.status(400).json({ message: 'Inactive wallpaper can not set as default.' });
-    }
-    
-    if (Boolean(isDefault)) {
-      await Wallpaper.update({ is_default: false }, { where: { is_default: true } });
+    if (newIsDefault && !newStatus) {
+      return res.status(400).json({ message: 'Inactive wallpaper cannot be set as default.' });
     }
 
-    await wallpaper.update({ status, is_default: isDefault || false });
+    if (newIsDefault) {
+      await Wallpaper.updateMany({ is_default: true }, { is_default: false });
+    }
+
+    await wallpaper.updateOne({ status: newStatus, is_default: newIsDefault });
 
     return res.status(200).json({ message: 'Wallpaper status updated successfully.', wallpaper });
   } catch (error) {
@@ -151,38 +163,30 @@ exports.deleteWallpaper = async (req, res) => {
       return res.status(400).json({ message: 'Wallpaper IDs array is required' });
     }
 
-    const wallpaper = await Wallpaper.findAll({ where: { id: ids } });
-    if (wallpaper.length === 0) return res.status(404).json({ message: 'No wallpaper found' });
+    const wallpapers = await Wallpaper.find({ _id: { $in: ids } });
+    if (wallpapers.length === 0) {
+      return res.status(404).json({ message: 'No wallpaper found' });
+    }
 
-    const foundIds = wallpaper.map((wall) => wall.id);
-    const notFoundIds = ids.filter((id) => !foundIds.includes(id));
-
-    for (const wall of wallpaper) {
+    for (const wall of wallpapers) {
       if (wall.wallpaper) {
         const filePath = path.resolve(wall.wallpaper);
         try {
           if (fs.existsSync(filePath)) {
             fs.unlinkSync(filePath);
-          } else {
-            console.warn(`Wallpaper file not found: ${filePath}`);
           }
         } catch (err) {
-          console.error(`Failed to delete wallpaper file: ${filePath}`, err);
+          console.error(`Failed to delete file: ${filePath}`, err);
         }
       }
     }
 
-    await Wallpaper.destroy({ where: { id: foundIds }, force: true });
+    const result = await Wallpaper.deleteMany({ _id: { $in: ids } });
 
     const response = {
-      message: `${foundIds.length} wallpaper(s) deleted successfully`,
-      deletedCount: foundIds.length,
+      message: `${result.deletedCount} wallpaper(s) deleted successfully`,
+      deletedCount: result.deletedCount,
     };
-
-    if (notFoundIds.length > 0) {
-      response.notFound = notFoundIds;
-      response.message += `, ${notFoundIds.length} wallpaper(s) not found`;
-    }
 
     return res.status(200).json(response);
   } catch (error) {

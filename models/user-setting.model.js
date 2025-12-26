@@ -7,7 +7,6 @@ const UserSettingSchema = new Schema(
       type: Schema.Types.ObjectId,
       ref: 'User',
       required: true,
-      unique: true,
     },
 
     // Privacy settings

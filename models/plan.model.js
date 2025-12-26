@@ -10,7 +10,6 @@ const PlanSchema = new Schema(
     slug: {
       type: String,
       required: true,
-      unique: true,
       match: /^[a-z0-9-]+$/,
     },
     description: { 

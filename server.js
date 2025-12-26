@@ -6,6 +6,7 @@ const app = require('./app');
 const { connectDB } = require('./models');
 const PORT = process.env.PORT || 3000;
 
+const createDefaultAdmin = require('./utils/createDefaultAdmin');
 // Cron jobs
 // const scheduler = require('./cron/backupScheduler');
 // const statusExpiryScheduler = require('./cron/deleteExpiredStatus');
@@ -34,8 +35,10 @@ const io = new Server(server, {
 });
 
 connectDB()
-  .then(() => {
+  .then(async () => {
     console.log('DB connected');
+
+    await createDefaultAdmin();
 
     // scheduler.start();
     // statusExpiryScheduler.start();

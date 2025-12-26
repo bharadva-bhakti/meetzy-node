@@ -11,7 +11,6 @@ const VerificationRequestSchema = new Schema(
     request_id: {
       type: String,
       default: () => require('uuid').v4(),
-      unique: true,
     },
     full_name: { 
         type: String, 

@@ -11,7 +11,6 @@ const SessionSchema = new Schema(
     session_token: {
       type: String,
       required: true,
-      unique: true,
     },
     device_info: { 
       type: String, 

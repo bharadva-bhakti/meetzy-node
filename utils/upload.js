@@ -3,7 +3,8 @@
 const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
-const { Setting } = require('../models');
+const { db } = require('../models');
+const Setting = db.Setting;
 
 const mimeToExtension = {
   'image/jpeg': 'jpg',
@@ -46,47 +47,67 @@ const getTypePrefix = (mimetype) => {
   if (mimetype.startsWith('audio/')) return 'audio';
   if (mimetype.startsWith('image/')) return 'image';
   if (mimetype.startsWith('video/')) return 'video';
-  if (mimetype === 'application/pdf' ||
+  if (
+    mimetype === 'application/pdf' ||
     mimetype.includes('document') ||
     mimetype.includes('text') ||
     mimetype.includes('sheet') ||
     mimetype.includes('presentation')
-  ) { return 'document'; }
-  
+  ) {
+    return 'document';
+  }
   return 'file';
 };
 
 function ensureDirExists(dirPath) {
-  if (!fs.existsSync(dirPath)) fs.mkdirSync(dirPath, { recursive: true });
-};
+  if (!fs.existsSync(dirPath)) {
+    fs.mkdirSync(dirPath, { recursive: true });
+  }
+}
 
 const baseUploadDir = './uploads/';
 ensureDirExists(baseUploadDir);
 
+let cachedSettings = null;
+let cacheTimestamp = null;
+const CACHE_DURATION = 60 * 1000;
+
 async function getDynamicSettings() {
-  const setting = await Setting.findOne({
-    attributes: [
-      'allowed_file_upload_types',
-      'document_file_limit',
-      'audio_file_limit',
-      'video_file_limit',
-      'image_file_limit',
-      'multiple_file_share_limit'
-    ]
-  });
+  if (cachedSettings && cacheTimestamp && Date.now() - cacheTimestamp < CACHE_DURATION) {
+    return cachedSettings;
+  }
 
-  const allowedTypes = setting?.allowed_file_upload_types || [];
-  const limits = {
-    document: (setting?.document_file_limit || 10) * 1024 * 1024,
-    audio: (setting?.audio_file_limit || 10) * 1024 * 1024,
-    video: (setting?.video_file_limit || 10) * 1024 * 1024,
-    image: (setting?.image_file_limit || 5) * 1024 * 1024,
-    file: 25 * 1024 * 1024,
-    multiple: setting?.multiple_file_share_limit || 10
-  };
+  try {
+    const setting = await Setting.findOne().lean();
 
-  return { allowedTypes, limits };
-};
+    const allowedTypes = setting?.allowed_file_upload_types || [];
+    const limits = {
+      document: (setting?.document_file_limit || 10) * 1024 * 1024,
+      audio: (setting?.audio_file_limit || 10) * 1024 * 1024,
+      video: (setting?.video_file_limit || 20) * 1024 * 1024,
+      image: (setting?.image_file_limit || 10) * 1024 * 1024,
+      file: 25 * 1024 * 1024,
+      multiple: setting?.multiple_file_share_limit || 10,
+    };
+
+    cachedSettings = { allowedTypes, limits };
+    cacheTimestamp = Date.now();
+    return cachedSettings;
+  } catch (err) {
+    console.error('Error fetching upload settings:', err);
+    return {
+      allowedTypes: [],
+      limits: {
+        document: 10 * 1024 * 1024,
+        audio: 10 * 1024 * 1024,
+        video: 20 * 1024 * 1024,
+        image: 10 * 1024 * 1024,
+        file: 25 * 1024 * 1024,
+        multiple: 10,
+      },
+    };
+  }
+}
 
 function createUploader(subfolder = '') {
   const storage = multer.diskStorage({
@@ -101,24 +122,26 @@ function createUploader(subfolder = '') {
       const timestamp = Date.now();
       const randomString = Math.random().toString(36).substring(2, 8);
       cb(null, `${typePrefix}-${timestamp}-${randomString}.${ext}`);
-    }
+    },
   });
 
   return storage;
-};
+}
 
 const asyncFileFilter = async (req, file, cb) => {
   const { allowedTypes } = await getDynamicSettings();
-  const ext = mimeToExtension[file.mimetype] || path.extname(file.originalname).slice(1).toLowerCase();
+  const ext = (mimeToExtension[file.mimetype] || path.extname(file.originalname).slice(1)).toLowerCase();
 
-  if (allowedTypes.includes(ext)) cb(null, true);
- 	else cb(new Error(`File type '${ext}' not allowed.`), false);
+  if (allowedTypes.length === 0 || allowedTypes.includes(ext)) {
+    cb(null, true);
+  } else {
+    cb(new Error(`File type '${ext}' is not allowed.`), false);
+  }
 };
 
 const fileFilter = (req, file, cb) => {
   asyncFileFilter(req, file, cb).catch((err) => {
-    console.error('File filter error:', err);
-    cb(new Error('File validation failed.'), false);
+    cb(err || new Error('File validation failed'), false);
   });
 };
 
@@ -131,56 +154,56 @@ function uploader(subfolder = '') {
       req._dynamicUploader = multer({
         storage: createUploader(subfolder),
         fileFilter,
-        limits: { fileSize: maxGlobalSize, files: limits.multiple || 10 },
+        limits: { fileSize: maxGlobalSize, files: limits.multiple },
       });
 
       next();
     } catch (err) {
       console.error('Error loading upload settings:', err);
-      res.status(500).json({ error: 'Internal Server Error while loading upload limits' });
+      return res.status(500).json({ error: 'Failed to load upload configuration' });
     }
   };
 
   const checkFileSizes = async (req, res, next) => {
     const { limits } = await getDynamicSettings();
-    let files = [];
-    
+    const files = [];
+
     if (req.file) files.push(req.file);
-  
     if (req.files) {
       if (Array.isArray(req.files)) {
-        files = files.concat(req.files);
+        files.push(...req.files);
       } else if (typeof req.files === 'object') {
-        Object.values(req.files).forEach(arr => {files = files.concat(arr);});
+        Object.values(req.files).forEach((arr) => files.push(...arr));
       }
     }
-  
+
     for (const file of files) {
       const type = getTypePrefix(file.mimetype);
       const maxSize = limits[type] || limits.file;
-  
+
       if (file.size > maxSize) {
-        const maxSizeMB = (maxSize / (1024 * 1024)).toFixed(1);
-        const fileSizeMB = (file.size / (1024 * 1024)).toFixed(1);
-        
         fs.unlinkSync(file.path);
-        return res.status(400).json({ 
-          message: `${file.originalname} is too large (${fileSizeMB} MB). Max allowed for ${type} is ${maxSizeMB} MB.` 
+        const maxMB = (maxSize / (1024 * 1024)).toFixed(1);
+        const actualMB = (file.size / (1024 * 1024)).toFixed(1);
+        return res.status(400).json({
+          message: `${file.originalname} is too large (${actualMB} MB). Max: ${maxMB} MB for ${type}.`,
         });
       }
     }
-  
+
     next();
   };
-  
+
   const handleUpload = (uploadFn) => (req, res, next) => {
-    uploadFn(req, res, async (err) => {
+    uploadFn(req, res, (err) => {
       if (err instanceof multer.MulterError) {
-        if (err.code === 'LIMIT_FILE_SIZE') return res.status(400).json({ message: 'File is too large.' });
+        if (err.code === 'LIMIT_FILE_SIZE') {
+          return res.status(400).json({ message: 'File too large.' });
+        }
       } else if (err) {
-        return res.status(400).json({ message: err.message || 'File upload failed' });
+        return res.status(400).json({ message: err.message || 'Upload failed' });
       }
-      await checkFileSizes(req, res, next);
+      checkFileSizes(req, res, next);
     });
   };
 
@@ -198,36 +221,30 @@ function uploader(subfolder = '') {
       (req, res, next) => handleUpload(req._dynamicUploader.fields(fieldsArray))(req, res, next),
     ],
   };
-};
+}
 
 const uploadFiles = (subfolder = '', fieldName = 'files') => {
   return async (req, res, next) => {
     const { limits } = await getDynamicSettings();
-    const storage = createUploader(subfolder);
-    
     const upload = multer({
-      storage,
+      storage: createUploader(subfolder),
       fileFilter,
-      limits: {
-        fileSize: Math.max(...Object.values(limits)),
-        files: limits.multiple
-      }
+      limits: { fileSize: Math.max(...Object.values(limits)), files: limits.multiple },
     }).array(fieldName, limits.multiple);
 
-    upload(req, res, (err) => {
-      if (err) return res.status(400).json({ error: err.message });
+    upload(req, res, async (err) => {
+      if (err) return res.status(400).json({ message: err.message });
 
-      if (req.files) {
+      if (req.files && req.files.length > 0) {
         for (const file of req.files) {
           const type = getTypePrefix(file.mimetype);
           const maxSize = limits[type] || limits.file;
           if (file.size > maxSize) {
             fs.unlinkSync(file.path);
-            return res.status(400).json({ message: `${file.originalname} file is too large.`});
+            return res.status(400).json({ message: `${file.originalname} exceeds size limit.` });
           }
         }
       }
-      
       next();
     });
   };
@@ -236,38 +253,34 @@ const uploadFiles = (subfolder = '', fieldName = 'files') => {
 const uploadSingle = (subfolder = '', fieldName = 'file', isStatus = false) => {
   return async (req, res, next) => {
     const { limits } = await getDynamicSettings();
-    const storage = createUploader(subfolder);
-
-    const MAX_STATUS_FILE_SIZE = 16 * 1024 * 1024;
-    const fileSizeLimit = isStatus ? MAX_STATUS_FILE_SIZE : Math.max(...Object.values(limits));
+    const MAX_STATUS_SIZE = 16 * 1024 * 1024;
+    const maxSize = isStatus ? MAX_STATUS_SIZE : Math.max(...Object.values(limits));
 
     const upload = multer({
-      storage,
+      storage: createUploader(subfolder),
       fileFilter,
-      limits: {
-        fileSize: fileSizeLimit,
-        files: 1
-      }
+      limits: { fileSize: maxSize, files: 1 },
     }).single(fieldName);
 
-    upload(req, res, (err) => {
-      if (err) return res.status(400).json({ error: err.message });
+    upload(req, res, async (err) => {
+      if (err) return res.status(400).json({ message: err.message });
 
       if (req.file) {
         const file = req.file;
-        const fileType = getTypePrefix(file.mimetype);
-        const maxSize = isStatus ? MAX_STATUS_FILE_SIZE : limits[fileType] || limits.file;
+        const type = getTypePrefix(file.mimetype);
+        const allowedSize = isStatus ? MAX_STATUS_SIZE : (limits[type] || limits.file);
 
-        if (file.size > maxSize) {
+        if (file.size > allowedSize) {
           fs.unlinkSync(file.path);
-          return res.status(400).json({ message: `${file.originalname} file is too large.`});
+          return res.status(400).json({ message: `${file.originalname} is too large.` });
         }
 
-        if(isStatus && !['image', 'video'].includes(fileType)) {
+        if (isStatus && !['image', 'video'].includes(type)) {
           fs.unlinkSync(file.path);
-          return res.status(400).json({ message: 'Only image and video files are allowed for status.'});
+          return res.status(400).json({ message: 'Status only supports image and video.' });
         }
       }
+
       next();
     });
   };

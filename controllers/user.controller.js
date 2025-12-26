@@ -1,48 +1,53 @@
-const { User, UserSetting } = require('../models');
-const { Op, fn, col, where } = require('sequelize');
 const bcrypt = require('bcryptjs');
 const fs = require('fs');
 const path = require('path');
+const { db } = require('../models');
+
+const User = db.User;
+const UserSetting = db.UserSetting;
 
 exports.getAllUsers = async (req, res) => {
   const { page = 1, limit = 10, search, has_last_login } = req.query;
   const sortField = req.query.sort_by || 'created_at';
-  const sortOrder = req.query.sort_order?.toUpperCase() === 'ASC' ? 'ASC' : 'DESC';
-  const offset = (parseInt(page) - 1) * parseInt(limit);
+  const sortOrder = req.query.sort_order?.toUpperCase() === 'ASC' ? 1 : -1;
+  const skip = (parseInt(page) - 1) * parseInt(limit);
 
   try {
     const allowedSortFields = ['id', 'name', 'email', 'country', 'country_code', 'phone', 'status', 'role', 'created_at', 'updated_at', 'deleted_at'];
     const safeSortField = allowedSortFields.includes(sortField) ? sortField : 'created_at';
 
-    const whereCondition = { role: { [Op.ne]: 'super_admin' } };
+    const query = { role: { $ne: 'super_admin' } };
 
     if (search) {
-      const searchValue = `%${search.toLowerCase()}%`;
-      whereCondition[Op.or] = [
-        where(fn('LOWER', col('name')), { [Op.like]: searchValue }), 
-        where(fn('LOWER', col('email')), { [Op.like]: searchValue }), 
-        where(fn('LOWER', col('country')), { [Op.like]: searchValue }), 
-        where(fn('LOWER', col('role')), { [Op.like]: searchValue })
+      const searchRegex = new RegExp(search, 'i');
+      query.$or = [
+        { name: searchRegex },
+        { email: searchRegex },
+        { country: searchRegex },
+        { role: searchRegex },
       ];
     }
 
     if (has_last_login === 'true') {
-      whereCondition.last_login = { [Op.not]: null };
+      query.last_login = { $ne: null };
     } else if (has_last_login === 'false') {
-      whereCondition.last_login = null;
+      query.last_login = null;
     }
 
-    const { count, rows: users } = await User.findAndCountAll({
-      where: whereCondition,
-      offset,
-      limit: parseInt(limit),
-      attributes: ['id', 'avatar', 'name', 'bio', 'email', 'country', 'country_code', 'phone', 'role', 'last_login', 'status', 'created_at'],
-      order: [[safeSortField, sortOrder]],
-    });
+    const [users, total] = await Promise.all([
+      User.find(query)
+        .select('id avatar name bio email country country_code phone role last_login status created_at')
+        .sort({ [safeSortField]: sortOrder })
+        .skip(skip)
+        .limit(parseInt(limit))
+        .lean(),
+
+      User.countDocuments(query),
+    ]);
 
     res.status(200).json({
-      total: count,
-      totalPages: Math.ceil(count / parseInt(limit)),
+      total,
+      totalPages: Math.ceil(total / parseInt(limit)),
       page: parseInt(page),
       limit: parseInt(limit),
       users,
@@ -54,69 +59,82 @@ exports.getAllUsers = async (req, res) => {
 };
 
 exports.createUser = async (req, res) => {
-  const { name, email, password, country, country_code, phone, role='user', status, } = req.body;
+  const { name, email, password, country, country_code, phone, role = 'user', status } = req.body;
 
   try {
-    if(!email && !phone){
+    if (!email && !phone) {
       return res.status(400).json({ message: 'Provide Email or phone number.' });
     }
 
-    if(!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)){
-      return res.status(409).json({ message: 'Invalid Email format' });
+    if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      return res.status(400).json({ message: 'Invalid Email format' });
     }
-    const existingEmail = await User.findOne({ where: { email, role } });
-    if (existingEmail) return res.status(409).json({ message: 'Email already registered' });
-    
+
+    if (email) {
+      const existingEmail = await User.findOne({ email, role });
+      if (existingEmail) {
+        return res.status(409).json({ message: 'Email already registered' });
+      }
+    }
+
     const hashed = await bcrypt.hash(password, 10);
 
-    let avatar;
-    if(req.file){
+    let avatar = null;
+    if (req.file) {
       avatar = req.file.path;
     }
-    const user = await User.create({ 
-      avatar, name, email, password: hashed, country, country_code, phone, role, status 
-    });
 
-    await UserSetting.create({user_id: user.id});
+    const user = await User.create({ avatar, name, email, password: hashed, country, country_code, phone, role, status });
 
-    return res.status(201).json({ message: 'User created successfully'});
+    await UserSetting.create({ user_id: user._id });
+
+    return res.status(201).json({ message: 'User created successfully' });
   } catch (error) {
     console.error('Error in createUser:', error);
     return res.status(500).json({ message: 'Internal server error' });
   }
 };
 
-exports.updateUser = async (req,res) => {
+exports.updateUser = async (req, res) => {
   const { name, bio, phone, country, country_code, id, remove_avatar } = req.body;
 
   try {
-    const user = await User.findByPk(id);
+    const user = await User.findById(id);
     if (!user) return res.status(404).json({ message: 'User not found.' });
 
     const deleteOldAvatar = () => {
-      if(!user.avatar) return;
+      if (!user.avatar) return;
 
       const oldAvatarPath = path.join(__dirname, '..', user.avatar);
-      if(fs.existsSync(oldAvatarPath)){
+      if (fs.existsSync(oldAvatarPath)) {
         try {
           fs.unlinkSync(oldAvatarPath);
-        } catch (error) {
-          console.error('Error deleting old avatar', error);
+        } catch (err) {
+          console.error('Error deleting old avatar:', err);
         }
       }
     };
 
     let avatar = user.avatar;
-    if(remove_avatar === 'true'){
+
+    if (remove_avatar === 'true') {
       deleteOldAvatar();
       avatar = null;
-    } else if (req.file){
+    } else if (req.file) {
       deleteOldAvatar();
-      avatar = req.file.path
+      avatar = req.file.path;
     }
 
-    await user.update({ name, bio, phone, country, country_code, avatar });
-    res.status(200).json({ message: 'User updated successfully', user });
+    await User.updateOne(
+      { _id: id },
+      { $set: { name, bio, phone, country, country_code, avatar }}
+    );
+
+    const updatedUser = await User.findById(id)
+      .select('id avatar name bio email country country_code phone role status')
+      .lean();
+
+    res.status(200).json({ message: 'User updated successfully', user: updatedUser });
   } catch (error) {
     console.error('Error in updateUser:', error);
     return res.status(500).json({ message: 'Internal server error' });
@@ -128,20 +146,20 @@ exports.updateUserStatus = async (req, res) => {
   const { status } = req.body;
 
   try {
-    const user = await User.findByPk(id);
+    const user = await User.findById(id);
     if (!user) return res.status(404).json({ message: 'User not found.' });
 
-    await user.update({ status });
+    await User.updateOne({ _id: id }, { $set: { status } });
 
     const io = req.app.get('io');
 
     if (status === 'deactive') {
-      io.to(`user_${id}`).emit('admin-deactivation', user);
+      io.to(`user_${id}`).emit('admin-deactivation', { id, status });
     }
 
-    res.status(200).json({ message: `user ${status} successfully.` });
+    res.status(200).json({ message: `User ${status} successfully.` });
   } catch (error) {
-    console.error('Error in updateStatus:', error);
+    console.error('Error in updateUserStatus:', error);
     return res.status(500).json({ message: 'Internal server error' });
   }
 };
@@ -154,30 +172,22 @@ exports.deleteUser = async (req, res) => {
       return res.status(400).json({ message: 'User IDs array is required' });
     }
 
-    const users = await User.findAll({ where: { id: ids } });
-    if (users.length === 0) return res.status(404).json({ message: 'No users found' });
+    const objectIds = ids.map(id => mongoose.Types.ObjectId(id));
 
-    const foundIds = users.map((user) => user.id);
-    const notFoundIds = ids.filter((id) => !foundIds.includes(id));
+    const result = await User.deleteMany({ _id: { $in: objectIds } });
 
-    await User.destroy({
-      where: { id: foundIds },
-      force: true,
-    });
-
-    const response = {
-      message: `${foundIds.length} user(s) deleted successfully`,
-      deletedCount: foundIds.length,
-    };
-
-    if (notFoundIds.length > 0) {
-      response.notFound = notFoundIds;
-      response.message += `, ${notFoundIds.length} user(s) not found`;
+    if (result.deletedCount === 0) {
+      return res.status(404).json({ message: 'No users found' });
     }
 
+    const response = {
+      message: `${result.deletedCount} user(s) deleted successfully`,
+      deletedCount: result.deletedCount,
+    };
+
     const io = req.app.get('io');
-    ids.forEach((member) => {
-      io.to(`user_${member}`).emit('admin-deletion');
+    ids.forEach((userId) => {
+      io.to(`user_${userId}`).emit('admin-deletion');
     });
 
     return res.status(200).json(response);

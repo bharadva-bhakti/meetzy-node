@@ -1,7 +1,11 @@
 'use strict';
 
 const jwt = require('jsonwebtoken');
-const { User, Session, GroupMember, Group } = require('../models');
+const { db } = require('../models');
+const User = db.User;
+const Session = db.Session;
+const GroupMember = db.GroupMember;
+const Group = db.Group;
 
 exports.authenticate = async (req, res, next) => {
   const authHeader = req.headers.authorization;
@@ -14,15 +18,17 @@ exports.authenticate = async (req, res, next) => {
 
   try {
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
-    const user = await User.findByPk(decoded.id);
 
+    const user = await User.findById(decoded.id).lean();
     if (!user) {
       return res.status(401).json({ message: 'Invalid token: user not found' });
     }
 
     const session = await Session.findOne({
-      where: { user_id: user.id, session_token: token, status: 'active' },
-    });
+      user_id: user._id,
+      session_token: token,
+      status: 'active',
+    }).lean();
 
     if (!session) {
       return res.status(401).json({ message: 'Session expired or logged out. Please log in again.' });
@@ -40,26 +46,38 @@ exports.authenticate = async (req, res, next) => {
 
 exports.authorizeRoles = (allowedRoles = []) => {
   return (req, res, next) => {
-    if(!req.user || !allowedRoles.includes(req.user.role)) {
-      return res.status(403).json({ message: 'Forbidden: insufficient permissions.'});
+    if (!req.user || !allowedRoles.includes(req.user.role)) {
+      return res.status(403).json({ message: 'Forbidden: insufficient permissions.' });
     }
     next();
   };
 };
 
 exports.authorizeGroupRole = (roles = []) => {
-  return async (req,res,next) => {
-    const userId = req.user.id;
+  return async (req, res, next) => {
+    const userId = req.user._id;
     const groupId = req.params.id || req.body.group_id;
 
-    const group = await Group.findByPk(groupId);
-    if(!group) return res.status(403).json({ message: 'Group not found.'});
-    
-    const member = await GroupMember.findOne({ where:{ user_id: userId, group_id: groupId }});
-    if(!member) return res.status(403).json({ message: 'You are not member of the group.'});
+    if (!groupId) {
+      return res.status(400).json({ message: 'Group ID is required.' });
+    }
 
-    if(!roles.includes(member.role)){
-      return res.status(403).json({ message: 'Only admins have permission to do this.'});
+    const group = await Group.findById(groupId);
+    if (!group) {
+      return res.status(404).json({ message: 'Group not found.' });
+    }
+
+    const member = await GroupMember.findOne({
+      user_id: userId,
+      group_id: groupId,
+    });
+
+    if (!member) {
+      return res.status(403).json({ message: 'You are not a member of this group.' });
+    }
+
+    if (!roles.includes(member.role)) {
+      return res.status(403).json({ message: 'Only admins have permission to do this.' });
     }
 
     req.groupRole = member.role;
