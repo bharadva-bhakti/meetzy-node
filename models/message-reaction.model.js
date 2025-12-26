@@ -1,44 +1,35 @@
-module.exports = (sequelize, DataTypes) => {
-  const MessageReaction = sequelize.define(
-    'MessageReaction',
-    {
-      id: {
-        type: DataTypes.BIGINT,
-        autoIncrement: true,
-        primaryKey: true,
-      },
-      message_id: {
-        type: DataTypes.BIGINT,
-        allowNull: false,
-      },
-      user_id: {
-        type: DataTypes.INTEGER,
-        allowNull: false,
-        references: { model: 'users', key: 'id' },
-        onDelete: 'CASCADE',
-      },
-      emoji: {
-        type: DataTypes.STRING,
-        allowNull: false,
-      },
+const mongoose = require('mongoose');
+const { Schema } = mongoose;
+
+const MessageReactionSchema = new Schema(
+  {
+    message_id: {
+      type: Schema.Types.ObjectId,
+      ref: 'Message',
+      required: true,
     },
-    {
-      tableName: 'message_reactions',
-      timestamps: true,
-      underscored: true,
-      indexes: [
-        { name: 'idx_message_user_emoji', fields: ['message_id', 'user_id', 'emoji'], unique: true},
-        { name: 'idx_user_id', fields: ['user_id']},
-        { name: 'idx_emoji', fields: ['emoji']},
-        { name: 'idx_created_at', fields: ['created_at']}
-    ]
-    }
-  );
+    user_id: {
+      type: Schema.Types.ObjectId,
+      ref: 'User',
+      required: true,
+    },
+    emoji: {
+      type: String,
+      required: true,
+    },
+  },
+  {
+    collection: 'message_reactions',
+    timestamps: true,
+  }
+);
 
-  MessageReaction.associate = (models) => {
-    MessageReaction.belongsTo(models.Message, { foreignKey: 'message_id' });
-    MessageReaction.belongsTo(models.User, { foreignKey: 'user_id' });
-  };
+MessageReactionSchema.index(
+  { message_id: 1, user_id: 1, emoji: 1 },
+  { unique: true }
+);
+MessageReactionSchema.index({ user_id: 1 });
+MessageReactionSchema.index({ emoji: 1 });
+MessageReactionSchema.index({ created_at: 1 });
 
-  return MessageReaction;
-};
+module.exports = mongoose.model('MessageReaction', MessageReactionSchema);

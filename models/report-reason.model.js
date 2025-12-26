@@ -1,25 +1,17 @@
-module.exports = (sequelize, DataTypes) => {
-  const ReportReason = sequelize.define(
-    'ReportReason', 
-    {
-      id: {
-        type: DataTypes.INTEGER,
-        primaryKey: true,
-        autoIncrement: true
-      },
-      title: {
-        type: DataTypes.STRING,
-        allowNull: false,
-      }
-    }, 
-    {
-      tableName: 'report_reasons',
-      timestamps: true,
-      createdAt: 'created_at',
-      updatedAt: 'updated_at',
-    }
-  );
+const mongoose = require('mongoose');
+const { Schema } = mongoose;
 
-  return ReportReason;
-};
-  
+const ReportReasonSchema = new Schema(
+  {
+    title: { 
+      type: String, 
+      required: true 
+    },
+  },
+  {
+    collection: 'report_reasons',
+    timestamps: { createdAt: 'created_at', updatedAt: 'updated_at' },
+  }
+);
+
+module.exports = mongoose.model('ReportReason', ReportReasonSchema);

@@ -1,39 +1,39 @@
-module.exports = (sequelize, DataTypes) => {
-  const OTPLog = sequelize.define('OTPLog', {
-    email: {
-      type: DataTypes.STRING,
-      allowNull: true,
-    },
-    phone: {
-      type: DataTypes.STRING,
-      allowNull: true,
-    },
-    otp: {
-      type: DataTypes.STRING,
-      allowNull: false,
-    },
-    expires_at: {
-      type: DataTypes.DATE,
-      allowNull: false,
-    },
-    verified: {
-      type: DataTypes.BOOLEAN,
-      defaultValue: false,
-    }
-  }, {
-    tableName: 'otp_logs',
-    timestamps: true,
-    createdAt: 'created_at',
-    updatedAt: 'updated_at',
-    indexes: [
-      { name: 'idx_email', fields: ['email']},
-      { name: 'idx_phone', fields: ['phone']},
-      { name: 'idx_expires_at', fields: ['expires_at']},
-      { name: 'idx_verified', fields: ['verified']},
-      { name: 'idx_email_verified', fields: ['email', 'verified']}
-    ]
-  });
+const mongoose = require('mongoose');
+const { Schema } = mongoose;
 
-  return OTPLog;
-};
-  
+const OTPLogSchema = new Schema(
+  {
+    email: { 
+      type: String, 
+      default: null 
+    },
+    phone: { 
+      type: String, 
+      default: null 
+    },
+    otp: { 
+      type: String, 
+      required: true 
+    },
+    expires_at: { 
+      type: Date, 
+      required: true 
+    },
+    verified: { 
+      type: Boolean, 
+      default: false
+     },
+  },
+  {
+    collection: 'otp_logs',
+    timestamps: { createdAt: 'created_at', updatedAt: 'updated_at' },
+  }
+);
+
+OTPLogSchema.index({ email: 1 });
+OTPLogSchema.index({ phone: 1 });
+OTPLogSchema.index({ expires_at: 1 });
+OTPLogSchema.index({ verified: 1 });
+OTPLogSchema.index({ email: 1, verified: 1 });
+
+module.exports = mongoose.model('OTPLog', OTPLogSchema);

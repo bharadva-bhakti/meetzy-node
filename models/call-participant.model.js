@@ -1,77 +1,64 @@
-module.exports = (sequelize, DataTypes) => {
-  const CallParticipant = sequelize.define(
-    'CallParticipant',
-    {
-      id: {
-        type: DataTypes.BIGINT,
-        autoIncrement: true,
-        primaryKey: true,
-      },
-      call_id: {
-        type: DataTypes.BIGINT,
-        allowNull: false,
-        references: { model: 'calls', key: 'id' },
-        onDelete: 'CASCADE',
-      },
-      user_id: {
-        type: DataTypes.INTEGER,
-        allowNull: false,
-        references: { model: 'users', key: 'id' },
-        onDelete: 'CASCADE',
-      },
-      status: {
-        type: DataTypes.ENUM('invited', 'joined', 'declined', 'missed', 'left', 'kicked'),
-        defaultValue: 'invited',
-      },
-      joined_at: {
-        type: DataTypes.DATE,
-        allowNull: true,
-      },
-      left_at: {
-        type: DataTypes.DATE,
-        allowNull: true,
-      },
-      is_muted: {
-        type: DataTypes.BOOLEAN,
-        defaultValue: false,
-      },
-      is_screen_sharing: {
-        type: DataTypes.BOOLEAN,
-        defaultValue: false,
-      },
-      is_video_enabled: {
-        type: DataTypes.BOOLEAN,
-        defaultValue: false,
-      },
-      video_status: {
-        type: DataTypes.ENUM('enabled', 'disabled', 'unavailable'),
-        defaultValue: 'disabled',
-      },
-      peer_id: {
-        type: DataTypes.STRING,
-        allowNull: true,
-      },
+const mongoose = require('mongoose');
+const { Schema } = mongoose;
+
+const CallParticipantSchema = new Schema(
+  {
+    call_id: {
+      type: Schema.Types.ObjectId,
+      ref: 'Call',
+      required: true,
     },
-    {
-      tableName: 'call_participants',
-      timestamps: true,
-      createdAt: 'created_at',
-      updatedAt: 'updated_at',
-      indexes: [
-        { name: 'idx_call_user', fields: ['call_id', 'user_id'], unique: true},
-        { name: 'idx_user_status', fields: ['user_id', 'status']},
-        { name: 'idx_call_status', fields: ['call_id', 'status']},
-        { name: 'idx_user_joined_at', fields: ['user_id', 'joined_at']},
-        { name: 'idx_status_joined_at', fields: ['status', 'joined_at']},
-        { name: 'idx_peer_id', fields: ['peer_id']}
-      ],
-    }
-  );
+    user_id: {
+      type: Schema.Types.ObjectId,
+      ref: 'User',
+      required: true,
+    },
+    status: {
+      type: String,
+      enum: ['invited', 'joined', 'declined', 'missed', 'left', 'kicked'],
+      default: 'invited',
+    },
+    joined_at: { 
+      type: Date, 
+      default: null 
+    },
+    left_at: { 
+      type: Date, 
+      default: null 
+    },
+    is_muted: { 
+      type: Boolean, 
+      default: false 
+    },
+    is_screen_sharing: { 
+      type: Boolean, 
+      default: false 
+    },
+    is_video_enabled: { 
+      type: Boolean, 
+      default: false 
+    },
+    video_status: {
+      type: String,
+      enum: ['enabled', 'disabled', 'unavailable'],
+      default: 'disabled',
+    },
+    peer_id: { 
+      type: String, 
+      default: null 
+    },
+  },
+  {
+    collection: 'call_participants',
+    timestamps: { createdAt: 'created_at', updatedAt: 'updated_at' },
+  }
+);
 
-  CallParticipant.associate = (models) => {
-    CallParticipant.belongsTo(models.Call, { foreignKey: 'call_id', as: 'call' });
-    CallParticipant.belongsTo(models.User, { foreignKey: 'user_id', as: 'user' });
-  };
+CallParticipantSchema.index({ call_id: 1, user_id: 1 }, { unique: true });
+CallParticipantSchema.index({ user_id: 1, status: 1 });
+CallParticipantSchema.index({ call_id: 1, status: 1 });
+CallParticipantSchema.index({ user_id: 1, joined_at: 1 });
+CallParticipantSchema.index({ status: 1, joined_at: 1 });
+CallParticipantSchema.index({ peer_id: 1 });
 
-  return CallParticipant;
-};
+module.exports = mongoose.model('CallParticipant', CallParticipantSchema);

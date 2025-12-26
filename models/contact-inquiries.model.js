@@ -1,31 +1,29 @@
-module.exports = (sequelize, DataTypes) => {
-  const ContactInquiry = sequelize.define(
-    'ContactInquiry',
-    {
-      name: {
-        type: DataTypes.STRING,
-        allowNull: false,
-      },
-      email: {
-        type: DataTypes.STRING,
-        allowNull: false,
-      },
-      subject: {
-        type: DataTypes.STRING,
-        allowNull: false,
-      },
-      message: {
-        type: DataTypes.TEXT,
-        allowNull: false,
-      },
-    },
-    {
-      tableName: 'contact_inquiries',
-      timestamps: true,
-      createdAt: 'created_at',
-      updatedAt: 'updated_at',
-    }
-  );
+const mongoose = require('mongoose');
+const { Schema } = mongoose;
 
-  return ContactInquiry;
-};
+const ContactInquirySchema = new Schema(
+  {
+    name: {
+      type: String,
+      required: true,
+    },
+    email: {
+      type: String,
+      required: true,
+    },
+    subject: {
+      type: String,
+      required: true,
+    },
+    message: {
+      type: String,
+      required: true,
+    },
+  },
+  {
+    collection: 'contact_inquiries',
+    timestamps: { createdAt: 'created_at', updatedAt: 'updated_at' },
+  }
+);
+
+module.exports = mongoose.model('ContactInquiry', ContactInquirySchema);

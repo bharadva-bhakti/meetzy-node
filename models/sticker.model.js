@@ -1,39 +1,31 @@
-module.exports = (sequelize, DataTypes) => {
-  const Sticker = sequelize.define(
-    'Sticker', 
-    {
-      id: {
-        type: DataTypes.INTEGER,
-        primaryKey: true,
-        autoIncrement: true
-      },
-      title: {
-        type: DataTypes.STRING,
-        allowNull: false,
-      },
-      sticker: {
-        type: DataTypes.STRING,
-        allowNull: false,
-        unique: true,
-      },
-      metadata: {
-        type: DataTypes.JSON,
-        allowNull: true,
-      },
-      status: {
-        type: DataTypes.BOOLEAN,
-        allowNull: false,
-        defaultValue: true,
-      }
-    }, 
-    {
-      tableName: 'sticker',
-      timestamps: true,
-      createdAt: 'created_at',
-      updatedAt: 'updated_at',
-    }
-  );
+const mongoose = require('mongoose');
+const { Schema } = mongoose;
 
-  return Sticker;
-};
-  
+const StickerSchema = new Schema(
+  {
+    title: { 
+      type: String, 
+      required: true 
+    },
+    sticker: { 
+      type: String, 
+      required: true, 
+      unique: true 
+    },
+    metadata: { 
+      type: Object, 
+      default: null 
+    },
+    status: { 
+      type: Boolean,
+      default: true, 
+      required: true 
+    },
+  },
+  {
+    collection: 'sticker',
+    timestamps: { createdAt: 'created_at', updatedAt: 'updated_at' },
+  }
+);
+
+module.exports = mongoose.model('Sticker', StickerSchema);

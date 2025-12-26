@@ -1,33 +1,25 @@
-module.exports = (sequelize, DataTypes) => {
-    const Gateway = sequelize.define('Gateway', {
+const mongoose = require('mongoose');
+const { Schema } = mongoose;
 
-        id: {
-            type: DataTypes.INTEGER,
-            primaryKey: true,
-            autoIncrement: true
-        },
+const GatewaySchema = new Schema(
+  {
+    name: { 
+        type: String, 
+        required: true 
+    },
+    config: { 
+        type: Object, 
+        required: true 
+    },
+    enabled: { 
+        type: Boolean,
+        default: true 
+    },
+  },
+  {
+    collection: 'gateways',
+    timestamps: { createdAt: 'created_at', updatedAt: 'updated_at' },
+  }
+);
 
-        name: {
-            type: DataTypes.STRING,
-            allowNull: false
-        },
-
-        config: {
-            type: DataTypes.JSON,
-            allowNull: false
-        },
-
-        enabled: {
-            type: DataTypes.BOOLEAN,
-            defaultValue: true
-        }
-
-    }, {
-        tableName: 'gateways',
-        timestamps: true,
-        createdAt: 'created_at',
-        updatedAt: 'updated_at'
-    });
-
-    return Gateway;
-};
+module.exports = mongoose.model('Gateway', GatewaySchema);

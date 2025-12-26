@@ -1,49 +1,41 @@
-module.exports = (sequelize,DataTypes) => {
-    const UserDelete = sequelize.define(
-        'UserDelete',
-        {
-            id: {
-                type: DataTypes.INTEGER,
-                autoIncrement: true,
-                primaryKey: true
-            },
-            user_id: {
-                type: DataTypes.INTEGER,
-                allowNull: false,
-                references: { model: 'users', key: 'id' },
-                onDelete: 'CASCADE',
-            },
-            target_id: {
-                type: DataTypes.INTEGER,
-                allowNull: false,
-            },
-            target_type: {
-                type: DataTypes.ENUM('user', 'group'),
-                allowNull: false,
-            },
-            delete_type: {
-                type: DataTypes.ENUM('hide_chat', 'delete_messages'),
-                defaultValue: 'hide_chat',
-                allowNull: false,
-            },
-        },
-        {
-            tableName: 'user_deletes',
-            timestamps: true,
-            createdAt: 'created_at',
-            updatedAt: 'updated_at',
-            indexes: [
-                { name: 'idx_user_target_delete', fields: ['user_id', 'target_type', 'target_id'], unique: true },
-                { name: 'idx_user_delete', fields: ['user_id']},
-                { name: 'idx_delete_type', fields: ['delete_type']},
-                { name: 'idx_created_at', fields: ['created_at']}
-            ],
-        }
-    );
+const mongoose = require('mongoose');
+const { Schema } = mongoose;
 
-    UserDelete.associate = (models) => {
-        UserDelete.belongsTo(models.User, { foreignKey: 'user_id', as: 'user' });
-    };
+const UserDeleteSchema = new Schema(
+  {
+    user_id: {
+      type: Schema.Types.ObjectId,
+      ref: 'User',
+      required: true,
+    },
+    target_id: {
+      type: Schema.Types.ObjectId,
+      required: true,
+    },
+    target_type: {
+      type: String,
+      enum: ['user', 'group'],
+      required: true,
+    },
+    delete_type: {
+      type: String,
+      enum: ['hide_chat', 'delete_messages'],
+      default: 'hide_chat',
+      required: true,
+    },
+  },
+  {
+    collection: 'user_deletes',
+    timestamps: { createdAt: 'created_at', updatedAt: 'updated_at' },
+  }
+);
 
-    return UserDelete;
-};
+UserDeleteSchema.index(
+  { user_id: 1, target_type: 1, target_id: 1 },
+  { unique: true }
+);
+UserDeleteSchema.index({ user_id: 1 });
+UserDeleteSchema.index({ delete_type: 1 });
+UserDeleteSchema.index({ created_at: 1 });
+
+module.exports = mongoose.model('UserDelete', UserDeleteSchema);

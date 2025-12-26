@@ -1,41 +1,38 @@
-module.exports = (sequelize, DataTypes) => {
-  const PinnedConversation = sequelize.define(
-    'PinnedConversation', 
-    {
-      id: {
-        type: DataTypes.BIGINT,
-        primaryKey: true,
-        autoIncrement: true,
-      },
-      user_id: {
-        type: DataTypes.BIGINT,
-        allowNull: false,
-      },
-      type: {
-        type: DataTypes.ENUM('group', 'direct', 'broadcast', 'announcement'),
-        allowNull: false,
-      },
-      target_id: {
-        type: DataTypes.BIGINT,
-        allowNull: false,
-      },
-      pinned_at: {
-        type: DataTypes.DATE,
-        defaultValue: DataTypes.NOW,
-      }
-    }, 
-    {
-      tableName: 'pinned_conversations',
-      timestamps: false,
-      createdAt: 'created_at',
-      updatedAt: 'updated_at',
-      indexes: [
-        { name: 'idx_user_type_target', fields: ['user_id', 'type', 'target_id'], unique: true},
-        { name: 'idx_pinned_at', fields: ['pinned_at']},
-        { name: 'idx_type', fields: ['type']}
-      ]
-    }
-  );
+const mongoose = require('mongoose');
+const { Schema } = mongoose;
 
-  return PinnedConversation;
-};
+const PinnedConversationSchema = new Schema(
+  {
+    user_id: {
+      type: Schema.Types.ObjectId,
+      ref: 'User',
+      required: true,
+    },
+    type: {
+      type: String,
+      enum: ['group', 'direct', 'broadcast', 'announcement'],
+      required: true,
+    },
+    target_id: {
+      type: Schema.Types.ObjectId,
+      required: true,
+    },
+    pinned_at: {
+      type: Date,
+      default: Date.now,
+    },
+  },
+  {
+    collection: 'pinned_conversations',
+    timestamps: { createdAt: false, updatedAt: false },
+  }
+);
+
+PinnedConversationSchema.index(
+  { user_id: 1, type: 1, target_id: 1 },
+  { unique: true }
+);
+PinnedConversationSchema.index({ pinned_at: -1 });
+PinnedConversationSchema.index({ type: 1 });
+
+module.exports = mongoose.model('PinnedConversation', PinnedConversationSchema);

@@ -1,30 +1,25 @@
-module.exports = (sequelize, DataTypes) => {
-  const Faq = sequelize.define('Faq', {
-    id: {
-      type: DataTypes.INTEGER,
-      primaryKey: true,
-      autoIncrement: true
-    },
-    title: {
-      type: DataTypes.STRING,
-      allowNull: false,
-      unique: true,
-    },
-    description: {
-      type: DataTypes.TEXT,
-      allowNull: false
-    },
-    status: {
-      type: DataTypes.BOOLEAN,
-      defaultValue: true,
-    },
-  }, {
-    tableName: 'faqs',
-    timestamps: true,
-    createdAt: 'created_at',
-    updatedAt: 'updated_at'
-  });
+const mongoose = require('mongoose');
+const { Schema } = mongoose;
 
-  return Faq;
-};
-  
+const FaqSchema = new Schema(
+  {
+    title: { 
+      type: String, 
+      required: true, unique: true 
+    },
+    description: { 
+      type: String, 
+      required: true 
+    },
+    status: { 
+      type: Boolean,
+      default: true
+    },
+  },
+  {
+    collection: 'faqs',
+    timestamps: { createdAt: 'created_at', updatedAt: 'updated_at' },
+  }
+);
+
+module.exports = mongoose.model('Faq', FaqSchema);

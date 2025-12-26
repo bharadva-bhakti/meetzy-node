@@ -1,55 +1,46 @@
-module.exports = (sequelize, DataTypes) => {
-    const Status = sequelize.define('Status',{
-        id: {
-            type: DataTypes.INTEGER,
-            primaryKey: true,
-            autoIncrement: true
-        },
-        user_id: {
-            type: DataTypes.INTEGER,
-            allowNull: false,
-            references: { model: 'users', key: 'id' },
-            onDelete: 'CASCADE',
-        },
-        type: {
-            type: DataTypes.ENUM('text', 'image', 'video'),
-            defaultValue: 'text'
-        },
-        file_url: {
-            type: DataTypes.STRING,
-            allowNull: true,
-        },
-        caption: {
-            type: DataTypes.STRING,
-            allowNull: true,
-        },
-        sponsored: {
-            type: DataTypes.BOOLEAN,
-            allowNull: false,
-            defaultValue: false,
-        },
-        expires_at: {
-            type: DataTypes.DATE,
-            allowNull: false
-        }
-    },{
-        tableName: 'statuses',
-        timestamps: true,
-        createdAt: 'created_at',
-        updatedAt: false,
-        indexes: [
-            { fields: ['user_id'] },
-            { name: 'idx_expires_at', fields: ['expires_at']},
-            { name: 'idx_type', fields: ['type']},
-            { name: 'idx_user_expires', fields: ['user_id', 'expires_at']},
-            { name: 'idx_created_at_desc', fields: ['created_at']}
-        ]
-    });
+const mongoose = require('mongoose');
+const { Schema } = mongoose;
 
-    Status.associate = (models) => {
-        Status.belongsTo(models.User, { foreignKey: 'user_id', as: 'user' });
-        Status.hasMany(models.StatusView, { foreignKey: 'status_id', as: 'views' });
-    };
+const StatusSchema = new Schema(
+  {
+    user_id: {
+      type: Schema.Types.ObjectId,
+      ref: 'User',
+      required: true,
+    },
+    type: {
+      type: String,
+      enum: ['text', 'image', 'video'],
+      default: 'text',
+    },
+    file_url: { 
+        type: String, 
+        default: null 
+    },
+    caption: { 
+        type: String, 
+        default: null 
+    },
+    sponsored: { 
+        type: Boolean,
+        default: false, 
+        required: true 
+    },
+    expires_at: {
+      type: Date,
+      required: true,
+    },
+  },
+  {
+    collection: 'statuses',
+    timestamps: { createdAt: 'created_at', updatedAt: false },
+  }
+);
 
-    return Status;
-};
+StatusSchema.index({ user_id: 1 });
+StatusSchema.index({ expires_at: 1 });
+StatusSchema.index({ type: 1 });
+StatusSchema.index({ user_id: 1, expires_at: 1 });
+StatusSchema.index({ created_at: -1 });
+
+module.exports = mongoose.model('Status', StatusSchema);

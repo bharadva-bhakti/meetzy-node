@@ -1,51 +1,42 @@
-module.exports = (sequelize, DataTypes) => {
-  const Announcement = sequelize.define(
-    'Announcement',
-    {
-      id: {
-        type: DataTypes.INTEGER,
-        autoIncrement: true,
-        primaryKey: true,
-      },
-      message_id: {
-        type: DataTypes.BIGINT,
-        allowNull: false,
-        references: { model: 'messages', key: 'id' },
-        onDelete: 'CASCADE',
-        unique: true,
-      },
-      title: {
-        type: DataTypes.STRING(255),
-        allowNull: true,
-      },
-      announcement_type: {
-        type: DataTypes.ENUM('get_started', 'learn_more', 'none'),
-        allowNull: true,
-      },
-      action_link: {
-        type: DataTypes.STRING(500),
-        allowNull: true, 
-      },
-      redirect_url: {
-        type: DataTypes.STRING(500),
-        allowNull: true, 
-      }
+const mongoose = require('mongoose');
+const { Schema } = mongoose;
+
+const AnnouncementSchema = new Schema(
+  {
+    message_id: {
+      type: Schema.Types.ObjectId,
+      ref: 'Message',
+      required: true,
+      unique: true,
     },
-    {
-      tableName: 'announcements',
-      timestamps: true,
-      createdAt: 'created_at',
-      updatedAt: 'updated_at',
-      indexes: [
-        { name: 'idx_message_id', fields: ['message_id'] },
-        { name: 'idx_announcement_type', fields: ['announcement_type'] },
-      ],
-    }
-  );
+    title: {
+      type: String,
+      maxlength: 255,
+      default: null,
+    },
+    announcement_type: {
+      type: String,
+      enum: ['get_started', 'learn_more', 'none'],
+      default: null,
+    },
+    action_link: {
+      type: String,
+      maxlength: 500,
+      default: null,
+    },
+    redirect_url: {
+      type: String,
+      maxlength: 500,
+      default: null,
+    },
+  },
+  {
+    collection: 'announcements',
+    timestamps: { createdAt: 'created_at', updatedAt: 'updated_at' },
+  }
+);
 
-  Announcement.associate = (models) => {
-    Announcement.belongsTo(models.Message, { foreignKey: 'message_id', as: 'message', onDelete: 'CASCADE'});
-  };
+AnnouncementSchema.index({ message_id: 1 }, { unique: true });
+AnnouncementSchema.index({ announcement_type: 1 });
 
-  return Announcement;
-};
+module.exports = mongoose.model('Announcement', AnnouncementSchema);

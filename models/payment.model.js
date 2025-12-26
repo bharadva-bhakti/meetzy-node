@@ -1,119 +1,95 @@
-module.exports = (sequelize, DataTypes) => {
-  const Payment = sequelize.define(
-    'Payment',
-    {
-      id: {
-        type: DataTypes.INTEGER,
-        autoIncrement: true,
-        primaryKey: true
-      },
-      user_id: {
-        type: DataTypes.INTEGER,
-        allowNull: false,
-        references: { model: 'users', key: 'id' },
-        onDelete: 'CASCADE'
-      },
-      amount: {
-        type: DataTypes.DECIMAL(10, 2),
-        allowNull: false,
-        validate: { min: 0.01 }
-      },
-      currency: {
-        type: DataTypes.STRING(3),
-        defaultValue: 'USD'
-      },
-      payment_gateway: {
-        type: DataTypes.ENUM('stripe', 'paypal', 'razorpay'),
-        allowNull: false
-      },
+const mongoose = require('mongoose');
+const { Schema } = mongoose;
 
-      // card, upi, netBanking, paypal_balance, etc.
-      payment_method: {
-        type: DataTypes.STRING,
-        allowNull: true,
-      },
-
-      //Order / Intent ID from gateway
-      gateway_order_id: {
-        type: DataTypes.STRING,
-        allowNull: true,
-      },
-
-      //Final transaction ID from gateway
-      gateway_payment_id: {
-        type: DataTypes.STRING,
-        allowNull: true,
-      },
-      // What this payment is for
-      reference_type: {
-        type: DataTypes.ENUM('blue_tick'),
-        allowNull: false,
-      },
-      reference_id: {
-        type: DataTypes.INTEGER,
-        allowNull: true,
-      },
-      status: {
-        type: DataTypes.ENUM('pending', 'completed', 'failed', 'refunded'),
-        defaultValue: 'pending'
-      },
-      gateway_response: {
-        type: DataTypes.JSON,
-        defaultValue: {}
-      },
-      failure_reason: {
-        type: DataTypes.TEXT,
-        allowNull: true
-      },
-      completed_at: {
-        type: DataTypes.DATE,
-        allowNull: true
-      },
-      refunded_at: {
-        type: DataTypes.DATE,
-        allowNull: true
-      },
-
-      // For subscription
-      subscription_id: {
-        type: DataTypes.INTEGER,
-        allowNull: true,
-        references: { model: 'subscriptions', key: 'id' },
-        onDelete: 'SET NULL'
-      },
-      is_recurring: {
-        type: DataTypes.BOOLEAN,
-        defaultValue: false
-      },
-      invoice_id: {
-        type: DataTypes.STRING,
-        allowNull: true
-      },
-      subscription_payment_sequence: {
-        type: DataTypes.INTEGER,
-        defaultValue: 1,
-      }
+const PaymentSchema = new Schema(
+  {
+    user_id: {
+      type: Schema.Types.ObjectId,
+      ref: 'User',
+      required: true,
     },
-    {
-      tableName: 'payments',
-      timestamps: true,
-      createdAt: 'created_at',
-      updatedAt: 'updated_at',
-      indexes: [
-        { fields: ['user_id'] },
-        { fields: ['status'] },
-        { fields: ['reference_type', 'reference_id'] },
-        { fields: ['gateway_order_id'] },
-        { fields: ['gateway_payment_id'] }
-      ]
-    }
-  );
+    amount: {
+      type: Number,
+      required: true,
+      min: 0.01,
+    },
+    currency: { 
+      type: String, 
+      default: 'USD', 
+      maxlength: 3 
+    },
+    payment_gateway: {
+      type: String,
+      enum: ['stripe', 'paypal', 'razorpay'],
+      required: true,
+    },
+    payment_method: { 
+      type: String, 
+      default: null 
+    },
+    gateway_order_id: { 
+      type: String, 
+      default: null 
+    },
+    gateway_payment_id: { 
+      type: String, 
+      default: null 
+    },
+    reference_type: {
+      type: String,
+      enum: ['blue_tick'],
+      required: true,
+    },
+    reference_id: { type: Number, default: null },
+    status: {
+      type: String,
+      enum: ['pending', 'completed', 'failed', 'refunded'],
+      default: 'pending',
+    },
+    gateway_response: { 
+      type: Object, 
+      default: {} 
+    },
+    failure_reason: { 
+      type: String, 
+      default: null 
+    },
+    completed_at: { 
+      type: Date, 
+      default: null 
+    },
+    refunded_at: { 
+      type: Date, 
+      default: null 
+    },
+    subscription_id: {
+      type: Schema.Types.ObjectId,
+      ref: 'Subscription',
+      default: null,
+    },
+    is_recurring: { 
+      type: Boolean,
+      default: false 
+    },
+    invoice_id: { 
+      type: String, 
+      default: null 
+    },
+    subscription_payment_sequence: { 
+      type: Number, 
+      default: 1 
+    },
+  },
+  {
+    collection: 'payments',
+    timestamps: { createdAt: 'created_at', updatedAt: 'updated_at' },
+  }
+);
 
-  Payment.associate = (models) => {
-    Payment.belongsTo(models.User, { foreignKey: 'user_id', as: 'user'});
-    Payment.hasOne(models.VerificationRequest, { foreignKey: 'payment_id', as: 'verificationRequest' });
-    Payment.belongsTo(models.Subscription, { foreignKey: 'subscription_id', as: 'subscription' });
-  };
+PaymentSchema.index({ user_id: 1 });
+PaymentSchema.index({ status: 1 });
+PaymentSchema.index({ reference_type: 1, reference_id: 1 });
+PaymentSchema.index({ gateway_order_id: 1 });
+PaymentSchema.index({ gateway_payment_id: 1 });
 
-  return Payment;
-};
+module.exports = mongoose.model('Payment', PaymentSchema);

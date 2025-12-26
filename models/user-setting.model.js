@@ -1,131 +1,132 @@
-module.exports = (sequelize, DataTypes) => {
-    const UserSetting = sequelize.define('UserSetting', {
-        user_id: {
-            type: DataTypes.INTEGER,
-            allowNull: false,
-            references: { model: 'users', key: 'id' },
-            onDelete: 'CASCADE',
-        },
+const mongoose = require('mongoose');
+const { Schema } = mongoose;
 
-        // privacy setting
-        last_seen: {
-            type: DataTypes.BOOLEAN,
-            defaultValue: true,
-        },
-        profile_pic: {
-            type: DataTypes.BOOLEAN,
-            defaultValue: true,
-        },
-        display_bio: {
-            type: DataTypes.BOOLEAN,
-            defaultValue: true,
-        },
-        read_receipts: {
-            type: DataTypes.BOOLEAN,
-            defaultValue: true,
-        },
-        typing_indicator: {
-            type: DataTypes.BOOLEAN,
-            defaultValue: true
-        },
-        hide_phone: {
-            type: DataTypes.BOOLEAN,
-            defaultValue: false,
-        },
-
-        // Status Setting
-        status_privacy: {
-            type: DataTypes.ENUM('my_contacts', 'only_share_with'),
-            defaultValue: 'my_contacts',
-            allowNull: false
-        },
-
-        shared_with: {
-            type: DataTypes.JSON,
-            allowNull: true,
-            defaultValue: [] 
-        },
-
-        // customizer
-        chat_wallpaper: {
-            type: DataTypes.STRING,
-            allowNull: false,
-            defaultValue: 'none'
-        },
-        mode: {
-            type: DataTypes.ENUM('light', 'dark'),
-            allowNull: false,
-            defaultValue: 'light'
-        },
-        color: {
-            type: DataTypes.STRING,
-            allowNull: false,
-            defaultValue: 'style'
-        },
-        layout: {
-            type: DataTypes.STRING,
-            allowNull: false,
-            defaultValue: 'default-layout'
-        },
-        sidebar: {
-            type: DataTypes.ENUM('three-column', 'two-column'),
-            allowNull: false,
-            defaultValue: 'three-column'
-        },
-        direction: {
-            type: DataTypes.ENUM('ltr', 'rtl'),
-            allowNull: false,
-            defaultValue: 'ltr',
-        },
-
-        // chat backup
-        auto_backup: {
-            type: DataTypes.BOOLEAN,
-            allowNull: false,
-            defaultValue: false
-        },
-        doc_backup: {
-            type: DataTypes.BOOLEAN,
-            allowNull: false,
-            defaultValue: false
-        },
-        video_backup: {
-            type: DataTypes.BOOLEAN,
-            allowNull: false,
-            defaultValue: false
-        },
-
-        // lock chat
-        pin_hash: {
-            type: DataTypes.STRING,
-            allowNull: true,
-        },
-        chat_lock_enabled: {
-            type: DataTypes.BOOLEAN,
-            allowNull: false,
-            defaultValue: false,
-        },
-        locked_chat_ids: {
-            type: DataTypes.JSON,
-            allowNull: true,
-        },
-        chat_lock_digit: {
-            type: DataTypes.INTEGER,
-            allowNull: false,
-            defaultValue: 4
-        },
+const UserSettingSchema = new Schema(
+  {
+    user_id: {
+      type: Schema.Types.ObjectId,
+      ref: 'User',
+      required: true,
+      unique: true,
     },
-    {
-        tableName: 'user_settings',
-        timestamps: true,
-        createdAt: 'created_at',
-        updatedAt: 'updated_at',
-        indexes: [{ unique: true, fields: ['user_id'] }]
-    });
 
-    UserSetting.associate = (models) => {
-        UserSetting.belongsTo(models.User, { as: 'user', foreignKey: 'user_id'});
-    };
-  
-    return UserSetting;
-};
+    // Privacy settings
+    last_seen: { 
+      type: Boolean, 
+      default: true 
+    },
+    profile_pic: { 
+      type: Boolean, 
+      default: true 
+    },
+    display_bio: { 
+      type: Boolean, 
+      default: true 
+    },
+    read_receipts: { 
+      type: Boolean, 
+      default: true 
+    },
+    typing_indicator: { 
+      type: Boolean, 
+      default: true 
+    },
+    hide_phone: { 
+      type: Boolean, 
+      default: false 
+    },
+
+    // Status privacy
+    status_privacy: {
+      type: String,
+      enum: ['my_contacts', 'only_share_with'],
+      default: 'my_contacts',
+      required: true,
+    },
+    shared_with: { 
+      type: [Schema.Types.ObjectId], 
+      default: [], 
+      ref: 'User' 
+    },
+
+    // Customizer
+    chat_wallpaper: { 
+      type: String, 
+      default: 'none', 
+      required: true 
+    },
+    mode: { 
+      type: String, 
+      enum: ['light', 'dark'], 
+      default: 'light', 
+      required: true 
+    },
+    color: { 
+      type: String, 
+      default: 'style', 
+      required: true 
+    },
+    layout: { 
+      type: String, 
+      default: 'default-layout', 
+      required: true 
+    },
+    sidebar: { 
+      type: String, 
+      enum: ['three-column', 'two-column'], 
+      default: 'three-column', 
+      required: true 
+    },
+    direction: { 
+      type: String, 
+      enum: ['ltr', 'rtl'], 
+      default: 'ltr', 
+      required: true 
+    },
+
+    // Chat backup
+    auto_backup: { 
+      type: Boolean, 
+      default: false, 
+      required: true 
+    },
+    doc_backup: { 
+      type: Boolean, 
+      default: false, 
+      required: true 
+    },
+    video_backup: { 
+      type: Boolean, 
+      default: false, 
+      required: true 
+    },
+
+    // Chat lock
+    pin_hash: {
+      type: String, 
+      default: null 
+    },
+    chat_lock_enabled: {
+      type: Boolean, 
+      default: false,
+      required: true 
+    },
+    locked_chat_ids: {
+      type: [Schema.Types.ObjectId], 
+      default: null 
+    },
+    chat_lock_digit: { 
+      type: Number, 
+      default: 4, 
+      required: true 
+    },
+  },
+  {
+    collection: 'user_settings',
+    timestamps: { createdAt: 'created_at', updatedAt: 'updated_at' },
+  }
+);
+
+UserSettingSchema.index({ user_id: 1 }, { unique: true });
+
+module.exports = mongoose.model('UserSetting', UserSettingSchema);

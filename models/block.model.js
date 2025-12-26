@@ -1,53 +1,47 @@
-module.exports = (sequelize, DataTypes) => {
-    const Block = sequelize.define(
-        'Block',
-        {
-            id: {
-                type: DataTypes.INTEGER,
-                autoIncrement: true,
-                primaryKey: true,
-            },
-            blocker_id: {
-                type: DataTypes.INTEGER,
-                allowNull: false,
-                references: { model: 'users', key: 'id' },
-                onDelete: 'CASCADE',
-            },
-            blocked_id: {
-                type: DataTypes.INTEGER,
-                allowNull: true,
-                references: { model: 'users', key: 'id' },
-                onDelete: 'CASCADE',
-            },
-            group_id: {
-                type: DataTypes.INTEGER,
-                allowNull: true,
-                references: { model: 'groups', key: 'id' },
-                onDelete: 'CASCADE',
-            },
-            block_type: {
-                type: DataTypes.ENUM('user', 'group'),
-                allowNull: false,
-                defaultValue: 'user',
-            },
-        },
-        {
-            tableName: 'blocks',
-            timestamps: true,
-            createdAt: 'created_at',
-            updatedAt: 'updated_at',
-            indexes: [
-                { unique: true, fields: ['blocker_id', 'blocked_id'], where: { block_type: 'user' }},
-                { unique: true, fields: ['blocker_id', 'group_id'], where: { block_type: 'group' }},
-            ],
-        }
-    );
+const mongoose = require('mongoose');
+const { Schema } = mongoose;
 
-    Block.associate = (models) => {
-        Block.belongsTo(models.User, { foreignKey: 'blocker_id', as: 'blocker' });
-        Block.belongsTo(models.User, { foreignKey: 'blocked_id', as: 'blocked' });
-        Block.belongsTo(models.Group, { foreignKey: 'group_id', as: 'blockedGroup' });
-    };
+const BlockSchema = new Schema(
+  {
+    blocker_id: {
+      type: Schema.Types.ObjectId,
+      ref: 'User',
+      required: true,
+    },
+    blocked_id: {
+      type: Schema.Types.ObjectId,
+      ref: 'User',
+      default: null,
+    },
+    group_id: {
+      type: Schema.Types.ObjectId,
+      ref: 'Group',
+      default: null,
+    },
+    block_type: {
+      type: String,
+      enum: ['user', 'group'],
+      required: true,
+      default: 'user',
+    },
+  },
+  {
+    collection: 'blocks',
+    timestamps: { createdAt: 'created_at', updatedAt: 'updated_at' },
+  }
+);
 
-    return Block;
-};
+BlockSchema.index(
+    { blocker_id: 1, blocked_id: 1 }, 
+    { unique: true, partialFilterExpression: 
+        { block_type: 'user', blocked_id: { $exists: true } } 
+    }
+);
+BlockSchema.index(
+    { blocker_id: 1, group_id: 1 }, 
+    { unique: true, partialFilterExpression: 
+        { block_type: 'group', group_id: { $exists: true } } 
+    }
+);
+
+module.exports = mongoose.model('Block', BlockSchema);

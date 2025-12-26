@@ -1,36 +1,49 @@
-module.exports = (sequelize, DataTypes) => {
-  const ChatClear = sequelize.define('ChatClear', {
+const mongoose = require('mongoose');
+const { Schema } = mongoose;
+
+const ChatClearSchema = new Schema(
+  {
     user_id: {
-      type: DataTypes.INTEGER,
-      allowNull: false,
+      type: Schema.Types.ObjectId,
+      ref: 'User',
+      required: true,
     },
     recipient_id: {
-      type: DataTypes.INTEGER,
-      allowNull: true,
+      type: Schema.Types.ObjectId,
+      ref: 'User',
+      default: null,
     },
     group_id: {
-      type: DataTypes.INTEGER,
-      allowNull: true,
+      type: Schema.Types.ObjectId,
+      ref: 'Group',
+      default: null,
     },
     broadcast_id: {
-      type: DataTypes.INTEGER,
-      allowNull: true,
+      type: Schema.Types.ObjectId,
+      ref: 'Broadcast',
+      default: null,
     },
     cleared_at: {
-      type: DataTypes.DATE,
-      allowNull: false,
-      defaultValue: DataTypes.NOW,
-    }
-  }, {
-    tableName: 'chat_clears',
+      type: Date,
+      default: Date.now,
+      required: true,
+    },
+  },
+  {
+    collection: 'chat_clears',
     timestamps: false,
-    indexes: [
-      { unique: true, fields: ['user_id', 'recipient_id'] },
-      { unique: true, fields: ['user_id', 'group_id'] },
-      { name: 'idx_cleared_at', fields: ['cleared_at']},
-      { name: 'idx_user_cleared_at', fields: ['user_id', 'cleared_at']}
-    ]
-  });
+  }
+);
 
-  return ChatClear;
-};
+ChatClearSchema.index(
+  { user_id: 1, recipient_id: 1 }, 
+  { unique: true, partialFilterExpression: { recipient_id: { $exists: true } } }
+);
+ChatClearSchema.index(
+  { user_id: 1, group_id: 1 }, 
+  { unique: true, partialFilterExpression: { group_id: { $exists: true } } }
+);
+ChatClearSchema.index({ cleared_at: 1 });
+ChatClearSchema.index({ user_id: 1, cleared_at: 1 });
+
+module.exports = mongoose.model('ChatClear', ChatClearSchema);

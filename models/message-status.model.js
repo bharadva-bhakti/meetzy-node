@@ -1,45 +1,36 @@
-module.exports = (sequelize, DataTypes) => {
-  const MessageStatus = sequelize.define('MessageStatus', {
-    id: {
-      type: DataTypes.BIGINT,
-      primaryKey: true,
-      autoIncrement: true,
-    },
+const mongoose = require('mongoose');
+const { Schema } = mongoose;
+
+const MessageStatusSchema = new Schema(
+  {
     message_id: {
-      type: DataTypes.BIGINT,
-      allowNull: false,
+      type: Schema.Types.ObjectId,
+      ref: 'Message',
+      required: true,
     },
     user_id: {
-      type: DataTypes.INTEGER,
-      allowNull: false,
-      references: { model: 'users', key: 'id' },
-      onDelete: 'CASCADE',
+      type: Schema.Types.ObjectId,
+      ref: 'User',
+      required: true,
     },
     status: {
-      type: DataTypes.ENUM('sent', 'delivered', 'seen', 'blocked'),
-      allowNull: false,
-      defaultValue: 'sent',
+      type: String,
+      enum: ['sent', 'delivered', 'seen', 'blocked'],
+      default: 'sent',
+      required: true,
     },
-  }, {
-    tableName: 'message_statuses',
-    timestamps: true,
-    createdAt: 'created_at',
-    updatedAt: 'updated_at',
-    indexes: [
-      { fields: ['message_id'] },
-      { fields: ['user_id'] },
-      { name: 'idx_status', fields: ['status']},
-      { name: 'idx_message_status', fields: ['message_id', 'status']},
-      { name: 'idx_user_status', fields: ['user_id', 'status']},
-      { name: 'idx_created_at', fields: ['created_at']}
-    ]
-  });
+  },
+  {
+    collection: 'message_statuses',
+    timestamps: { createdAt: 'created_at', updatedAt: 'updated_at' },
+  }
+);
 
-  MessageStatus.associate = models => {
-    MessageStatus.belongsTo(models.Message, { foreignKey: 'message_id', as: 'message' });
-    MessageStatus.belongsTo(models.User, { foreignKey: 'user_id' });
-  };
+MessageStatusSchema.index({ message_id: 1 });
+MessageStatusSchema.index({ user_id: 1 });
+MessageStatusSchema.index({ status: 1 });
+MessageStatusSchema.index({ message_id: 1, status: 1 });
+MessageStatusSchema.index({ user_id: 1, status: 1 });
+MessageStatusSchema.index({ created_at: 1 });
 
-  return MessageStatus;
-};
-  
+module.exports = mongoose.model('MessageStatus', MessageStatusSchema);

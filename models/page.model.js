@@ -1,51 +1,48 @@
-module.exports = (sequelize, DataTypes) => {
-  const PageContent = sequelize.define(
-    'Page',
-    {
-      title: {
-        type: DataTypes.STRING,
-        allowNull: false,
-      },
-      slug: {
-        type: DataTypes.STRING,
-        allowNull: false,
-        unique: true,
-      },
-      content: {
-        type: DataTypes.TEXT('long'),
-        allowNull: true,
-      },
-      meta_title: {
-        type: DataTypes.STRING,
-        allowNull: true,
-      },
-      meta_description: {
-        type: DataTypes.TEXT,
-        allowNull: true,
-      },
-      status: {
-        type: DataTypes.BOOLEAN,
-        defaultValue: true,
-      },
-      created_by: {
-        type: DataTypes.INTEGER,
-        allowNull: false,
-        references: { model: 'users', key: 'id' },
-        onDelete: 'CASCADE',
-      },
+const mongoose = require('mongoose');
+const { Schema } = mongoose;
+
+const PageSchema = new Schema(
+  {
+    title: { 
+      type: String, 
+      required: true 
     },
-    {
-      tableName: 'pages',
-      timestamps: true,
-      createdAt: 'created_at',
-      updatedAt: 'updated_at',
-      indexes: [
-        { name: 'idx_slug', fields: ['slug']},
-        { name: 'idx_status', fields: ['status']},
-        { name: 'idx_created_by', fields: ['created_by']},
-        { name: 'idx_created_at', fields: ['created_at']}
-      ]
-    }
-  );
-  return PageContent;
-};
+    slug: { 
+      type: String, 
+      required: true, 
+      unique: true 
+    },
+    content: { 
+      type: String, 
+      default: null 
+    },
+    meta_title: { 
+      type: String, 
+      default: null 
+    },
+    meta_description: { 
+      type: String, 
+      default: null 
+    },
+    status: { 
+      type: Boolean,
+      default: true 
+    },
+    created_by: {
+      type: Schema.Types.ObjectId,
+      ref: 'User',
+      required: true,
+    },
+  },
+  {
+    collection: 'pages',
+    timestamps: { createdAt: 'created_at', updatedAt: 'updated_at' },
+  }
+);
+
+PageSchema.index({ slug: 1 });
+PageSchema.index({ status: 1 });
+PageSchema.index({ created_by: 1 });
+PageSchema.index({ created_at: 1 });
+
+module.exports = mongoose.model('Page', PageSchema);

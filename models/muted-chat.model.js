@@ -1,57 +1,39 @@
-module.exports = (sequelize, DataTypes) => {
-  const MutedChat = sequelize.define('MutedChat', {
-    id: {
-      type: DataTypes.BIGINT,
-      primaryKey: true,
-      autoIncrement: true,
-    },
+const mongoose = require('mongoose');
+const { Schema } = mongoose;
+
+const MutedChatSchema = new Schema(
+  {
     user_id: {
-      type: DataTypes.INTEGER,
-      allowNull: false,
-      references: { model: 'users', key: 'id' },
-      onDelete: 'CASCADE',
+      type: Schema.Types.ObjectId,
+      ref: 'User',
+      required: true,
     },
     target_id: {
-      type: DataTypes.INTEGER,
-      allowNull: false,
+      type: Schema.Types.ObjectId,
+      required: true,
     },
     target_type: {
-      type: DataTypes.ENUM('user', 'group', 'announcement'),
-      allowNull: false,
+      type: String,
+      enum: ['user', 'group', 'announcement'],
+      required: true,
     },
     muted_until: {
-      type: DataTypes.DATE,
-      allowNull: true,
-    }
-  }, {
-    tableName: 'muted_chats',
-    timestamps: true,
-    createdAt: 'created_at',
-    updatedAt: 'updated_at',
-    indexes: [
-      { unique: true, fields: ['user_id', 'target_id', 'target_type']},
-      { name: 'idx_muted_until', fields: ['muted_until']},
-      { name: 'idx_target_type', fields: ['target_type']},
-      { name: 'idx_created_at', fields: ['created_at']}
-    ]
-  });
+      type: Date,
+      default: null,
+    },
+  },
+  {
+    collection: 'muted_chats',
+    timestamps: { createdAt: 'created_at', updatedAt: 'updated_at' },
+  }
+);
 
-  MutedChat.associate = models => {
-    MutedChat.belongsTo(models.User, { foreignKey: 'user_id', as: 'user' });
+MutedChatSchema.index(
+  { user_id: 1, target_id: 1, target_type: 1 },
+  { unique: true }
+);
+MutedChatSchema.index({ muted_until: 1 });
+MutedChatSchema.index({ target_type: 1 });
+MutedChatSchema.index({ created_at: 1 });
 
-    MutedChat.belongsTo(models.Group, {
-        foreignKey: 'target_id',
-        constraints: false,
-        as: 'mutedGroup',
-    });
-
-    MutedChat.belongsTo(models.User, {
-        foreignKey: 'target_id',
-        constraints: false,
-        as: 'mutedUser',
-    });
-
-  };
-
-  return MutedChat;
-};
+module.exports = mongoose.model('MutedChat', MutedChatSchema);

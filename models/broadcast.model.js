@@ -1,38 +1,24 @@
-module.exports = (sequelize, DataTypes) => {
-  const Broadcast = sequelize.define(
-    'Broadcast',
-    {
-      id: {
-        type: DataTypes.INTEGER,
-        primaryKey: true,
-        autoIncrement: true
-      },
-      creator_id: {
-        type: DataTypes.INTEGER,
-        allowNull: false,
-        references: { model: 'users', key: 'id' },
-        onDelete: 'CASCADE',
-        comment: 'User who created the broadcast list'
-      },
-      name: {
-        type: DataTypes.STRING,
-        allowNull: false,
-        comment: 'Name of the broadcast list'
-      },
+const mongoose = require('mongoose');
+const { Schema } = mongoose;
+
+const BroadcastSchema = new Schema(
+  {
+    creator_id: {
+      type: Schema.Types.ObjectId,
+      ref: 'User',
+      required: true,
     },
-    {
-      tableName: 'broadcasts',
-      timestamps: true,
-      createdAt: 'created_at',
-      updatedAt: 'updated_at',
-      indexes: [{ fields: ['creator_id'] },]
-    }
-  );
+    name: {
+      type: String,
+      required: true,
+    },
+  },
+  {
+    collection: 'broadcasts',
+    timestamps: { createdAt: 'created_at', updatedAt: 'updated_at' },
+  }
+);
 
-  Broadcast.associate = (models) => {
-    Broadcast.belongsTo(models.User, { foreignKey: 'creator_id', as: 'creator' });
-    Broadcast.hasMany(models.BroadcastMember, { foreignKey: 'broadcast_id', as: 'recipients', onDelete: 'CASCADE'});
-  };
+BroadcastSchema.index({ creator_id: 1 });
 
-  return Broadcast;
-};
+module.exports = mongoose.model('Broadcast', BroadcastSchema);

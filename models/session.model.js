@@ -1,55 +1,50 @@
-module.exports = (sequelize, DataTypes) => {
-  const Session = sequelize.define('Session', {
+const mongoose = require('mongoose');
+const { Schema } = mongoose;
+
+const SessionSchema = new Schema(
+  {
     user_id: {
-      type: DataTypes.INTEGER,
-      allowNull: false,
-      references: { model: 'users', key: 'id' },
-      onDelete: 'CASCADE'
+      type: Schema.Types.ObjectId,
+      ref: 'User',
+      required: true,
     },
     session_token: {
-      type: DataTypes.STRING,
-      allowNull: false,
-      unique: true
+      type: String,
+      required: true,
+      unique: true,
     },
-    device_info: {
-      type: DataTypes.STRING,
-      allowNull: true
+    device_info: { 
+      type: String, 
+      default: null 
     },
-    ip_address: {
-      type: DataTypes.STRING,
-      allowNull: true
+    ip_address: { 
+      type: String, 
+      default: null 
     },
-    agenda: {
-      type: DataTypes.STRING,
-      allowNull: true
+    agenda: { 
+      type: String, 
+      default: null 
     },
     status: {
-      type: DataTypes.ENUM('active', 'inactive'),
-      defaultValue: 'active'
+      type: String,
+      enum: ['active', 'inactive'],
+      default: 'active',
     },
     expires_at: {
-      type: DataTypes.DATE,
-      allowNull: false
-    }
-  }, 
+      type: Date,
+      required: true,
+    },
+  },
   {
-    tableName: 'sessions',
-    timestamps: true,
-    createdAt: 'created_at',
-    updatedAt: 'updated_at',
-    indexes: [
-      { name: 'idx_user_status', fields: ['user_id', 'status']},
-      { name: 'idx_expires_at', fields: ['expires_at']},
-      { name: 'idx_session_token', fields: ['session_token']},
-      { name: 'idx_agenda', fields: ['agenda']},
-      { name: 'idx_created_at', fields: ['created_at']}
-    ]
-  });
+    collection: 'sessions',
+    timestamps: { createdAt: 'created_at', updatedAt: 'updated_at' },
+  }
+);
 
-  Session.associate = models => {
-    Session.belongsTo(models.User, { foreignKey: 'user_id' });
-  };
+SessionSchema.index({ user_id: 1, status: 1 });
+SessionSchema.index({ expires_at: 1 });
+SessionSchema.index({ session_token: 1 });
+SessionSchema.index({ agenda: 1 });
+SessionSchema.index({ created_at: 1 });
 
-  return Session;
-};
-  
+module.exports = mongoose.model('Session', SessionSchema);

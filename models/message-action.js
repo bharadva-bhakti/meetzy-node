@@ -1,41 +1,40 @@
-module.exports = (sequelize, DataTypes) => {
-    const MessageAction = sequelize.define(
-        'MessageAction', 
-        {
-            message_id: {
-                type: DataTypes.BIGINT,
-                allowNull: false,
-            },
-            user_id: {
-                type: DataTypes.INTEGER,
-                allowNull: false,
-            },
-            action_type: {
-                type: DataTypes.ENUM('star', 'edit', 'forward', 'delete'),
-                allowNull: false,
-            },
-            details: {
-                type: DataTypes.JSON,
-                allowNull: true,
-            },
-        },
-        {
-            tableName: 'message_actions',
-            timestamps: true,
-            underscored: true,
-            indexes: [
-                { name: 'idx_message_user_action', fields: ['message_id', 'user_id', 'action_type'], unique: true },
-                { name: 'idx_user_id', fields: ['user_id']},
-                { name: 'idx_action_type', fields: ['action_type']},
-                { name: 'idx_created_at', fields: ['created_at']}
-            ]
-        }
-    );
-  
-    MessageAction.associate = (models) => {
-      MessageAction.belongsTo(models.Message, { foreignKey: 'message_id' });
-      MessageAction.belongsTo(models.User, { foreignKey: 'user_id' });
-    };
-  
-    return MessageAction;
-}; 
+const mongoose = require('mongoose');
+const { Schema } = mongoose;
+
+const MessageActionSchema = new Schema(
+  {
+    message_id: {
+      type: Schema.Types.ObjectId,
+      ref: 'Message',
+      required: true,
+    },
+    user_id: {
+      type: Schema.Types.ObjectId,
+      ref: 'User',
+      required: true,
+    },
+    action_type: {
+      type: String,
+      enum: ['star', 'edit', 'forward', 'delete'],
+      required: true,
+    },
+    details: { 
+        type: Object, 
+        default: null 
+    },
+  },
+  {
+    collection: 'message_actions',
+    timestamps: true,
+  }
+);
+
+MessageActionSchema.index(
+  { message_id: 1, user_id: 1, action_type: 1 },
+  { unique: true }
+);
+MessageActionSchema.index({ user_id: 1 });
+MessageActionSchema.index({ action_type: 1 });
+MessageActionSchema.index({ created_at: 1 });
+
+module.exports = mongoose.model('MessageAction', MessageActionSchema);

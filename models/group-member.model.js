@@ -1,42 +1,33 @@
-module.exports = (sequelize, DataTypes) => {
-  const GroupMember = sequelize.define(
-    'GroupMember', 
-    {
-      group_id: {
-        type: DataTypes.INTEGER,
-        allowNull: false,
-        references: { model: 'groups', key: 'id' },
-        onDelete: 'CASCADE'
-      },
-      user_id: {
-        type: DataTypes.INTEGER,
-        allowNull: false,
-        references: { model: 'users', key: 'id' },
-        onDelete: 'CASCADE'
-      },
-      role: {
-        type: DataTypes.ENUM('admin', 'member'),
-        defaultValue: 'member'
-      }
+const mongoose = require('mongoose');
+const { Schema } = mongoose;
+
+const GroupMemberSchema = new Schema(
+  {
+    group_id: {
+      type: Schema.Types.ObjectId,
+      ref: 'Group',
+      required: true,
     },
-    {
-      tableName: 'group_members',
-      timestamps: true,
-      createdAt: 'created_at',
-      updatedAt: 'updated_at',
-      indexes: [
-        { name: 'idx_group_user', fields: ['group_id', 'user_id'], unique: true},
-        { name: 'idx_user_id', fields: ['user_id']},
-        { name: 'idx_group_role', fields: ['group_id', 'role']},
-        { name: 'idx_created_at', fields: ['created_at']}
-      ]
-    }
-  );
+    user_id: {
+      type: Schema.Types.ObjectId,
+      ref: 'User',
+      required: true,
+    },
+    role: {
+      type: String,
+      enum: ['admin', 'member'],
+      default: 'member',
+    },
+  },
+  {
+    collection: 'group_members',
+    timestamps: { createdAt: 'created_at', updatedAt: 'updated_at' },
+  }
+);
 
-  GroupMember.associate = models => {
-    GroupMember.belongsTo(models.Group, { foreignKey: 'group_id' });
-    GroupMember.belongsTo(models.User, { as: 'user', foreignKey: 'user_id' });
-  };
+GroupMemberSchema.index({ group_id: 1, user_id: 1 }, { unique: true });
+GroupMemberSchema.index({ user_id: 1 });
+GroupMemberSchema.index({ group_id: 1, role: 1 });
+GroupMemberSchema.index({ created_at: 1 });
 
-  return GroupMember;
-};
+module.exports = mongoose.model('GroupMember', GroupMemberSchema);
