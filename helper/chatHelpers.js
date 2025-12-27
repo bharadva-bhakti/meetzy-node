@@ -172,90 +172,79 @@ async function fetchFavoriteData(userId, page = 1, limit = 20) {
 };
 
 async function fetchFriendSuggestions(userId, { search = '', page = 1, limit = 20 }) {
-  const offset = (page - 1) * limit;
+  const skip = (page - 1) * limit;
 
-  const friendships = await Friend.findAll({
-    where: {
-      [Op.or]: [ { user_id: userId }, { friend_id: userId }],
-      status: { [Op.ne]: 'rejected' }
-    },
-    attributes: ['user_id', 'friend_id']
-  });
+  const friendships = await Friend.find({
+    $or: [{ user_id: userId }, { friend_id: userId }],
+    status: { $ne: 'rejected' },
+  }).lean();
 
   const friendIds = new Set();
-  friendships.forEach(friendship => {
-    if (friendship.user_id === userId) {
-      friendIds.add(friendship.friend_id);
-    } else {
-      friendIds.add(friendship.user_id);
-    }
+  friendships.forEach(f => {
+    if (f.user_id.toString() === userId.toString()) friendIds.add(f.friend_id.toString());
+    else friendIds.add(f.user_id.toString());
   });
-  friendIds.add(userId);
+  friendIds.add(userId.toString());
 
-  const allUserSettings = await UserSetting.findAll({
-    attributes: ['user_id', 'hide_phone'],
-    raw: true
-  });
+  const allUserSettings = await UserSetting.find({})
+    .select('user_id hide_phone')
+    .lean();
 
-  const hidePhoneMap = new Map(
-    allUserSettings.map(s => [s.user_id, s.hide_phone])
-  );
+  const hidePhoneMap = new Map(allUserSettings.map(s => [s.user_id.toString(), s.hide_phone]));
 
-  const whereClause = {
-    id: { [Op.notIn]: Array.from(friendIds) },
+  const query = {
+    _id: { $nin: Array.from(friendIds).map(id => new mongoose.Types.ObjectId(id)) },
     role: 'user',
-    status: 'active'
+    status: 'active',
   };
 
   if (search) {
-    whereClause[Op.or] = [
-      { name: { [Op.like]: `%${search}%` } },
-      { email: { [Op.like]: `%${search}%` } }
+    const regex = { $regex: search, $options: 'i' };
+    query.$or = [
+      { name: regex },
+      { email: regex },
     ];
 
     const visiblePhoneUserIds = Array.from(hidePhoneMap.entries())
-    .filter(([id, hide]) => hide === false)
-    .map(([id]) => id);
+      .filter(([, hide]) => hide === false)
+      .map(([id]) => id);
 
     if (visiblePhoneUserIds.length > 0) {
-      whereClause[Op.or].push({
-        [Op.and]: [
-          { id: { [Op.in]: visiblePhoneUserIds } },
-          { phone: { [Op.like]: `%${search}%` } }
-        ]
+      query.$or.push({
+        $and: [
+          { _id: { $in: visiblePhoneUserIds.map(id => new mongoose.Types.ObjectId(id)) } },
+          { phone: regex },
+        ],
       });
     }
   }
 
-  const totalCount = await User.count({ where: whereClause });
+  const totalCount = await User.countDocuments(query);
 
-  const suggestions = await User.findAll({
-    where: whereClause,
-    attributes: ['id', 'bio', 'name', 'avatar', 'phone', 'email'],
-    order: [['name', 'ASC']],
-    limit,
-    offset
-  });
+  const suggestions = await User.find(query)
+    .select('id bio name avatar phone email')
+    .sort({ name: 1 })
+    .skip(skip)
+    .limit(limit)
+    .lean();
 
   const suggestionIds = suggestions.map(s => s.id);
-  const userSettings = await UserSetting.findAll({
-    where: { user_id: { [Op.in]: suggestionIds } },
-    attributes: ['user_id', 'profile_pic', 'hide_phone'],
-    raw: true
-  });
-  
-  const settingsMap = new Map(userSettings.map(s => [s.user_id, s]));
-  
+  const userSettings = await UserSetting.find({ user_id: { $in: suggestionIds } })
+    .select('user_id profile_pic hide_phone')
+    .lean();
+
+  const settingsMap = new Map(userSettings.map(s => [s.user_id.toString(), s]));
+
   const suggestionsWithPrivacy = suggestions.map(s => {
-    const setting = settingsMap.get(s.id);
+    const setting = settingsMap.get(s.id.toString());
     const avatar = setting && setting.profile_pic === false ? null : (s.avatar || null);
     return {
       id: s.id,
       bio: s.bio,
       name: s.name,
-      avatar: avatar,
+      avatar,
       phone: s.phone,
-      email: s.email
+      email: s.email,
     };
   });
 
@@ -264,7 +253,7 @@ async function fetchFriendSuggestions(userId, { search = '', page = 1, limit = 2
 
   return {
     suggestions: suggestionsWithPrivacy,
-    pagination: { page, limit, totalCount, totalPages, hasMore }
+    pagination: { page, limit, totalCount, totalPages, hasMore },
   };
 };
 

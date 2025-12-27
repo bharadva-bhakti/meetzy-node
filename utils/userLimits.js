@@ -1,17 +1,13 @@
-const { Subscription, Plan, Setting } = require('../models');
-const { Op } = require('sequelize');
+// utils/userLimits.js
+'use strict';
+
+const { db } = require('../models');
+const Setting = db.Setting;
+const Subscription = db.Subscription;
+const Plan = db.Plan;
 
 async function getEffectiveLimits(userId, userRole = 'user') {
-  // Default global limits
-  const globalSettings = await Setting.findOne({
-    attributes: [
-      'max_groups_per_user', 
-      'max_group_members', 
-      'status_limit', 
-      'allow_media_send',
-      'max_broadcasts_list',
-      'max_members_per_broadcasts_list',],
-  });
+  const globalSettings = await Setting.findOne().lean();
 
   const defaults = {
     max_groups_per_user: globalSettings?.max_groups_per_user || 500,
@@ -36,16 +32,10 @@ async function getEffectiveLimits(userId, userRole = 'user') {
   }
 
   const subscription = await Subscription.findOne({
-    where: {
-      user_id: userId,
-      status: { [Op.in]: ['active', 'trialing', 'past_due'] },
-      current_period_end: { [Op.gt]: new Date() },
-    },
-    include: [
-      { model: Plan, as: 'plan', where: { status: 'active' }, required: true,},
-    ],
-    order: [['created_at', 'DESC']],
-  });
+    user_id: userId,
+    status: { $in: ['active', 'trialing', 'past_due'] },
+    current_period_end: { $gt: new Date() },
+  }).populate('plan');
 
   if (!subscription || !subscription.plan) {
     return defaults;
