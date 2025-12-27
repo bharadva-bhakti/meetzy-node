@@ -1,34 +1,34 @@
-const { Setting, User, Language } = require('../models');
 const fs = require('fs');
 const path = require('path');
+const { db } = require('../models');
+const Setting = db.Setting;
+const User = db.User;
+const Language = db.Language;
 
-exports.getSettings = async (req,res) => {
+exports.getSettings = async (req, res) => {
   try {
-    const setting = await Setting.findOne({ raw: true });
-    if(!setting) return res.status(404).json({ message: 'Settings not found.' });
-    
+    const setting = await Setting.findOne().lean();
+    if (!setting) return res.status(404).json({ message: 'Settings not found.' });
+
     return res.status(200).json({ settings: setting });
   } catch (error) {
     console.error('Error in getSettings:', error);
-    res.status(500).json({ message: 'Internal Server Error'});
+    res.status(500).json({ message: 'Internal Server Error' });
   }
 };
 
-exports.getPublicSettings = async (req,res) => {
+exports.getPublicSettings = async (req, res) => {
   try {
-    const setting = await Setting.findOne({
-      attributes: ['login_method', 'favicon_url', 'logo_light_url', 'logo_dark_url', 'sidebar_logo_url', 'mobile_logo_url', 
-        'landing_logo_url', 'favicon_notification_logo_url', 'onboarding_logo_url', 'auth_method', 'login_method', 'allow_user_signup',
-        'e2e_encryption_enabled'
-      ],
-      raw: true
-    });
+    const setting = await Setting.findOne().select([ 
+        'login_method', 'favicon_url', 'logo_light_url', 'logo_dark_url', 'sidebar_logo_url', 'mobile_logo_url', 'landing_logo_url',
+        'favicon_notification_logo_url', 'onboarding_logo_url', 'auth_method', 'allow_user_signup', 'e2e_encryption_enabled',
+      ]).lean();
 
     if (!setting) return res.status(404).json({ message: 'Settings not found.' });
     return res.status(200).json({ settings: setting });
   } catch (error) {
     console.error('Error in getPublicSettings:', error);
-    res.status(500).json({ message: 'Internal Server Error'});
+    res.status(500).json({ message: 'Internal Server Error' });
   }
 };
 
@@ -36,26 +36,25 @@ exports.updateSettings = async (req, res) => {
   try {
     const settings = await Setting.findOne();
     if (!settings) return res.status(404).json({ message: 'Settings not found' });
-    
+
     const updateData = {};
 
     const basicFields = ['app_name', 'app_description', 'app_email', 'support_email'];
     const emailFields = ['smtp_host', 'smtp_port', 'smtp_user', 'smtp_pass', 'mail_from_name', 'mail_from_email', 'mail_encryption'];
     const maintenanceFields = ['maintenance_mode', 'maintenance_title', 'maintenance_message', 'maintenance_image_url', 'maintenance_allowed_ips'];
-
-    const logoFields = ['favicon_url', 'logo_light_url', 'logo_dark_url', 'sidebar_logo_url', 'mobile_logo_url', 
-      'landing_logo_url', 'favicon_notification_logo_url', 'onboarding_logo_url'
+    const logoFields = [
+      'favicon_url', 'logo_light_url', 'logo_dark_url', 'sidebar_logo_url', 'mobile_logo_url',
+      'landing_logo_url', 'favicon_notification_logo_url', 'onboarding_logo_url',
     ];
-
     const pageFields = ['page_404_title', 'page_404_content', 'page_404_image_url', 'no_internet_title', 'no_internet_content', 'no_internet_image_url'];
-
-    const chatFields = ['default_theme_mode', 'display_customizer', 'audio_calls_enabled', 'video_calls_enabled', 'allow_voice_message', 
-      'allow_archive_chat', 'allow_media_send', 'allow_user_block', 'allow_user_signup', 'call_timeout_seconds', 'document_file_limit', 
-      'audio_file_limit', 'video_file_limit', 'image_file_limit', 'multiple_file_share_limit', 'maximum_message_length', 'allowed_file_upload_types', 
-      'auth_method' ,'login_method', 'allow_screen_share', 'time_format', 'allow_status', 'status_expiry_time', 'status_limit','sms_gateway', 
-      'e2e_encryption_enabled', 'svg_color', 'default_language'
+    const chatFields = [
+      'default_theme_mode', 'display_customizer', 'audio_calls_enabled', 'video_calls_enabled', 'allow_voice_message',
+      'allow_archive_chat', 'allow_media_send', 'allow_user_block', 'allow_user_signup', 'call_timeout_seconds',
+      'document_file_limit', 'audio_file_limit', 'video_file_limit', 'image_file_limit', 'multiple_file_share_limit',
+      'maximum_message_length', 'allowed_file_upload_types', 'auth_method', 'login_method', 'allow_screen_share',
+      'time_format', 'allow_status', 'status_expiry_time', 'status_limit', 'sms_gateway', 'e2e_encryption_enabled',
+      'svg_color', 'default_language',
     ];
-
     const sessionFields = ['session_expiration_days'];
     const extendedFields = ['max_groups_per_user', 'max_group_members'];
 
@@ -79,13 +78,7 @@ exports.updateSettings = async (req, res) => {
 
     allFields.forEach((field) => {
       if (req.body[field] !== undefined) {
-        if (field === 'maintenance_allowed_ips') {
-          try {
-            updateData[field] = Array.isArray(req.body[field]) ? req.body[field] : JSON.parse(req.body[field] || '[]');
-          } catch {
-            updateData[field] = [];
-          }
-        } else if (field === 'allowed_file_upload_types') {
+        if (field === 'maintenance_allowed_ips' || field === 'allowed_file_upload_types') {
           try {
             updateData[field] = Array.isArray(req.body[field]) ? req.body[field] : JSON.parse(req.body[field] || '[]');
           } catch {
@@ -98,8 +91,8 @@ exports.updateSettings = async (req, res) => {
     });
 
     Object.keys(fieldMap).forEach((uploadField) => {
-      const dbField = fieldMap[uploadField];
-      if (req.body[uploadField] == null || req.body[uploadField] === 'null') {
+      if (req.body[uploadField] === 'null' || req.body[uploadField] == null) {
+        const dbField = fieldMap[uploadField];
         if (settings[dbField]) {
           const oldPath = path.join(process.cwd(), settings[dbField]);
           if (fs.existsSync(oldPath)) fs.unlinkSync(oldPath);
@@ -123,26 +116,18 @@ exports.updateSettings = async (req, res) => {
     }
 
     const numericFields = [
-      'document_file_limit', 'audio_file_limit', 'video_file_limit', 'image_file_limit', 'multiple_file_share_limit', 
-      'maximum_message_length', 'call_timeout_seconds', 'session_expiration_days', 'max_groups_per_user', 'max_group_members'
+      'document_file_limit', 'audio_file_limit', 'video_file_limit', 'image_file_limit', 'multiple_file_share_limit',
+      'maximum_message_length', 'call_timeout_seconds', 'session_expiration_days', 'max_groups_per_user', 'max_group_members',
     ];
 
     numericFields.forEach((field) => {
       if (updateData[field] !== undefined) {
-        if (updateData[field] === '' || updateData[field] === null) {
-          updateData[field] = null;
-        } else {
-          updateData[field] = Number(updateData[field]);
-        }
+        updateData[field] = updateData[field] === '' || updateData[field] == null ? null : Number(updateData[field]);
       }
     });
 
-    if (updateData.status_expiry_time !== undefined) {
-      const val = Number(updateData.status_expiry_time);
-      if (val < 1 || val > 24) {
-        return res.status(400).json({ message: 'Status expiry time must be between 1 and 24 hours' });
-      }
-      updateData.status_expiry_time = val;
+    if (updateData.status_expiry_time !== undefined && (updateData.status_expiry_time < 1 || updateData.status_expiry_time > 24)) {
+      return res.status(400).json({ message: 'Status expiry time must be between 1 and 24 hours' });
     }
 
     if (updateData.smtp_port !== undefined && (updateData.smtp_port < 1 || updateData.smtp_port > 65535)) {
@@ -162,28 +147,20 @@ exports.updateSettings = async (req, res) => {
     }
 
     if (updateData.default_language) {
-      const defaultLang = updateData.default_language ?? settings.default_language;
-
-      const validLanguages = await Language.findAll({ where: { locale: defaultLang, is_active: true }});
-      const locales = validLanguages.map(l => l.locale);
-
-      if (!locales.includes(defaultLang)) {
-        return res.status(400).json({ message: 'Default language is invalid or inactive'});
+      const validLang = await Language.findOne({ locale: updateData.default_language, is_active: true });
+      if (!validLang) {
+        return res.status(400).json({ message: 'Default language is invalid or inactive' });
       }
     }
 
-    await settings.update(updateData);
+    await Setting.updateOne({}, { $set: updateData }, { upsert: true });
 
-    const updated = await Setting.findOne();
-    const { smtp_pass, ...safe } = updated.toJSON();
-    
+    const updated = await Setting.findOne().lean();
+    const { smtp_pass, ...safe } = updated;
+
     const io = req.app.get('io');
-    const members = await User.findAll({
-      where: { is_online: true },
-      attributes: ['id'],
-    });
-
-    members.forEach((user) => {
+    const onlineUsers = await User.find({ is_online: true }).select('id').lean();
+    onlineUsers.forEach((user) => {
       io.to(`user_${user.id}`).emit('admin-settings-updated', safe);
     });
 
@@ -195,21 +172,11 @@ exports.updateSettings = async (req, res) => {
     console.error('Error updating settings:', err);
 
     if (req.files) {
-      Object.keys(req.files).forEach((field) => {
-        req.files[field].forEach((file) => {
-          if (fs.existsSync(file.path)) fs.unlinkSync(file.path);
-        });
+      Object.values(req.files).flat().forEach((file) => {
+        if (fs.existsSync(file.path)) fs.unlinkSync(file.path);
       });
-    }
-
-    if (err.name === 'SequelizeValidationError') {
-      const errors = err.errors.map((e) => ({
-        field: e.path,
-        message: e.message,
-      }));
-      return res.status(400).json({ message: 'Validation error', errors });
     }
 
     res.status(500).json({ message: 'Internal Server Error' });
   }
-}; 
+};

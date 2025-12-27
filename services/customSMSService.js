@@ -31,27 +31,22 @@ const getGateway = async () => {
 const buildHeaders = (gateway) => {
   const headers = {};
   const customConfig = gateway.custom_config || {};
-  const auth = gateway.auth_type || [];
 
-  const hasSID = Array.isArray(auth) ? auth.includes('SID') : auth === 'SID';
-  const hasAuthToken = Array.isArray(auth) ? auth.includes('AUTH_TOKEN') : auth === 'AUTH_TOKEN';
-  const hasCustomKeys = Array.isArray(auth) ? auth.includes('CUSTOM_KEYS') : auth === 'CUSTOM_KEYS';
-
-  if (hasSID && hasAuthToken && gateway.account_sid && gateway.auth_token) {
-    const authString = Buffer.from(`${gateway.account_sid}:${gateway.auth_token}`).toString('base64');
-    headers['Authorization'] = `Basic ${authString}`;
+  if (gateway.account_sid && gateway.auth_token) {
+    headers.Authorization = `Basic ${Buffer
+      .from(`${gateway.account_sid}:${gateway.auth_token}`)
+      .toString('base64')}`;
   }
 
-  if (hasCustomKeys && customConfig.headers) {
-    customConfig.headers.forEach((header) => {
-      if (header.key && header.value) {
-        headers[header.key] = header.value;
-      }
+  if (customConfig.headers?.length) {
+    customConfig.headers.forEach(h => {
+      if (h.key && h.value) headers[h.key] = h.value;
     });
   }
 
   return headers;
 };
+
 
 const buildBody = (gateway, to, message) => {
   const customConfig = gateway.custom_config || {};
@@ -72,35 +67,40 @@ const buildBody = (gateway, to, message) => {
     }
 
     return body;
-  } else {
-    const formData = new URLSearchParams();
-
-    formData.append(fieldMappings.to_field || 'To', to);
-    formData.append(fieldMappings.message_field || 'Body', message);
-    formData.append(fieldMappings.from_field || 'From', gateway.from_number);
-
-    if (customConfig.body_fields) {
-      customConfig.body_fields.forEach((field) => {
-        if (field.key) formData.append(field.key, field.value);
-      });
-    }
-
-    return formData.toString();
   }
+
+  const formData = new URLSearchParams();
+
+  formData.append(fieldMappings.to_field || 'To', to);
+  formData.append(fieldMappings.message_field || 'Body', message);
+  formData.append(fieldMappings.from_field || 'From', gateway.from_number);
+
+  if (customConfig.body_fields) {
+    customConfig.body_fields.forEach((field) => {
+      if (field.key) formData.append(field.key, field.value);
+    });
+  }
+
+  return formData;
 };
 
 const buildRequestConfig = (gateway, to, message) => {
   const headers = buildHeaders(gateway);
   const data = buildBody(gateway, to, message);
 
+  const isFormData = data instanceof URLSearchParams;
+
   return {
     method: gateway.method || 'POST',
     url: gateway.base_url,
     headers: {
       ...headers,
-      ...(data instanceof URLSearchParams ? { 'Content-Type': 'application/x-www-form-urlencoded' } : {}),
+      ...(isFormData ? { 'Content-Type': 'application/x-www-form-urlencoded' } : {
+        'Content-Type': 'application/json'
+      }),
+      Accept: 'application/json'
     },
-    data,
+    data: isFormData ? data.toString() : data,
     timeout: 10000,
   };
 };

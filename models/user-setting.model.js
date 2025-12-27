@@ -111,8 +111,20 @@ const UserSettingSchema = new Schema(
       required: true 
     },
     locked_chat_ids: {
-      type: [Schema.Types.ObjectId], 
-      default: null 
+      type: [
+        {
+          type: {
+            type: String,
+            enum: ['user', 'group', 'broadcast', 'announcement'],
+            required: true
+          },
+          id: {
+            type: Schema.Types.ObjectId,
+            required: true
+          }
+        }
+      ],
+      default: []
     },
     chat_lock_digit: { 
       type: Number, 
