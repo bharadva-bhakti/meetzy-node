@@ -49,10 +49,6 @@ exports.createFaq = async (req, res) => {
     }
 
     const trimmedTitle = title.trim();
-    const existing = await Faq.findOne({ title: { $regex: `^${trimmedTitle}$`, $options: 'i' } });
-    if (existing) {
-      return res.status(400).json({ message: 'FAQ with this title already exists.' });
-    }
 
     const faq = await Faq.create({
       title: trimmedTitle,
@@ -63,6 +59,13 @@ exports.createFaq = async (req, res) => {
     res.status(201).json({ message: 'FAQ created successfully', faq });
   } catch (error) {
     console.error('Error in createFaq:', error);
+
+    if (error.code === 11000) {
+      return res.status(400).json({ 
+        message: 'FAQ with this title already exists.' 
+      });
+    }
+
     return res.status(500).json({ message: 'Internal server error' });
   }
 };
@@ -72,34 +75,55 @@ exports.updateFaq = async (req, res) => {
   const { title, description, status } = req.body;
 
   try {
-    if (!id) return res.status(400).json({ message: 'Id is required.' });
+    if (!id) {
+      return res.status(400).json({ message: 'FAQ ID is required.' });
+    }
 
     const faq = await Faq.findById(id);
-    if (!faq) return res.status(404).json({ message: 'Faq not found.' });
+    if (!faq) {
+      return res.status(404).json({ message: 'FAQ not found.' });
+    }
 
     if (!title || !description) {
       return res.status(400).json({ message: 'Title and description are required.' });
     }
 
     const trimmedTitle = title.trim();
-    const existingFaq = await Faq.findOne({
-      title: { $regex: `^${trimmedTitle}$`, $options: 'i' },
-      _id: { $ne: id },
-    });
-    if (existingFaq) {
-      return res.status(409).json({ message: 'FAQ with this title already exists' });
+    if (trimmedTitle !== faq.title) {
+      const existingFaq = await Faq.findOne({
+        title: { $regex: `^${trimmedTitle}$`, $options: 'i' },
+        _id: { $ne: id },
+      });
+
+      if (existingFaq) {
+        return res.status(409).json({ message: 'FAQ with this title already exists.' });
+      }
     }
 
-    await faq.updateOne({
-      title: trimmedTitle,
-      description: description.trim(),
-      status,
-    });
+    await Faq.updateOne(
+      { _id: id },
+      {
+        $set: {
+          title: trimmedTitle,
+          description: description.trim(),
+          status: status !== undefined ? Boolean(status) : faq.status,
+        },
+      }
+    );
 
-    const updatedFaq = await Faq.findById(id);
-    return res.status(200).json({ message: 'FAQ updated successfully', faq: updatedFaq });
+    const updatedFaq = await Faq.findById(id).lean();
+
+    return res.status(200).json({
+      message: 'FAQ updated successfully',
+      faq: updatedFaq,
+    });
   } catch (error) {
     console.error('Error in updateFaq:', error);
+
+    if (error.code === 11000) {
+      return res.status(409).json({ message: 'FAQ with this title already exists.' });
+    }
+
     return res.status(500).json({ message: 'Internal server error' });
   }
 };

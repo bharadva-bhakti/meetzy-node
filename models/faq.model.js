@@ -5,7 +5,7 @@ const FaqSchema = new Schema(
   {
     title: { 
       type: String, 
-      required: true, unique: true 
+      required: true
     },
     description: { 
       type: String, 
@@ -21,5 +21,10 @@ const FaqSchema = new Schema(
     timestamps: { createdAt: 'created_at', updatedAt: 'updated_at' },
   }
 );
+
+FaqSchema.index({ title: 1 }, { 
+  unique: true, 
+  collation: { locale: 'en', strength: 2 }
+});
 
 module.exports = mongoose.model('Faq', FaqSchema);
