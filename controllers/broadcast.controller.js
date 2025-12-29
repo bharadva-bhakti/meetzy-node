@@ -1,9 +1,48 @@
-const { Broadcast, BroadcastMember, User, Block, Message } = require('../models');
-const { Op } = require('sequelize');
+const { db } = require('../models');
+const Broadcast = db.Broadcast;
+const BroadcastMember = db.BroadcastMember;
+const User = db.User;
+const Block = db.Block;
+const Message = db.Message;
+const mongoose = require('mongoose');
 const { getEffectiveLimits } = require('../utils/userLimits');
 
+const fetchBroadcastWithRecipients = async (broadcastId) => {
+  const result = await Broadcast.aggregate([
+    { $match: { _id: new mongoose.Types.ObjectId(broadcastId) } },
+    { $lookup: { from: 'broadcast_members', localField: '_id', foreignField: 'broadcast_id', as: 'recipients'},},
+    { $lookup: { from: User.collection.name, localField: 'recipients.recipient_id', foreignField: '_id', as: 'recipientUsers',},},
+    {
+      $addFields: {
+        recipients: {
+          $map: {
+            input: '$recipients',
+            as: 'member',
+            in: {
+              $let: {
+                vars: {
+                  matchedUser: {
+                    $arrayElemAt: [
+                      { $filter: { input: '$recipientUsers', as: 'u', cond: { $eq: ['$$u._id', '$$member.recipient_id'] }}},
+                      0,
+                    ],
+                  },
+                },
+                in: { id: '$$matchedUser._id', name: '$$matchedUser.name', avatar: '$$matchedUser.avatar' },
+              },
+            },
+          },
+        },
+      },
+    },
+    { $project: { id: '$_id', _id: 0, name: 1, created_at: 1, updated_at: 1, recipients: 1, }},
+  ]);
+
+  return result[0] || null;
+};
+
 exports.createBroadcast = async (req, res) => {
-  const creator_id = req.user.id;
+  const creator_id = req.user._id;
   const { name, recipient_ids } = req.body;
 
   try {
@@ -16,7 +55,7 @@ exports.createBroadcast = async (req, res) => {
     }
 
     const limits = await getEffectiveLimits(creator_id, req.user.role);
-    const currentCount = await Broadcast.count({ where: { creator_id } });
+    const currentCount = await Broadcast.countDocuments({ creator_id });
 
     if (currentCount >= limits.max_broadcasts_list) {
       return res.status(400).json({
@@ -24,46 +63,47 @@ exports.createBroadcast = async (req, res) => {
       });
     }
 
-    const validRecipients = await User.findAll({
-      where: { id: { [Op.in]: recipient_ids }, status: 'active' },
-      attributes: ['id']
-    });
+    const recipientObjectIds = recipient_ids.map(id => new mongoose.Types.ObjectId(id));
 
+    const validRecipients = await User.find({ _id: { $in: recipientObjectIds }, status: 'active'}).select('_id').lean();
     if (validRecipients.length === 0) {
       return res.status(400).json({ message: 'No valid recipients found.' });
     }
 
-    const validRecipientIds = validRecipients.map(u => u.id);
+    const validRecipientIds = validRecipients.map(u => u._id);
 
-    const blocks = await Block.findAll({
-      where: {
-        [Op.or]: [
-          { blocker_id: creator_id, blocked_id: { [Op.in]: validRecipientIds } },
-          { blocker_id: { [Op.in]: validRecipientIds }, blocked_id: creator_id }
-        ]
-      }
-    });
+    const blocks = await Block.find({
+      $or: [
+        { blocker_id: creator_id, blocked_id: { $in: validRecipientIds } },
+        { blocker_id: { $in: validRecipientIds }, blocked_id: creator_id },
+      ],
+    }).lean();
 
     const blockedUserIds = new Set();
     blocks.forEach(block => {
-      const blockedId = block.blocker_id === creator_id ? block.blocked_id : block.blocker_id;
-      blockedUserIds.add(blockedId);
+      const blockedId = block.blocker_id.toString() === creator_id.toString()
+        ? block.blocked_id
+        : block.blocker_id;
+      blockedUserIds.add(blockedId.toString());
     });
 
-    const finalRecipientIds = validRecipientIds.filter(id => !blockedUserIds.has(id));
+    const finalRecipientIds = validRecipientIds.filter(id => !blockedUserIds.has(id.toString()));
 
     if (finalRecipientIds.length === 0) {
       return res.status(400).json({ message: 'All recipients are blocked or invalid.' });
     }
 
-    const broadcast = await Broadcast.create({ creator_id, name: name.trim(),});
+    const broadcast = await Broadcast.create({
+      creator_id,
+      name: name.trim(),
+    });
 
     const recipientRecords = finalRecipientIds.map(recipient_id => ({
-      broadcast_id: broadcast.id,
-      recipient_id
+      broadcast_id: broadcast._id,
+      recipient_id,
     }));
 
-    await BroadcastMember.bulkCreate(recipientRecords);
+    await BroadcastMember.insertMany(recipientRecords);
 
     await Message.create({
       sender_id: creator_id,
@@ -74,23 +114,19 @@ exports.createBroadcast = async (req, res) => {
       metadata: {
         system_action: 'broadcast_created',
         is_broadcast: true,
-        broadcast_id: broadcast.id,
+        broadcast_id: broadcast._id,
         broadcast_name: name,
         recipient_count: finalRecipientIds.length,
-        visible_to: creator_id
-      }
+        visible_to: creator_id,
+      },
     });
 
-    const fullBroadcast = await Broadcast.findByPk(broadcast.id, {
-      include: [{
-        model: BroadcastMember,
-        as: 'recipients',
-        include: [{ model: User, as: 'recipient', attributes: ['id', 'name', 'avatar']}]
-      }]
-    });
+    const fullBroadcast = await fetchBroadcastWithRecipients(broadcast._id);
 
     const io = req.app.get('io');
-    io.to(`user_${creator_id}`).emit('broadcast-created', { broadcast: fullBroadcast });
+    if (io) {
+      io.to(`user_${creator_id}`).emit('broadcast-created', { broadcast: fullBroadcast });
+    }
 
     return res.status(201).json({
       message: 'Broadcast list created successfully.',
@@ -98,9 +134,9 @@ exports.createBroadcast = async (req, res) => {
         id: fullBroadcast.id,
         name: fullBroadcast.name,
         recipient_count: fullBroadcast.recipients.length,
-        recipients: fullBroadcast.recipients.map(r => r.recipient),
-        created_at: fullBroadcast.created_at
-      }
+        recipients: fullBroadcast.recipients,
+        created_at: fullBroadcast.created_at,
+      },
     });
   } catch (error) {
     console.error('Error in createBroadcast:', error);
@@ -109,42 +145,68 @@ exports.createBroadcast = async (req, res) => {
 };
 
 exports.getMyBroadcasts = async (req, res) => {
-  const creator_id = req.user.id;
-  const { page = 1, limit = 20 } = req.query;
-  const offset = (page - 1) * limit;
+  const creator_id = req.user._id;
+  const page = parseInt(req.query.page) || 1;
+  const limit = parseInt(req.query.limit) || 20;
+  const skip = (page - 1) * limit;
 
   try {
-    const { rows: broadcasts, count: total } = await Broadcast.findAndCountAll({
-      where: { creator_id},
-      include: [{
-        model: BroadcastMember,
-        as: 'recipients',
-        include: [{ model: User, as: 'recipient', attributes: ['id', 'name', 'avatar']}]
-      }],
-      order: [['created_at', 'DESC']],
-      limit: parseInt(limit),
-      offset: parseInt(offset)
-    });
+    const [total, broadcasts] = await Promise.all([
+      Broadcast.countDocuments({ creator_id }),
+      Broadcast.aggregate([
+        { $match: { creator_id } },
+        { $sort: { created_at: -1 } },
+        { $skip: skip },
+        { $limit: limit },
+        { $lookup: { from: 'broadcast_members', localField: '_id', foreignField: 'broadcast_id', as: 'recipients' } },
+        { $lookup: {from: User.collection.name,localField: 'recipients.recipient_id',foreignField: '_id',as: 'recipientUsers',}},
+        {
+          $addFields: {
+            recipients: {
+              $map: {
+                input: '$recipients',
+                as: 'member',
+                in: {
+                  $let: {
+                    vars: {
+                      matchedUser: {
+                        $arrayElemAt: [
+                          { $filter: {input: '$recipientUsers',as: 'u',cond: { $eq: ['$$u._id', '$$member.recipient_id'] }}},
+                          0,
+                        ],
+                      },
+                    },
+                    in: {
+                      id: '$$matchedUser._id',
+                      name: '$$matchedUser.name',
+                      avatar: '$$matchedUser.avatar',
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+        {
+          $project: {
+            id: '$_id',
+            _id: 0,
+            name: 1,
+            created_at: 1,
+            updated_at: 1,
+            recipients: 1,
+          },
+        },
+      ]),
+    ]);
 
-    const formattedBroadcasts = broadcasts.map(broadcast => ({
-      id: broadcast.id,
-      name: broadcast.name,
-      recipient_count: broadcast.recipients.length,
-      recipients: broadcast.recipients.map(r => r.recipient),
-      created_at: broadcast.created_at,
-      updated_at: broadcast.updated_at
-    }));
+    const totalPages = Math.ceil(total / limit);
+    const hasMore = page < totalPages;
 
     return res.json({
       message: 'Broadcasts fetched successfully.',
-      data: formattedBroadcasts,
-      pagination: {
-        page: parseInt(page),
-        limit: parseInt(limit),
-        total,
-        totalPages: Math.ceil(total / limit),
-        hasMore: page < Math.ceil(total / limit)
-      }
+      data: broadcasts,
+      pagination: { page, limit, total, totalPages, hasMore },
     });
   } catch (error) {
     console.error('Error in getMyBroadcasts:', error);
@@ -153,23 +215,21 @@ exports.getMyBroadcasts = async (req, res) => {
 };
 
 exports.updateBroadcast = async (req, res) => {
-  const creator_id = req.user.id;
+  const creator_id = req.user._id;
   const { broadcast_id } = req.params;
   const { name } = req.body;
 
   try {
-    const broadcast = await Broadcast.findOne({ where: { id: broadcast_id, creator_id }});
+    const broadcast = await Broadcast.findOne({ _id: broadcast_id, creator_id });
     if (!broadcast) {
       return res.status(404).json({ message: 'Broadcast list not found.' });
     }
 
     const oldName = broadcast.name;
-    const updateData = {};
-    if (name) updateData.name = name.trim();
+    if (name && name.trim() !== oldName) {
+      broadcast.name = name.trim();
+      await broadcast.save();
 
-    await broadcast.update(updateData);
-
-    if (name && name !== oldName) {
       await Message.create({
         sender_id: creator_id,
         recipient_id: null,
@@ -178,18 +238,20 @@ exports.updateBroadcast = async (req, res) => {
         message_type: 'system',
         metadata: {
           system_action: 'broadcast_updated',
-          broadcast_id: broadcast.id,
+          broadcast_id: broadcast._id,
           old_name: oldName,
           new_name: name,
-          visible_to: creator_id
-        }
+          visible_to: creator_id,
+        },
       });
 
       const io = req.app.get('io');
-      io.to(`user_${creator_id}`).emit('broadcast-updated', {
-        broadcast_id: broadcast.id,
-        name: name
-      });
+      if (io) {
+        io.to(`user_${creator_id}`).emit('broadcast-updated', {
+          broadcast_id: broadcast._id,
+          name: name,
+        });
+      }
     }
 
     return res.json({ message: 'Broadcast list updated successfully.', broadcast });
@@ -200,23 +262,26 @@ exports.updateBroadcast = async (req, res) => {
 };
 
 exports.deleteBroadcast = async (req, res) => {
-  const creator_id = req.user.id;
+  const creator_id = req.user._id;
   const { broadcast_id } = req.params;
 
   try {
-    const broadcast = await Broadcast.findOne({ where: { id: broadcast_id, creator_id }});
+    const broadcast = await Broadcast.findOne({ _id: broadcast_id, creator_id });
     if (!broadcast) {
       return res.status(404).json({ message: 'Broadcast list not found.' });
     }
 
-    await broadcast.destroy();
+    await BroadcastMember.deleteMany({ broadcast_id: broadcast._id });
+    await Broadcast.deleteOne({ _id: broadcast_id });
 
     const io = req.app.get('io');
-    io.to(`user_${creator_id}`).emit('broadcast-deleted', {
-      broadcast_id: broadcast.id
-    });
+    if (io) {
+      io.to(`user_${creator_id}`).emit('broadcast-deleted', {
+        broadcast_id: broadcast._id,
+      });
+    }
 
-    return res.json({ message: 'Broadcast list deleted successfully.'});
+    return res.json({ message: 'Broadcast list deleted successfully.' });
   } catch (error) {
     console.error('Error in deleteBroadcast:', error);
     return res.status(500).json({ message: 'Internal server error' });
@@ -224,7 +289,7 @@ exports.deleteBroadcast = async (req, res) => {
 };
 
 exports.addRecipients = async (req, res) => {
-  const creator_id = req.user.id;
+  const creator_id = req.user._id;
   const { broadcast_id } = req.params;
   const { recipient_ids } = req.body;
 
@@ -233,21 +298,18 @@ exports.addRecipients = async (req, res) => {
       return res.status(400).json({ message: 'Recipient IDs are required.' });
     }
 
-    const broadcast = await Broadcast.findOne({ where: { id: broadcast_id, creator_id }});
+    const broadcast = await Broadcast.findOne({ _id: broadcast_id, creator_id });
     if (!broadcast) {
       return res.status(404).json({ message: 'Broadcast list not found.' });
     }
 
     const limits = await getEffectiveLimits(creator_id, req.user.role);
-    
-    const currentRecipientCount = await BroadcastMember.count({ where: { broadcast_id }});
+    const currentRecipientCount = await BroadcastMember.countDocuments({ broadcast_id });
 
-    const existingRecipients = await BroadcastMember.findAll({
-      where: { broadcast_id }, attributes: ['recipient_id']
-    });
+    const existingMembers = await BroadcastMember.find({ broadcast_id }).select('recipient_id').lean();
+    const existingIds = new Set(existingMembers.map(m => m.recipient_id.toString()));
 
-    const existingIds = new Set(existingRecipients.map(r => r.recipient_id));
-    const newRecipientIds = recipient_ids.filter(id => !existingIds.has(id));
+    const newRecipientIds = recipient_ids.filter(id => !existingIds.has(id.toString()));
 
     if (newRecipientIds.length === 0) {
       return res.status(400).json({ message: 'All recipients are already in the list.' });
@@ -259,48 +321,44 @@ exports.addRecipients = async (req, res) => {
       });
     }
 
-    const validRecipients = await User.findAll({
-      where: { id: { [Op.in]: newRecipientIds }, status: 'active' },
-      attributes: ['id', 'name']
-    });
+    const recipientObjectIds = newRecipientIds.map(id => new mongoose.Types.ObjectId(id));
 
-    const validIds = validRecipients.map(u => u.id);
+    const validRecipients = await User.find({
+      _id: { $in: recipientObjectIds },
+      status: 'active',
+    }).select('_id name').lean();
 
-    const blocks = await Block.findAll({
-      where: {
-        [Op.or]: [
-          { blocker_id: creator_id, blocked_id: { [Op.in]: validIds } },
-          { blocker_id: { [Op.in]: validIds }, blocked_id: creator_id }
-        ]
-      }
-    });
+    const validIds = validRecipients.map(u => u._id);
+
+    const blocks = await Block.find({
+      $or: [
+        { blocker_id: creator_id, blocked_id: { $in: validIds } },
+        { blocker_id: { $in: validIds }, blocked_id: creator_id },
+      ],
+    }).lean();
 
     const blockedUserIds = new Set();
     blocks.forEach(block => {
-      const blockedId = block.blocker_id === creator_id ? block.blocked_id : block.blocker_id;
-      blockedUserIds.add(blockedId);
+      const blockedId = block.blocker_id.toString() === creator_id.toString()
+        ? block.blocked_id
+        : block.blocker_id;
+      blockedUserIds.add(blockedId.toString());
     });
 
-    const finalRecipientIds = validIds.filter(id => !blockedUserIds.has(id));
+    const finalRecipientIds = validIds.filter(id => !blockedUserIds.has(id.toString()));
 
     if (finalRecipientIds.length === 0) {
       return res.status(400).json({ message: 'No valid recipients to add.' });
     }
 
-    const newTotal = currentRecipientCount + finalRecipientIds.length;
-    if (newTotal > limits.max_members_per_broadcasts_list) {
-      return res.status(400).json({
-        message: `Cannot add recipients: would exceed limit of ${limits.max_members_per_broadcasts_list} members per broadcast list.`,
-      });
-    }
-
     const recipientRecords = finalRecipientIds.map(recipient_id => ({
-      broadcast_id, recipient_id
+      broadcast_id: broadcast._id,
+      recipient_id,
     }));
 
-    await BroadcastMember.bulkCreate(recipientRecords);
+    await BroadcastMember.insertMany(recipientRecords);
 
-    const addedUsers = validRecipients.filter(u => finalRecipientIds.includes(u.id));
+    const addedUsers = validRecipients.filter(u => finalRecipientIds.includes(u._id));
     const addedNames = addedUsers.map(u => u.name).join(', ');
 
     await Message.create({
@@ -311,33 +369,29 @@ exports.addRecipients = async (req, res) => {
       message_type: 'system',
       metadata: {
         system_action: 'broadcast_recipients_added',
-        broadcast_id: broadcast.id,
+        broadcast_id: broadcast._id,
         broadcast_name: broadcast.name,
         added_count: finalRecipientIds.length,
         added_users: addedNames,
         visible_to: creator_id,
-        is_broadcast: true
-      }
+        is_broadcast: true,
+      },
     });
 
-    const updatedBroadcast = await Broadcast.findByPk(broadcast.id, {
-      include: [{
-        model: BroadcastMember,
-        as: 'recipients',
-        include: [{ model: User, as: 'recipient', attributes: ['id', 'name', 'avatar']}]
-      }]
-    });
+    const updatedBroadcast = await fetchBroadcastWithRecipients(broadcast._id);
 
     const io = req.app.get('io');
-    io.to(`user_${creator_id}`).emit('broadcast-recipients-added', {
-      broadcast_id: broadcast.id,
-      added_count: finalRecipientIds.length,
-      recipients: updatedBroadcast.recipients.map(r => r.recipient)
-    });
+    if (io) {
+      io.to(`user_${creator_id}`).emit('broadcast-recipients-added', {
+        broadcast_id: broadcast._id,
+        added_count: finalRecipientIds.length,
+        recipients: updatedBroadcast.recipients,
+      });
+    }
 
     return res.json({
       message: `${finalRecipientIds.length} recipient(s) added successfully.`,
-      added_count: finalRecipientIds.length
+      added_count: finalRecipientIds.length,
     });
   } catch (error) {
     console.error('Error in addRecipients:', error);
@@ -346,7 +400,7 @@ exports.addRecipients = async (req, res) => {
 };
 
 exports.removeRecipients = async (req, res) => {
-  const creator_id = req.user.id;
+  const creator_id = req.user._id;
   const { broadcast_id } = req.params;
   const { recipient_ids } = req.body;
 
@@ -355,24 +409,25 @@ exports.removeRecipients = async (req, res) => {
       return res.status(400).json({ message: 'Recipient IDs are required.' });
     }
 
-    const broadcast = await Broadcast.findOne({ where: { id: broadcast_id, creator_id }});
+    const broadcast = await Broadcast.findOne({ _id: broadcast_id, creator_id });
     if (!broadcast) {
       return res.status(404).json({ message: 'Broadcast list not found.' });
     }
 
-    const removedUsers = await User.findAll({
-      where: { id: { [Op.in]: recipient_ids } },
-      attributes: ['id', 'name']
-    });
+    const recipientObjectIds = recipient_ids.map(id => new mongoose.Types.ObjectId(id));
 
-    const deletedCount = await BroadcastMember.destroy({
-      where: { broadcast_id, recipient_id: { [Op.in]: recipient_ids }}
+    const removedUsers = await User.find({
+      _id: { $in: recipientObjectIds },
+    }).select('_id name').lean();
+
+    const { deletedCount } = await BroadcastMember.deleteMany({
+      broadcast_id: broadcast._id,
+      recipient_id: { $in: recipientObjectIds },
     });
 
     if (deletedCount > 0) {
       const removedNames = removedUsers.map(u => u.name).join(', ');
 
-      // Create system message for removing recipients
       await Message.create({
         sender_id: creator_id,
         recipient_id: null,
@@ -381,34 +436,30 @@ exports.removeRecipients = async (req, res) => {
         message_type: 'system',
         metadata: {
           system_action: 'broadcast_recipients_removed',
-          broadcast_id: broadcast.id,
+          broadcast_id: broadcast._id,
           broadcast_name: broadcast.name,
           removed_count: deletedCount,
           removed_users: removedNames,
           visible_to: creator_id,
-          is_broadcast: true
-        }
+          is_broadcast: true,
+        },
       });
 
-      const updatedBroadcast = await Broadcast.findByPk(broadcast.id, {
-        include: [{
-          model: BroadcastMember,
-          as: 'recipients',
-          include: [{ model: User, as: 'recipient', attributes: ['id', 'name', 'avatar']}]
-        }]
-      });
+      const updatedBroadcast = await fetchBroadcastWithRecipients(broadcast._id);
 
       const io = req.app.get('io');
-      io.to(`user_${creator_id}`).emit('broadcast-recipients-removed', {
-        broadcast_id: broadcast.id,
-        removed_count: deletedCount,
-        recipients: updatedBroadcast.recipients.map(r => r.recipient)
-      });
+      if (io) {
+        io.to(`user_${creator_id}`).emit('broadcast-recipients-removed', {
+          broadcast_id: broadcast._id,
+          removed_count: deletedCount,
+          recipients: updatedBroadcast.recipients,
+        });
+      }
     }
 
     return res.json({
       message: `${deletedCount} recipient(s) removed successfully.`,
-      removed_count: deletedCount
+      removed_count: deletedCount,
     });
   } catch (error) {
     console.error('Error in removeRecipients:', error);

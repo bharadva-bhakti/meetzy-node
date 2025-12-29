@@ -53,7 +53,7 @@ const smsGatewayRoutes = require('./routes/sms-gateway.routes');
 // const userVerificationRoutes = require('./routes/user-verification.routes');
 // const subscriptionRoutes = require('./routes/subscription.routes');
 // const announcementRoutes = require('./routes/announcement.routes');
-// const broadcastRoutes = require('./routes/broadcast.routes');
+const broadcastRoutes = require('./routes/broadcast.routes');
 // const languageRoutes = require('./routes/language.routes');
 
 app.get('/api/demo', (req, res) => {
@@ -89,7 +89,7 @@ app.use('/api/gateway', smsGatewayRoutes);
 // app.use('/api/plan', planRoutes);
 // app.use('/api/subscription', subscriptionRoutes);
 // app.use('/api/announcement', announcementRoutes);
-// app.use('/api/broadcast', broadcastRoutes);
+app.use('/api/broadcast', broadcastRoutes);
 // app.use('/api/language', languageRoutes);
 
 module.exports = app;

@@ -1,6 +1,3 @@
-// utils/userLimits.js
-'use strict';
-
 const { db } = require('../models');
 const Setting = db.Setting;
 const Subscription = db.Subscription;
