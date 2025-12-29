@@ -27,7 +27,7 @@ app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
 const authRoutes = require('./routes/auth.routes');
 const authController = require('./controllers/auth.controller');
-// const accountRoutes = require('./routes/account.routes');
+const accountRoutes = require('./routes/account.routes');
 const userRoutes = require('./routes/user.routes');
 const groupRoutes = require('./routes/group.routes');
 // const messageRoutes = require('./routes/message.routes');
@@ -63,7 +63,7 @@ app.get('/api/demo', (req, res) => {
 // app.get('/auth/google/callback', authController.saveToken);
 app.post('/api/send-test-email', authController.sendTestMail);
 app.use('/api/auth', authRoutes);
-// app.use('/api/account', accountRoutes);
+app.use('/api/account', accountRoutes);
 app.use('/api/user', userRoutes);
 app.use('/api/group', groupRoutes);
 // app.use('/api/message',messageRoutes);
