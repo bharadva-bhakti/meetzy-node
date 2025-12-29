@@ -19,17 +19,28 @@ exports.fetchNotifications = async (req, res) => {
   try {
     const [notifications, total] = await Promise.all([
       Notification.find({ user_id: currentUserId })
-        .populate('from_user', 'id name avatar').sort({ created_at: -1 }).skip(skip).limit(parseInt(limit)),
+        .populate('from_user_id', 'id name avatar').sort({ created_at: -1 }).skip(skip).limit(parseInt(limit)),
       Notification.countDocuments({ user_id: currentUserId }),
     ]);
 
     const enriched = await Promise.all(
       notifications.map(async (not) => {
-        if (not.from_user) {
-          const isFriend = await isFriendWith(currentUserId, not.from_user.id);
-          return { ...not, from_user: { ...not.from_user, is_friend: isFriend },};
+        if (!not.from_user_id) {
+          return not.toObject();
         }
-        return not;
+
+        const isFriend = await isFriendWith(
+          currentUserId,
+          not.from_user_id.id
+        );
+
+        return {
+          ...not.toObject(),
+          from_user: {
+            ...not.from_user_id.toObject(),
+            is_friend: isFriend,
+          },
+        };
       })
     );
 
@@ -37,7 +48,7 @@ exports.fetchNotifications = async (req, res) => {
     const hasMore = page < totalPages;
 
     res.status(200).json({
-      notifications: enriched.filter(n => n.from_user?.is_friend === false),
+      notifications: enriched,
       currentPage: parseInt(page),
       totalPages,
       totalCount: total,

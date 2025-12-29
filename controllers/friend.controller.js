@@ -2,6 +2,7 @@ const { db } = require('../models');
 const User = db.User;
 const Friend = db.Friend;
 const Notification = db.Notification;
+const UserSetting = db.UserSetting;
 const { fetchFriendSuggestions } = require('../helper/chatHelpers');
 
 exports.getFriendSuggestions = async (req, res) => {
@@ -26,9 +27,7 @@ exports.getPendingRequests = async (req, res) => {
     const pendingRequests = await Friend.find({
       friend_id: currentUserId,
       status: 'pending',
-    })
-      .populate('requested', 'id bio name avatar email')
-      .sort({ created_at: -1 });
+    }).populate('requested_by', 'id bio name avatar email').sort({ created_at: -1 });
 
     const requestedUserIds = pendingRequests.map(req => req.requested?.id).filter(Boolean);
     const userSettings = await UserSetting.find({ user_id: { $in: requestedUserIds } })
@@ -45,10 +44,7 @@ exports.getPendingRequests = async (req, res) => {
 
       return {
         ...req,
-        requested: {
-          ...requestedUser,
-          avatar,
-        },
+        requested: {...requestedUser,avatar,},
       };
     });
 
@@ -144,7 +140,7 @@ exports.respondToFriendRequest = async (req, res) => {
       requested_by: requestId,
       friend_id: currentUserId,
       status: 'pending',
-    }).populate('requested', 'id name bio avatar');
+    }).populate('requested_by', 'id name bio avatar');
 
     if (!friendRequest) {
       return res.status(404).json({ message: 'Friend request not found.' });
@@ -163,7 +159,7 @@ exports.respondToFriendRequest = async (req, res) => {
         {
           type: 'friend_rejected',
           title: 'You rejected a friend request',
-          message: `You rejected ${friendRequest.requested.name}'s friend request.`,
+          message: `You rejected ${friendRequest.requested_by.name}'s friend request.`,
           is_read: true,
           read_at: new Date(),
         }
