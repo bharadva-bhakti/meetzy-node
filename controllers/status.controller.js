@@ -1,5 +1,14 @@
-const { User, Status, Message, MessageStatus, StatusView, Friend, Block, MutedStatus, UserSetting, Setting, Group, sequelize } = require('../models');
-const { Op } = require('sequelize');
+const { db } = require('../models');
+const Status = db.Status;
+const StatusView = db.StatusView;
+const Friend = db.Friend;
+const Block = db.Block;
+const MutedStatus = db.MutedStatus;
+const UserSetting = db.UserSetting;
+const Setting = db.Setting;
+const Message = db.Message;
+const MessageStatus = db.MessageStatus;
+const User = db.User;
 const fs = require('fs');
 const path = require('path');
 const { getEffectiveLimits } = require('../utils/userLimits');
@@ -21,43 +30,39 @@ function timeAgo(date) {
 }
 
 exports.getStatusFeed = async (req, res) => {
-  const user_id = req.user.id;
+  const user_id = req.user._id;
   const now = new Date();
 
   try {
-    const friends = await Friend.findAll({
-      where: {
-        [Op.or]: [
-          { user_id, status: 'accepted' },
-          { friend_id: user_id, status: 'accepted' },
-        ],
-      },
-      attributes: ['user_id', 'friend_id'],
-    });
+    // Get friends
+    const friends = await Friend.find({
+      $or: [
+        { user_id, status: 'accepted' },
+        { friend_id: user_id, status: 'accepted' },
+      ],
+    }).lean();
 
-    const friendIds = friends.map((f) => (f.user_id === user_id ? f.friend_id : f.user_id));
+    const friendIds = friends.map(f => (f.user_id.toString() === user_id.toString() ? f.friend_id : f.user_id));
 
-    const blocks = await Block.findAll({
-      where: { [Op.or]: [{ blocker_id: user_id }, { blocked_id: user_id }] },
-      attributes: ['blocker_id', 'blocked_id'],
-    });
-    const blockedIds = blocks.map((b) => (b.blocker_id === user_id ? b.blocked_id : b.blocker_id));
+    // Get blocked users
+    const blocks = await Block.find({
+      $or: [{ blocker_id: user_id }, { blocked_id: user_id }],
+    }).lean();
 
-    const visibleFriendIds = friendIds.filter((id) => !blockedIds.includes(id));
+    const blockedIds = blocks.map(b => (b.blocker_id.toString() === user_id.toString() ? b.blocked_id : b.blocker_id));
 
-    const settings = await UserSetting.findAll({
-      where: {
-        user_id: { [Op.in]: [user_id, ...visibleFriendIds] },
-      },
-      attributes: ['user_id', 'status_privacy', 'shared_with'],
-    });
+    const visibleFriendIds = friendIds.filter(id => !blockedIds.includes(id.toString()));
 
-    const systemSettings = await Setting.findOne({ attributes: ['app_name'], raw: true });
+    // Get privacy settings
+    const settings = await UserSetting.find({
+      user_id: { $in: [user_id, ...visibleFriendIds] },
+    }).select('user_id status_privacy shared_with').lean();
+
+    const systemSettings = await Setting.findOne().select('app_name').lean();
 
     const privacyMap = {};
     for (const s of settings) {
-      let shared = s.shared_with;
-
+      let shared = s.shared_with || [];
       if (typeof shared === 'string') {
         try {
           shared = JSON.parse(shared);
@@ -67,36 +72,31 @@ exports.getStatusFeed = async (req, res) => {
       }
       if (!Array.isArray(shared)) shared = [];
 
-      privacyMap[s.user_id] = {
-        status_privacy: s.status_privacy,
+      privacyMap[s.user_id.toString()] = {
+        status_privacy: s.status_privacy || 'my_contacts',
         shared_with: shared,
       };
     }
 
-    const mutedUsers = await MutedStatus.findAll({
-      where: { user_id },
-      attributes: ['target_id'],
-    });
-    const mutedIds = mutedUsers.map((m) => m.target_id);
+    // Get muted users
+    const mutedUsers = await MutedStatus.find({ user_id }).select('target_id').lean();
+    const mutedIds = mutedUsers.map(m => m.target_id.toString());
 
-    const statuses = await Status.findAll({
-      where: {
-        expires_at: { [Op.gt]: now },
-      },
-      include: [
-        { model: User, as: 'user', attributes: ['id', 'name', 'avatar'] },
-        {
-          model: StatusView,
-          as: 'views',
-          include: [{ model: User, as: 'viewer', attributes: ['id', 'name', 'avatar'] }],
-        },
-      ],
-      order: [['created_at', 'ASC']],
-    });
+    // Get active statuses with user and views
+    const statuses = await Status.find({
+      expires_at: { $gt: now },
+    })
+      .populate('user', 'id name avatar')
+      .populate({
+        path: 'views',
+        populate: { path: 'viewer', select: 'id name avatar' },
+      })
+      .sort({ created_at: 1 })
+      .lean({ virtuals: true });
 
     const feed = {};
     for (const status of statuses) {
-      const ownerId = status.user.id;
+      const ownerId = status.user.id.toString();
       const isSponsored = Boolean(status.sponsored);
 
       if (!isSponsored) {
@@ -107,9 +107,9 @@ exports.getStatusFeed = async (req, res) => {
           shared_with: [],
         };
 
-        if (ownerId !== user_id) {
+        if (ownerId !== user_id.toString()) {
           if (status_privacy === 'my_contacts' && !friendIds.includes(ownerId)) continue;
-          if (status_privacy === 'only_share_with' && !shared_with.includes(user_id)) continue;
+          if (status_privacy === 'only_share_with' && !shared_with.includes(user_id.toString())) continue;
         }
       }
 
@@ -120,7 +120,7 @@ exports.getStatusFeed = async (req, res) => {
           user: {
             id: status.user.id,
             name: isSponsored ? systemSettings.app_name : status.user.name,
-            avatar: status.user.avatar
+            avatar: status.user.avatar,
           },
           statuses: [],
           is_sponsored: isSponsored,
@@ -128,7 +128,7 @@ exports.getStatusFeed = async (req, res) => {
         };
       }
 
-      const views = status.views.map((v) => ({
+      const views = (status.views || []).map(v => ({
         id: v.viewer.id,
         name: v.viewer.name,
         avatar: v.viewer.avatar,
@@ -152,8 +152,8 @@ exports.getStatusFeed = async (req, res) => {
     const sortedFeed = Object.values(feed).sort((a, b) => {
       if (a.is_sponsored !== b.is_sponsored) return b.is_sponsored - a.is_sponsored;
 
-      if (a.user.id === user_id) return -1;
-      if (b.user.id === user_id) return 1;
+      if (a.user.id.toString() === user_id.toString()) return -1;
+      if (b.user.id.toString() === user_id.toString()) return 1;
 
       const lastA = a.statuses[a.statuses.length - 1]?.created_at;
       const lastB = b.statuses[b.statuses.length - 1]?.created_at;
@@ -172,66 +172,80 @@ exports.getStatusFeed = async (req, res) => {
 };
 
 exports.getMutedStatuses = async (req, res) => {
-  const userId = req.user.id;
-  const { page = 1, limit = 20, search = '' } = req.query;
-  const offset = (page - 1) * limit;
+  const userId = req.user._id;
+  const page = parseInt(req.query.page) || 1;
+  const limit = parseInt(req.query.limit) || 20;
+  const skip = (page - 1) * limit;
+  const search = req.query.search?.trim() || '';
 
   try {
-    const whereUser = {};
-    if (search.trim()) {
-      whereUser.name = { [Op.like]: `%${search.trim()}%` };
+    const match = { user_id: userId };
+    if (search) {
+      match['mutedUser.name'] = { $regex: search, $options: 'i' };
     }
 
-    const { rows: mutes, count: totalCount } = await MutedStatus.findAndCountAll({
-      where: { user_id: userId },
-      include: [{ model: User, as: 'mutedUser', attributes: ['id', 'name', 'avatar'], where: whereUser }],
-      order: [['created_at', 'DESC']],
-      limit: Number(limit),
-      offset: Number(offset),
-    });
+    const pipeline = [
+      { $match: match },
+      {
+        $lookup: {
+          from: 'users',
+          localField: 'target_id',
+          foreignField: '_id',
+          as: 'mutedUser',
+        },
+      },
+      { $unwind: '$mutedUser' },
+      { $sort: { created_at: -1 } },
+      { $skip: skip },
+      { $limit: limit },
+    ];
+
+    const [mutes, totalCount] = await Promise.all([
+      MutedStatus.aggregate(pipeline),
+      MutedStatus.countDocuments({ user_id: userId }),
+    ]);
 
     const now = new Date();
 
-    const mutedStatuses = (
-      await Promise.all(
-        mutes.filter((m) => m.mutedUser).map(async (mute) => {
-          const statuses = await Status.findAll({
-            where: {
-              user_id: mute.target_id,
-              expires_at: { [Op.gt]: now },
-            },
-            order: [['created_at', 'ASC']],
-            attributes: ['id', 'file_url', 'type', 'caption', 'created_at', 'expires_at'],
-          });
-
-          if (!statuses.length) return null;
-
-          return {
-            muted_user: {
-              id: mute.mutedUser.id,
-              name: mute.mutedUser.name,
-              avatar: mute.mutedUser.avatar,
-            },
-            muted_at: mute.created_at,
-            statuses: statuses.map((s) => ({
-              id: s.id,
-              type: s.type,
-              file_url: s.file_url,
-              caption: s.caption,
-              created_at: s.created_at,
-              expires_at: s.expires_at,
-            })),
-          };
+    const mutedStatuses = await Promise.all(
+      mutes.map(async (mute) => {
+        const statuses = await Status.find({
+          user_id: mute.target_id,
+          expires_at: { $gt: now },
         })
-      )
-    ).filter(Boolean);
+          .select('id file_url type caption created_at expires_at')
+          .sort({ created_at: 1 })
+          .lean();
+
+        if (statuses.length === 0) return null;
+
+        return {
+          muted_user: {
+            id: mute.mutedUser.id,
+            name: mute.mutedUser.name,
+            avatar: mute.mutedUser.avatar,
+          },
+          muted_at: mute.created_at,
+          statuses: statuses.map(s => ({
+            id: s.id,
+            type: s.type,
+            file_url: s.file_url,
+            caption: s.caption,
+            created_at: s.created_at,
+            expires_at: s.expires_at,
+          })),
+        };
+      })
+    );
+
+    const filtered = mutedStatuses.filter(Boolean);
 
     return res.status(200).json({
       message: 'Muted status fetched successfully.',
-      data: mutedStatuses,
+      data: filtered,
       pagination: {
-        page: Number(page),
-        limit: Number(limit),
+        page,
+        limit,
         totalCount,
         totalPages: Math.ceil(totalCount / limit),
         hasMore: page < Math.ceil(totalCount / limit),
@@ -247,40 +261,63 @@ exports.getSponsoredStatuses = async (req, res) => {
   try {
     const page = parseInt(req.query.page) || 1;
     const limit = parseInt(req.query.limit) || 10;
-    const offset = (page - 1) * limit;
+    const skip = (page - 1) * limit;
 
     const search = req.query.search || '';
     const sortField = req.query.sort_by || 'created_at';
-    const sortOrder = req.query.sort_order?.toUpperCase() === 'ASC' ? 'ASC' : 'DESC';
+    const sortOrder = req.query.sort_order?.toUpperCase() === 'ASC' ? 1 : -1;
 
     const allowedSortFields = ['id', 'caption', 'sponsored', 'created_at', 'updated_at', 'expires_at'];
     const safeSortField = allowedSortFields.includes(sortField) ? sortField : 'created_at';
 
-    const whereClause = {
-      user_id: req.user.id,
-      sponsored: true
+    const match = {
+      user_id: req.user._id,
+      sponsored: true,
     };
 
     if (search) {
-      whereClause[Op.or] = [
-        { caption: { [Op.like]: `%${search}%` } },
-        { '$user.name$': { [Op.like]: `%${search}%` } },
-        { '$user.email$': { [Op.like]: `%${search}%` } }
+      match.$or = [
+        { caption: { $regex: search, $options: 'i' } },
+        { 'user.name': { $regex: search, $options: 'i' } },
+        { 'user.email': { $regex: search, $options: 'i' } },
       ];
     }
 
-    const total = await Status.count({
-      where: whereClause,
-      include: [{ model: User, as: 'user', attributes: [] }],
-    });
+    const pipeline = [
+      { $match: match },
+      {
+        $lookup: {
+          from: 'users',
+          localField: 'user_id',
+          foreignField: '_id',
+          as: 'user',
+        },
+      },
+      { $unwind: '$user' },
+      { $sort: { [safeSortField]: sortOrder } },
+      { $skip: skip },
+      { $limit: limit },
+      {
+        $project: {
+          id: 1,
+          type: 1,
+          file_url: 1,
+          caption: 1,
+          sponsored: 1,
+          created_at: 1,
+          expires_at: 1,
+          'user.id': 1,
+          'user.name': 1,
+          'user.email': 1,
+          'user.avatar': 1,
+        },
+      },
+    ];
 
-    const statuses = await Status.findAll({
-      where: whereClause,
-      include: [{ model: User, as: 'user', attributes: ['id', 'name', 'email', 'avatar'] }],
-      order: [[safeSortField, sortOrder]],
-      limit,
-      offset,
-    });
+    const [total, statuses] = await Promise.all([
+      Status.countDocuments(match),
+      Status.aggregate(pipeline),
+    ]);
 
     const now = new Date();
 
@@ -289,8 +326,8 @@ exports.getSponsoredStatuses = async (req, res) => {
       const isExpired = expiresAt ? new Date(expiresAt) < now : false;
 
       return {
-        ...status.toJSON(),
-        isExpired
+        ...status,
+        isExpired,
       };
     });
 
@@ -309,17 +346,17 @@ exports.getSponsoredStatuses = async (req, res) => {
 };
 
 exports.createStatus = async (req, res) => {
-  const user_id = req.user.id;
+  const user_id = req.user._id;
 
   try {
     const { type, caption, isSponsored } = req.body;
     const allowedTypes = ['text', 'image', 'video'];
 
-    const setting = await Setting.findOne({ attributes: ['status_expiry_time', 'status_limit'], raw: true });
-    const hour = setting.status_expiry_time ? Number(setting.status_expiry_time) : 24;
+    const setting = await Setting.findOne().select('status_expiry_time status_limit').lean();
+    const hour = setting?.status_expiry_time ? Number(setting.status_expiry_time) : 24;
     const expires_at = new Date(Date.now() + hour * 60 * 60 * 1000);
 
-    const user = await User.findByPk(user_id);
+    const user = await User.findById(user_id);
     if (!user) return res.status(404).json({ message: 'User not found.' });
 
     if (Boolean(isSponsored) && user.role !== 'super_admin') {
@@ -340,11 +377,12 @@ exports.createStatus = async (req, res) => {
 
     const limits = await getEffectiveLimits(user_id, user.role);
     if (user.role === 'user') {
-      const statusCount = await Status.count({
-        where: {
-          user_id,
-          created_at: { [Op.gte]: new Date(Date.now() - 24 * 60 * 60 * 1000) },
-        },
+      const startOfDay = new Date();
+      startOfDay.setHours(0, 0, 0, 0);
+
+      const statusCount = await Status.countDocuments({
+        user_id,
+        created_at: { $gte: startOfDay },
       });
 
       if (statusCount >= limits.status_limit_per_day) {
@@ -357,7 +395,7 @@ exports.createStatus = async (req, res) => {
       type,
       file_url: content_url,
       caption,
-      sponsored: Boolean(isSponsored) || false,
+      sponsored: Boolean(isSponsored),
       expires_at,
     });
 
@@ -384,41 +422,35 @@ exports.createStatus = async (req, res) => {
     const io = req.app.get('io');
 
     if (Boolean(isSponsored)) {
-      const allUsers = await User.findAll({ attributes: ['id'] });
-      allUsers.forEach((user) => {
-        io.to(`user_${user.id}`).emit('status-uploaded', statusData);
+      const allUsers = await User.find().select('id').lean();
+      allUsers.forEach(u => {
+        io.to(`user_${u.id}`).emit('status-uploaded', statusData);
       });
     } else {
-      const friends = await Friend.findAll({
-        where: {
-          [Op.or]: [
-            { user_id, status: 'accepted' },
-            { friend_id: user_id, status: 'accepted' },
-          ],
-        },
-        attributes: ['user_id', 'friend_id'],
-      });
+      const friends = await Friend.find({
+        $or: [
+          { user_id, status: 'accepted' },
+          { friend_id: user_id, status: 'accepted' },
+        ],
+      }).lean();
 
-      const friendIds = friends.map((f) => (f.user_id === user_id ? f.friend_id : f.user_id));
+      const friendIds = friends.map(f => (f.user_id.toString() === user_id.toString() ? f.friend_id : f.user_id));
 
-      const blocks = await Block.findAll({
-        where: { [Op.or]: [{ blocker_id: user_id }, { blocked_id: user_id }] },
-        attributes: ['blocker_id', 'blocked_id'],
-      });
-      const blockedIds = blocks.map((b) => (b.blocker_id === user_id ? b.blocked_id : b.blocker_id));
-      const visibleFriendIds = friendIds.filter((id) => !blockedIds.includes(id));
+      const blocks = await Block.find({
+        $or: [{ blocker_id: user_id }, { blocked_id: user_id }],
+      }).lean();
 
-      const settings = await UserSetting.findOne({
-        where: { user_id },
-        attributes: ['status_privacy', 'shared_with'],
-      });
+      const blockedIds = blocks.map(b => (b.blocker_id.toString() === user_id.toString() ? b.blocked_id : b.blocker_id));
+      const visibleFriendIds = friendIds.filter(id => !blockedIds.includes(id.toString()));
+
+      const userSetting = await UserSetting.findOne({ user_id }).lean();
 
       let notifyUserIds = [];
 
-      if (!settings || settings.status_privacy === 'my_contacts') {
+      if (!userSetting || userSetting.status_privacy === 'my_contacts') {
         notifyUserIds = visibleFriendIds;
-      } else if (settings.status_privacy === 'only_share_with') {
-        let sharedWith = settings.shared_with;
+      } else if (userSetting.status_privacy === 'only_share_with') {
+        let sharedWith = userSetting.shared_with || [];
         if (typeof sharedWith === 'string') {
           try {
             sharedWith = JSON.parse(sharedWith);
@@ -426,12 +458,14 @@ exports.createStatus = async (req, res) => {
             sharedWith = [];
           }
         }
-        notifyUserIds = Array.isArray(sharedWith) ? sharedWith.filter((id) => visibleFriendIds.includes(id)) : [];
+        notifyUserIds = Array.isArray(sharedWith)
+          ? sharedWith.filter(id => visibleFriendIds.includes(id.toString()))
+          : [];
       }
 
       io.to(`user_${user_id}`).emit('status-uploaded', statusData);
 
-      notifyUserIds.forEach((friendId) => {
+      notifyUserIds.forEach(friendId => {
         io.to(`user_${friendId}`).emit('status-uploaded', statusData);
       });
     }
@@ -444,25 +478,24 @@ exports.createStatus = async (req, res) => {
 };
 
 exports.viewStatus = async (req, res) => {
-  const viewer_id = req.user.id;
+  const viewer_id = req.user._id;
   const { status_id } = req.body;
 
   try {
     const status = await Status.findOne({
-      where: { id: status_id, expires_at: { [Op.gt]: new Date() } },
-      attributes: ['id', 'user_id'],
-      include: [{ model: User, as: 'user', attributes: ['id', 'name'] }],
-    });
+      _id: status_id,
+      expires_at: { $gt: new Date() },
+    })
+      .populate('user', 'id name')
+      .lean();
 
     if (!status) return res.status(404).json({ message: 'Status not found or expired.' });
 
-    if (status.user_id === viewer_id) {
+    if (status.user_id.toString() === viewer_id.toString()) {
       return res.status(200).json({ message: 'It is your own status' });
     }
 
-    const existingView = await StatusView.findOne({
-      where: { status_id, viewer_id },
-    });
+    const existingView = await StatusView.findOne({ status_id, viewer_id }).lean();
 
     if (existingView) {
       return res.status(200).json({
@@ -479,12 +512,14 @@ exports.viewStatus = async (req, res) => {
 
     const io = req.app.get('io');
     const ownerRoom = `user_${status.user_id}`;
+    const viewCount = await StatusView.countDocuments({ status_id });
+
     io.to(ownerRoom).emit('status-viewed', {
       status_id,
       viewer_id,
       viewer_name: req.user.name,
       viewed_at: statusView.viewer_at,
-      view_count: await StatusView.count({ where: { status_id } }),
+      view_count: viewCount,
     });
 
     return res.status(201).json({
@@ -498,7 +533,7 @@ exports.viewStatus = async (req, res) => {
 };
 
 exports.deleteStatus = async (req, res) => {
-  const user_id = req.user.id;
+  const user_id = req.user._id;
   const { status_ids } = req.body;
 
   try {
@@ -506,68 +541,68 @@ exports.deleteStatus = async (req, res) => {
       return res.status(400).json({ message: 'Status IDs array is required' });
     }
 
-    const statuses = await Status.findAll({ where: { id: status_ids, user_id } });
+    const statuses = await Status.find({
+      _id: { $in: status_ids.map(id => new mongoose.Types.ObjectId(id)) },
+      user_id,
+    }).lean();
+
     if (statuses.length === 0) {
       return res.status(404).json({
-        message: 'Status not found. or You are not authorized to delete it.',
+        message: 'Status not found or you are not authorized to delete it.',
       });
     }
 
     const deletedStatusIds = [];
 
-    for (let status of statuses) {
+    for (const status of statuses) {
       if (status.file_url) {
-        const filePath = path.join(__dirname, '../', status.file_url);
-        fs.unlink(filePath, (err) => {
-          if (err && err.code !== 'ENOENT') console.error('Error deleting file', err);
-        });
+        const filePath = path.join(process.cwd(), status.file_url);
+        if (fs.existsSync(filePath)) {
+          fs.unlinkSync(filePath);
+        }
       }
 
-      await status.destroy();
+      await Status.deleteOne({ _id: status._id });
       deletedStatusIds.push(status.id);
     }
 
-    const friends = await Friend.findAll({
-      where: {
-        [Op.or]: [
-          { user_id, status: 'accepted' },
-          { friend_id: user_id, status: 'accepted' },
-        ],
-      },
-      attributes: ['user_id', 'friend_id'],
-    });
+    const friends = await Friend.find({
+      $or: [
+        { user_id, status: 'accepted' },
+        { friend_id: user_id, status: 'accepted' },
+      ],
+    }).lean();
 
-    const friendIds = friends.map((f) => (f.user_id === user_id ? f.friend_id : f.user_id));
+    const friendIds = friends.map(f => (f.user_id.toString() === user_id.toString() ? f.friend_id : f.user_id));
 
-    const blocks = await Block.findAll({
-      where: { [Op.or]: [{ blocker_id: user_id }, { blocked_id: user_id }] },
-      attributes: ['blocker_id', 'blocked_id'],
-    });
+    const blocks = await Block.find({
+      $or: [{ blocker_id: user_id }, { blocked_id: user_id }],
+    }).lean();
 
-    const blockedIds = blocks.map((b) => (b.blocker_id === user_id ? b.blocked_id : b.blocker_id));
-    const visibleFriendIds = friendIds.filter((id) => !blockedIds.includes(id));
+    const blockedIds = blocks.map(b => (b.blocker_id.toString() === user_id.toString() ? b.blocked_id : b.blocker_id));
+    const visibleFriendIds = friendIds.filter(id => !blockedIds.includes(id.toString()));
 
     const io = req.app.get('io');
 
     deletedStatusIds.forEach(async (status_id) => {
-      const isSponsored = Boolean(statuses.find((s) => s.id === status_id).sponsored);
+      const isSponsored = statuses.find(s => s.id.toString() === status_id.toString())?.sponsored;
 
       if (isSponsored) {
-        const allUsers = await User.findAll({ attributes: ['id'] });
-        allUsers.forEach((u) => {
+        const allUsers = await User.find().select('id').lean();
+        allUsers.forEach(u => {
           io.to(`user_${u.id}`).emit('status-deleted', { status_id, user_id, sponsored: isSponsored });
         });
       } else {
-        visibleFriendIds.forEach((friend) => {
+        visibleFriendIds.forEach(friend => {
           io.to(`user_${friend}`).emit('status-deleted', {
-            status_id: status_id,
-            user_id: user_id,
+            status_id,
+            user_id,
             sponsored: isSponsored,
           });
         });
-        io.to(user_id).emit('status-deleted', {
-          status_id: status_id,
-          user_id: user_id,
+        io.to(`user_${user_id}`).emit('status-deleted', {
+          status_id,
+          user_id,
           sponsored: isSponsored,
         });
       }
@@ -581,7 +616,7 @@ exports.deleteStatus = async (req, res) => {
 };
 
 exports.toggleMuteStatus = async (req, res) => {
-  const user_id = req.user.id;
+  const user_id = req.user._id;
   const { target_id } = req.body;
 
   try {
@@ -589,14 +624,14 @@ exports.toggleMuteStatus = async (req, res) => {
       return res.status(400).json({ message: 'target_id is required.' });
     }
 
-    if (user_id === target_id) {
+    if (user_id.toString() === target_id.toString()) {
       return res.status(400).json({ message: 'You cannot mute your own status.' });
     }
 
-    const existing = await MutedStatus.findOne({ where: { user_id, target_id } });
+    const existing = await MutedStatus.findOne({ user_id, target_id }).lean();
 
     if (existing) {
-      await existing.destroy();
+      await MutedStatus.deleteOne({ _id: existing._id });
       return res.status(200).json({ message: 'User unmuted successfully', muted: false, target_id });
     }
 
@@ -608,8 +643,8 @@ exports.toggleMuteStatus = async (req, res) => {
   }
 };
 
-exports.replyToStatus = async (req,res) => {
-  const sender_id = req.user.id;
+exports.replyToStatus = async (req, res) => {
+  const sender_id = req.user._id;
   const { status_id, message } = req.body;
 
   try {
@@ -618,9 +653,11 @@ exports.replyToStatus = async (req,res) => {
     }
 
     const status = await Status.findOne({
-      where: { id: status_id, expires_at: { [Op.gt]: new Date() }},
-      include: [{ model: User, as: 'user', attributes: ['id', 'name', 'avatar'] }]
-    });
+      _id: status_id,
+      expires_at: { $gt: new Date() },
+    })
+      .populate('user', 'id name avatar')
+      .lean();
 
     if (!status) {
       return res.status(404).json({ message: 'Status not found or expired.' });
@@ -628,39 +665,36 @@ exports.replyToStatus = async (req,res) => {
 
     const receiver_id = status.user_id;
 
-    if (sender_id === receiver_id) {
+    if (sender_id.toString() === receiver_id.toString()) {
       return res.status(400).json({ message: 'You cannot reply to your own status.' });
     }
 
     const blockExists = await Block.findOne({
-      where: {
-        [Op.or]: [
-          { blocker_id: sender_id, blocked_id: receiver_id },
-          { blocker_id: receiver_id, blocked_id: sender_id }
-        ]
-      }
-    });
+      $or: [
+        { blocker_id: sender_id, blocked_id: receiver_id },
+        { blocker_id: receiver_id, blocked_id: sender_id },
+      ],
+    }).lean();
+
     if (blockExists) {
       return res.status(403).json({ message: 'You cannot reply to this status.' });
     }
 
     if (!status.sponsored) {
       const friendship = await Friend.findOne({
-        where: {
-          [Op.or]: [
-            { user_id: sender_id, friend_id: receiver_id, status: 'accepted' },
-            { user_id: receiver_id, friend_id: sender_id, status: 'accepted' }
-          ]
-        }
-      });
+        $or: [
+          { user_id: sender_id, friend_id: receiver_id, status: 'accepted' },
+          { user_id: receiver_id, friend_id: sender_id, status: 'accepted' },
+        ],
+      }).lean();
 
       if (!friendship) {
         return res.status(403).json({ message: 'You can only reply to statuses from your contacts.' });
       }
     }
 
-    if(status.sponsored){
-      return res.status(403).json({ message: 'You can not reply to sponsored status.'});
+    if (status.sponsored) {
+      return res.status(403).json({ message: 'You can not reply to sponsored status.' });
     }
 
     const statusReplyMessage = await Message.create({
@@ -676,27 +710,26 @@ exports.replyToStatus = async (req,res) => {
         status_caption: status.caption,
         status_created_at: status.created_at,
         status_owner_id: status.user_id,
-        status_owner_name: status.user.name
-      }
+        status_owner_name: status.user.name,
+      },
     });
 
-    await MessageStatus.create({ message_id: statusReplyMessage.id, user_id: receiver_id, status: 'sent'});
+    await MessageStatus.create({
+      message_id: statusReplyMessage._id,
+      user_id: receiver_id,
+      status: 'sent',
+    });
 
-    const fullMessage = await Message.findByPk(statusReplyMessage.id, {
-      include: [
-        { model: User, as: 'sender', attributes: ['id', 'name', 'avatar']},
-        { model: User, as: 'recipient', attributes: ['id', 'name', 'avatar']},
-        { model: Group, as: 'group', attributes: ['id', 'name', 'avatar']},
-      ]
-    });  
+    const fullMessage = await Message.findById(statusReplyMessage._id)
+      .populate('sender', 'id name avatar')
+      .populate('recipient', 'id name avatar')
+      .lean({ virtuals: true });
 
     const io = req.app.get('io');
-    // Emit to both sender and receiver for real-time updates
     io.to(`user_${sender_id}`).emit('receive-message', fullMessage);
     io.to(`user_${receiver_id}`).emit('receive-message', fullMessage);
 
-    return res.status(201).json({ message: 'Reply sent successfully.', fullMessage:fullMessage });
-
+    return res.status(201).json({ message: 'Reply sent successfully.', fullMessage });
   } catch (error) {
     console.error('Error in replyToStatus:', error);
     return res.status(500).json({ message: 'Internal server error' });
@@ -704,56 +737,56 @@ exports.replyToStatus = async (req,res) => {
 };
 
 exports.getStatusReplyConversations = async (req, res) => {
-  const user_id = req.user.id;
+  const user_id = req.user._id;
 
   try {
-    const replyMessages = await Message.findAll({
-      where: {
-        recipient_id: user_id,
-        message_type: 'text',
-        [Op.and]: [{ 'metadata.is_status_reply': true }]
-      },
-      include: [
-        { model: User, as: 'sender', attributes: ['id', 'name', 'avatar'] },
-        { model: MessageStatus, as: 'statuses', where: { user_id: user_id }}
-      ],
-      order: [['created_at', 'DESC']]
-    });
+    const replyMessages = await Message.find({
+      recipient_id: user_id,
+      message_type: 'text',
+      'metadata.is_status_reply': true,
+    })
+      .populate('sender', 'id name avatar')
+      .populate({
+        path: 'statuses',
+        match: { user_id },
+      })
+      .sort({ created_at: -1 })
+      .lean({ virtuals: true });
 
     const conversationsMap = {};
 
     for (const msg of replyMessages) {
-      const senderId = msg.sender_id;
+      const senderId = msg.sender.id.toString();
 
       if (!conversationsMap[senderId]) {
         conversationsMap[senderId] = {
           user: {
             id: msg.sender.id,
             name: msg.sender.name,
-            avatar: msg.sender.avatar
+            avatar: msg.sender.avatar,
           },
           last_reply: msg.content,
           last_reply_time: msg.created_at,
           unread_count: 0,
-          total_replies: 0
+          total_replies: 0,
         };
       }
 
       conversationsMap[senderId].total_replies++;
 
-      const messageStatus = msg.statuses.find(s => s.user_id === user_id);
+      const messageStatus = msg.statuses?.find(s => s.user_id.toString() === user_id.toString());
       if (messageStatus && ['sent', 'delivered'].includes(messageStatus.status)) {
         conversationsMap[senderId].unread_count++;
       }
     }
 
-    const conversations = Object.values(conversationsMap).sort((a, b) => 
+    const conversations = Object.values(conversationsMap).sort((a, b) =>
       new Date(b.last_reply_time) - new Date(a.last_reply_time)
     );
 
     return res.status(200).json({
       message: 'Status reply conversations fetched successfully.',
-      data: conversations
+      data: conversations,
     });
   } catch (error) {
     console.error('Error in getStatusReplyConversations:', error);
