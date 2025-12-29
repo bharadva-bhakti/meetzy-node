@@ -19,7 +19,7 @@ exports.authenticate = async (req, res, next) => {
   try {
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
 
-    const user = await User.findById(decoded.id).lean();
+    const user = await User.findById(decoded.id);
     if (!user) {
       return res.status(401).json({ message: 'Invalid token: user not found' });
     }
@@ -28,7 +28,7 @@ exports.authenticate = async (req, res, next) => {
       user_id: user._id,
       session_token: token,
       status: 'active',
-    }).lean();
+    });
 
     if (!session) {
       return res.status(401).json({ message: 'Session expired or logged out. Please log in again.' });

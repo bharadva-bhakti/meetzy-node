@@ -1,5 +1,6 @@
 const mongoose = require('mongoose');
 const { Schema } = mongoose;
+const { addVirtualId } = require('../utils/modelHelper');
 
 const CallParticipantSchema = new Schema(
   {
@@ -53,6 +54,8 @@ const CallParticipantSchema = new Schema(
     timestamps: { createdAt: 'created_at', updatedAt: 'updated_at' },
   }
 );
+
+addVirtualId(CallParticipantSchema);
 
 CallParticipantSchema.index({ call_id: 1, user_id: 1 }, { unique: true });
 CallParticipantSchema.index({ user_id: 1, status: 1 });

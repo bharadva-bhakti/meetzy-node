@@ -1,5 +1,6 @@
 const mongoose = require('mongoose');
 const { Schema } = mongoose;
+const { addVirtualId } = require('../utils/modelHelper');
 
 const StatusViewSchema = new Schema(
   {
@@ -24,6 +25,8 @@ const StatusViewSchema = new Schema(
     timestamps: false,
   }
 );
+
+addVirtualId(StatusViewSchema);
 
 // Unique: one user views a status only once
 StatusViewSchema.index({ status_id: 1, viewer_id: 1 }, { unique: true });

@@ -1,5 +1,6 @@
 const mongoose = require('mongoose');
 const { Schema } = mongoose;
+const { addVirtualId } = require('../utils/modelHelper');
 
 const FaqSchema = new Schema(
   {
@@ -21,6 +22,8 @@ const FaqSchema = new Schema(
     timestamps: { createdAt: 'created_at', updatedAt: 'updated_at' },
   }
 );
+
+addVirtualId(FaqSchema);
 
 FaqSchema.index({ title: 1 }, { 
   unique: true, 

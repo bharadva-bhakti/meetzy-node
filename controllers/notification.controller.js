@@ -19,7 +19,7 @@ exports.fetchNotifications = async (req, res) => {
   try {
     const [notifications, total] = await Promise.all([
       Notification.find({ user_id: currentUserId })
-        .populate('from_user', 'id name avatar').sort({ created_at: -1 }).skip(skip).limit(parseInt(limit)).lean(),
+        .populate('from_user', 'id name avatar').sort({ created_at: -1 }).skip(skip).limit(parseInt(limit)),
       Notification.countDocuments({ user_id: currentUserId }),
     ]);
 

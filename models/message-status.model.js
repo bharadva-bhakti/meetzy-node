@@ -1,5 +1,6 @@
 const mongoose = require('mongoose');
 const { Schema } = mongoose;
+const { addVirtualId } = require('../utils/modelHelper');
 
 const MessageStatusSchema = new Schema(
   {
@@ -25,6 +26,8 @@ const MessageStatusSchema = new Schema(
     timestamps: { createdAt: 'created_at', updatedAt: 'updated_at' },
   }
 );
+
+addVirtualId(MessageStatusSchema);
 
 MessageStatusSchema.index({ message_id: 1 });
 MessageStatusSchema.index({ user_id: 1 });

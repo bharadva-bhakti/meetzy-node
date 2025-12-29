@@ -3,7 +3,7 @@ const Gateway = db.Gateway;
 
 exports.getGateways = async (req, res) => {
   try {
-    const gateways = await Gateway.find().sort({ id: -1 }).lean();
+    const gateways = await Gateway.find().sort({ id: -1 });
     return res.status(200).json(gateways);
   } catch (error) {
     console.error('Get Gateways Error:', error);

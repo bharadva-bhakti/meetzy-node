@@ -1,5 +1,6 @@
 const mongoose = require('mongoose');
 const { Schema } = mongoose;
+const { addVirtualId } = require('../utils/modelHelper');
 
 const SettingSchema = new Schema(
   {
@@ -291,5 +292,7 @@ const SettingSchema = new Schema(
     timestamps: { createdAt: 'created_at', updatedAt: 'updated_at' },
   }
 );
+
+addVirtualId(SettingSchema);
 
 module.exports = mongoose.model('Setting', SettingSchema);

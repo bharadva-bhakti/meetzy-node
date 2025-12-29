@@ -1,5 +1,6 @@
 const mongoose = require('mongoose');
 const { Schema } = mongoose;
+const { addVirtualId } = require('../utils/modelHelper');
 
 const WallpaperSchema = new Schema(
   {
@@ -31,6 +32,8 @@ const WallpaperSchema = new Schema(
     timestamps: { createdAt: 'created_at', updatedAt: 'updated_at' },
   }
 );
+
+addVirtualId(WallpaperSchema);
 
 WallpaperSchema.index({ status: 1 });
 WallpaperSchema.index({ created_at: 1 });

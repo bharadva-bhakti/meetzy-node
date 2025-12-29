@@ -23,7 +23,7 @@ exports.getAllFaqs = async (req, res) => {
       : {};
 
     const [faqs, total] = await Promise.all([
-      Faq.find(query).sort({ [safeSortField]: sortOrder }).skip(skip).limit(limit).lean(),
+      Faq.find(query).sort({ [safeSortField]: sortOrder }).skip(skip).limit(limit),
       Faq.countDocuments(query),
     ]);
 
@@ -111,7 +111,7 @@ exports.updateFaq = async (req, res) => {
       }
     );
 
-    const updatedFaq = await Faq.findById(id).lean();
+    const updatedFaq = await Faq.findById(id);
 
     return res.status(200).json({
       message: 'FAQ updated successfully',

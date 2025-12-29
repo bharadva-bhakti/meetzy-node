@@ -1,5 +1,6 @@
 const mongoose = require('mongoose');
 const { Schema } = mongoose;
+const { addVirtualId } = require('../utils/modelHelper');
 
 const UserSchema = new Schema(
   {
@@ -95,8 +96,12 @@ const UserSchema = new Schema(
   {
     collection: 'users',
     timestamps: { createdAt: 'created_at', updatedAt: 'updated_at' },
+    toJSON: { virtuals: true },
+    toObject: { virtuals: true },
   }
 );
+
+addVirtualId(UserSchema);
 
 UserSchema.index({ status: 1 });
 UserSchema.index({ role: 1 });

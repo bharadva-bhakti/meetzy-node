@@ -177,7 +177,7 @@ async function fetchFriendSuggestions(userId, { search = '', page = 1, limit = 2
   const friendships = await Friend.find({
     $or: [{ user_id: userId }, { friend_id: userId }],
     status: { $ne: 'rejected' },
-  }).lean();
+  });
 
   const friendIds = new Set();
   friendships.forEach(f => {
@@ -187,8 +187,7 @@ async function fetchFriendSuggestions(userId, { search = '', page = 1, limit = 2
   friendIds.add(userId.toString());
 
   const allUserSettings = await UserSetting.find({})
-    .select('user_id hide_phone')
-    .lean();
+    .select('user_id hide_phone');
 
   const hidePhoneMap = new Map(allUserSettings.map(s => [s.user_id.toString(), s.hide_phone]));
 
@@ -225,13 +224,11 @@ async function fetchFriendSuggestions(userId, { search = '', page = 1, limit = 2
     .select('id bio name avatar phone email')
     .sort({ name: 1 })
     .skip(skip)
-    .limit(limit)
-    .lean();
+    .limit(limit);
 
   const suggestionIds = suggestions.map(s => s.id);
   const userSettings = await UserSetting.find({ user_id: { $in: suggestionIds } })
-    .select('user_id profile_pic hide_phone')
-    .lean();
+    .select('user_id profile_pic hide_phone');
 
   const settingsMap = new Map(userSettings.map(s => [s.user_id.toString(), s]));
 

@@ -1,5 +1,6 @@
 const mongoose = require('mongoose');
 const { Schema } = mongoose;
+const { addVirtualId } = require('../utils/modelHelper');
 
 const LanguageSchema = new Schema(
   {
@@ -28,5 +29,7 @@ const LanguageSchema = new Schema(
     timestamps: { createdAt: 'created_at', updatedAt: 'updated_at' },
   }
 );
+
+addVirtualId(LanguageSchema);
 
 module.exports = mongoose.model('Language', LanguageSchema);

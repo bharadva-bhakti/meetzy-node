@@ -1,5 +1,6 @@
 const mongoose = require('mongoose');
 const { Schema } = mongoose;
+const { addVirtualId } = require('../utils/modelHelper');
 
 const PageSchema = new Schema(
   {
@@ -38,6 +39,8 @@ const PageSchema = new Schema(
     timestamps: { createdAt: 'created_at', updatedAt: 'updated_at' },
   }
 );
+
+addVirtualId(PageSchema);
 
 PageSchema.index({ slug: 1 });
 PageSchema.index({ status: 1 });

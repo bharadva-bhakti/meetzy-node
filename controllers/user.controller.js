@@ -40,8 +40,7 @@ exports.getAllUsers = async (req, res) => {
         .select('id avatar name bio email country country_code phone role last_login status created_at')
         .sort({ [safeSortField]: sortOrder })
         .skip(skip)
-        .limit(parseInt(limit))
-        .lean(),
+        .limit(parseInt(limit)),
 
       User.countDocuments(query),
     ]);
@@ -132,8 +131,7 @@ exports.updateUser = async (req, res) => {
     );
 
     const updatedUser = await User.findById(id)
-      .select('id avatar name bio email country country_code phone role status')
-      .lean();
+      .select('id avatar name bio email country country_code phone role status');
 
     res.status(200).json({ message: 'User updated successfully', user: updatedUser });
   } catch (error) {

@@ -1,5 +1,6 @@
 const mongoose = require('mongoose');
 const { Schema } = mongoose;
+const { addVirtualId } = require('../utils/modelHelper');
 
 const SMSGatewaySchema = new Schema(
   {
@@ -45,5 +46,7 @@ const SMSGatewaySchema = new Schema(
     timestamps: { createdAt: 'created_at', updatedAt: 'updated_at' },
   }
 );
+
+addVirtualId(SMSGatewaySchema);
 
 module.exports = mongoose.model('SMSGateway', SMSGatewaySchema);

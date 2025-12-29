@@ -78,7 +78,7 @@ async function getDynamicSettings() {
   }
 
   try {
-    const setting = await Setting.findOne().lean();
+    const setting = await Setting.findOne();
 
     const allowedTypes = setting?.allowed_file_upload_types || [];
     const limits = {

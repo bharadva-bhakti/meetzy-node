@@ -28,13 +28,11 @@ exports.getPendingRequests = async (req, res) => {
       status: 'pending',
     })
       .populate('requested', 'id bio name avatar email')
-      .sort({ created_at: -1 })
-      .lean();
+      .sort({ created_at: -1 });
 
     const requestedUserIds = pendingRequests.map(req => req.requested?.id).filter(Boolean);
     const userSettings = await UserSetting.find({ user_id: { $in: requestedUserIds } })
-      .select('user_id profile_pic')
-      .lean();
+      .select('user_id profile_pic');
 
     const settingsMap = new Map(userSettings.map(s => [s.user_id.toString(), s]));
 

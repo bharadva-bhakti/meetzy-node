@@ -1,5 +1,6 @@
 const mongoose = require('mongoose');
 const { Schema } = mongoose;
+const { addVirtualId } = require('../utils/modelHelper');
 
 const BlockSchema = new Schema(
   {
@@ -31,17 +32,19 @@ const BlockSchema = new Schema(
   }
 );
 
+addVirtualId(BlockSchema);
+
 BlockSchema.index(
-    { blocker_id: 1, blocked_id: 1 }, 
-    { unique: true, partialFilterExpression: 
-        { block_type: 'user', blocked_id: { $exists: true } } 
-    }
+  { blocker_id: 1, blocked_id: 1 }, 
+  { unique: true, partialFilterExpression: 
+    { block_type: 'user', blocked_id: { $exists: true } } 
+  }
 );
 BlockSchema.index(
-    { blocker_id: 1, group_id: 1 }, 
-    { unique: true, partialFilterExpression: 
-        { block_type: 'group', group_id: { $exists: true } } 
-    }
+  { blocker_id: 1, group_id: 1 }, 
+  { unique: true, partialFilterExpression: 
+    { block_type: 'group', group_id: { $exists: true } } 
+  }
 );
 
 module.exports = mongoose.model('Block', BlockSchema);

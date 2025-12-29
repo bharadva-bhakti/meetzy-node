@@ -1,5 +1,6 @@
 const mongoose = require('mongoose');
 const { Schema } = mongoose;
+const { addVirtualId } = require('../utils/modelHelper');
 
 const UserReportSchema = new Schema(
   {
@@ -55,6 +56,8 @@ const UserReportSchema = new Schema(
     timestamps: { createdAt: 'created_at', updatedAt: 'updated_at' },
   }
 );
+
+addVirtualId(UserReportSchema);
 
 UserReportSchema.index({ reporter_id: 1 });
 UserReportSchema.index({ reported_user_id: 1 });

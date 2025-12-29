@@ -1,5 +1,6 @@
 const mongoose = require('mongoose');
 const { Schema } = mongoose;
+const { addVirtualId } = require('../utils/modelHelper');
 
 const MessageActionSchema = new Schema(
   {
@@ -19,8 +20,8 @@ const MessageActionSchema = new Schema(
       required: true,
     },
     details: { 
-        type: Object, 
-        default: null 
+      type: Object, 
+      default: null 
     },
   },
   {
@@ -28,6 +29,8 @@ const MessageActionSchema = new Schema(
     timestamps: true,
   }
 );
+
+addVirtualId(MessageActionSchema);
 
 MessageActionSchema.index(
   { message_id: 1, user_id: 1, action_type: 1 },

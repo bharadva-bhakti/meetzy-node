@@ -1,5 +1,6 @@
 const mongoose = require('mongoose');
 const { Schema } = mongoose;
+const { addVirtualId } = require('../utils/modelHelper');
 
 const StatusSchema = new Schema(
   {
@@ -14,17 +15,17 @@ const StatusSchema = new Schema(
       default: 'text',
     },
     file_url: { 
-        type: String, 
-        default: null 
+      type: String, 
+      default: null 
     },
     caption: { 
-        type: String, 
-        default: null 
+      type: String, 
+      default: null 
     },
     sponsored: { 
-        type: Boolean,
-        default: false, 
-        required: true 
+      type: Boolean,
+      default: false, 
+      required: true 
     },
     expires_at: {
       type: Date,
@@ -36,6 +37,8 @@ const StatusSchema = new Schema(
     timestamps: { createdAt: 'created_at', updatedAt: false },
   }
 );
+
+addVirtualId(StatusSchema);
 
 StatusSchema.index({ user_id: 1 });
 StatusSchema.index({ expires_at: 1 });

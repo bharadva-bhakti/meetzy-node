@@ -8,7 +8,7 @@ const CACHE_TTL = 5 * 60 * 1000;
 
 const loadGateway = async () => {
   try {
-    const gateway = await SMSGateway.findOne({ enabled: true }).sort({ created_at: -1 }).lean();
+    const gateway = await SMSGateway.findOne({ enabled: true }).sort({ created_at: -1 });
 
     gatewayCache = gateway;
     lastLoadTime = Date.now();

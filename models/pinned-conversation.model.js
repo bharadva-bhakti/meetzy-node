@@ -1,5 +1,6 @@
 const mongoose = require('mongoose');
 const { Schema } = mongoose;
+const { addVirtualId } = require('../utils/modelHelper');
 
 const PinnedConversationSchema = new Schema(
   {
@@ -27,6 +28,8 @@ const PinnedConversationSchema = new Schema(
     timestamps: { createdAt: false, updatedAt: false },
   }
 );
+
+addVirtualId(PinnedConversationSchema);
 
 PinnedConversationSchema.index(
   { user_id: 1, type: 1, target_id: 1 },

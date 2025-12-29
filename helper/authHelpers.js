@@ -14,7 +14,7 @@ function generateOTP() {
 };
 
 async function getSettings() {
-  const settings = await Setting.findOne().lean();
+  const settings = await Setting.findOne();
   if (!settings) throw new Error('Settings not defined');
   return settings;
 };

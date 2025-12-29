@@ -1,5 +1,6 @@
 const mongoose = require('mongoose');
 const { Schema } = mongoose;
+const { addVirtualId } = require('../utils/modelHelper');
 
 const VerificationRequestSchema = new Schema(
   {
@@ -22,20 +23,20 @@ const VerificationRequestSchema = new Schema(
       required: true,
     },
     document_type: { 
-        type: String, 
-        default: null 
+      type: String, 
+      default: null 
     },
     document_front: { 
-        type: String, 
-        default: null 
+      type: String, 
+      default: null 
     },
     document_back: { 
-        type: String, 
-        default: null 
+      type: String, 
+      default: null 
     },
     selfie: { 
-        type: String, 
-        default: null 
+      type: String, 
+      default: null 
     },
     status: {
       type: String,
@@ -68,12 +69,12 @@ const VerificationRequestSchema = new Schema(
       default: null,
     },
     reviewed_at: { 
-        type: Date, 
-        default: null 
+      type: Date, 
+      default: null 
     },
     admin_notes: { 
-        type: String, 
-        default: null 
+      type: String, 
+      default: null 
     },
   },
   {
@@ -81,6 +82,8 @@ const VerificationRequestSchema = new Schema(
     timestamps: { createdAt: 'created_at', updatedAt: 'updated_at' },
   }
 );
+
+addVirtualId(VerificationRequestSchema);
 
 VerificationRequestSchema.index({ user_id: 1 });
 VerificationRequestSchema.index({ request_id: 1 });

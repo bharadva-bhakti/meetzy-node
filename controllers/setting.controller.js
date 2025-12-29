@@ -7,7 +7,7 @@ const Language = db.Language;
 
 exports.getSettings = async (req, res) => {
   try {
-    const setting = await Setting.findOne().lean();
+    const setting = await Setting.findOne();
     if (!setting) return res.status(404).json({ message: 'Settings not found.' });
 
     return res.status(200).json({ settings: setting });
@@ -22,7 +22,7 @@ exports.getPublicSettings = async (req, res) => {
     const setting = await Setting.findOne().select([ 
         'login_method', 'favicon_url', 'logo_light_url', 'logo_dark_url', 'sidebar_logo_url', 'mobile_logo_url', 'landing_logo_url',
         'favicon_notification_logo_url', 'onboarding_logo_url', 'auth_method', 'allow_user_signup', 'e2e_encryption_enabled',
-      ]).lean();
+      ]);
 
     if (!setting) return res.status(404).json({ message: 'Settings not found.' });
     return res.status(200).json({ settings: setting });
@@ -155,11 +155,11 @@ exports.updateSettings = async (req, res) => {
 
     await Setting.updateOne({}, { $set: updateData }, { upsert: true });
 
-    const updated = await Setting.findOne().lean();
+    const updated = await Setting.findOne();
     const { smtp_pass, ...safe } = updated;
 
     const io = req.app.get('io');
-    const onlineUsers = await User.find({ is_online: true }).select('id').lean();
+    const onlineUsers = await User.find({ is_online: true }).select('id');
     onlineUsers.forEach((user) => {
       io.to(`user_${user.id}`).emit('admin-settings-updated', safe);
     });

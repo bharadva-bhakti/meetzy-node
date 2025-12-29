@@ -1,11 +1,12 @@
 const mongoose = require('mongoose');
 const { Schema } = mongoose;
+const { addVirtualId } = require('../utils/modelHelper');
 
 const PlanSchema = new Schema(
   {
     name: { 
-        type: String, 
-        required: true 
+      type: String, 
+      required: true 
     },
     slug: {
       type: String,
@@ -51,51 +52,51 @@ const PlanSchema = new Schema(
       min: 1,
     },
     max_status: { 
-        type: Number, 
-        required: true, 
-        default: 10 
+      type: Number, 
+      required: true, 
+      default: 10 
     },
     max_storage_per_user_mb: { 
-        type: Number, 
-        required: true, 
-        default: 5000 
+      type: Number, 
+      required: true, 
+      default: 5000 
     },
     max_groups: { 
-        type: Number, 
-        required: true, 
-        default: 50 
+      type: Number, 
+      required: true, 
+      default: 50 
     },
     allows_file_sharing: { 
-        type: Boolean,
-        default: true 
+      type: Boolean,
+      default: true 
     },
     features: { 
-        type: Object, 
-        default: {} 
+      type: Object, 
+      default: {} 
     },
 
     display_order: { 
-        type: Number, 
-        default: 0 
+      type: Number, 
+      default: 0 
     },
     is_default: { 
-        type: Boolean, 
-        default: false 
+      type: Boolean, 
+      default: false 
     },
     trial_period_days: { 
-        type: Number, 
-        default: 0, 
-        min: 0 
+      type: Number, 
+      default: 0, 
+      min: 0 
     },
     status: { 
-        type: String, 
-        enum: ['active', 'inactive'], 
-        default: 'active' 
+      type: String, 
+      enum: ['active', 'inactive'], 
+      default: 'active' 
     },
 
     deleted_at: { 
-        type: Date, 
-        default: null 
+      type: Date, 
+      default: null 
     },
   },
   {
@@ -103,6 +104,8 @@ const PlanSchema = new Schema(
     timestamps: { createdAt: 'created_at', updatedAt: 'updated_at' },
   }
 );
+
+addVirtualId(PlanSchema);
 
 PlanSchema.index({ slug: 1 }, { unique: true });
 PlanSchema.index({ status: 1, display_order: 1 });

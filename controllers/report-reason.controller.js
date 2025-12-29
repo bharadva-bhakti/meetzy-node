@@ -18,8 +18,7 @@ exports.fetchAllData = async (req, res) => {
       ReportReason.find(query)
         .sort({ [safeSortField]: sortOrder })
         .skip(skip)
-        .limit(limit)
-        .lean(),
+        .limit(limit),
       ReportReason.countDocuments(query),
     ]);
 

@@ -21,8 +21,7 @@ exports.getAllWallpapers = async (req, res) => {
       Wallpaper.find(query)
         .sort({ [safeSortField]: sortOrder })
         .skip(skip)
-        .limit(limit)
-        .lean(),
+        .limit(limit),
       Wallpaper.countDocuments(query),
     ]);
 

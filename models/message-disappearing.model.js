@@ -1,5 +1,6 @@
 const mongoose = require('mongoose');
 const { Schema } = mongoose;
+const { addVirtualId } = require('../utils/modelHelper');
 
 const MessageDisappearingSchema = new Schema(
   {
@@ -31,5 +32,7 @@ const MessageDisappearingSchema = new Schema(
     timestamps: { createdAt: 'created_at', updatedAt: 'updated_at' },
   }
 );
+
+addVirtualId(MessageDisappearingSchema);
 
 module.exports = mongoose.model('MessageDisappearing', MessageDisappearingSchema);

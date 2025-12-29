@@ -15,7 +15,7 @@ exports.getUserSetting = async (req, res) => {
   const user_id = req.params.id;
 
   try {
-    const userSetting = await UserSetting.findOne({ user_id }).populate('user_id', 'id name email').lean();
+    const userSetting = await UserSetting.findOne({ user_id }).populate('user_id', 'id name email');
 
     return res.status(200).json({ userSetting });
   } catch (error) {
@@ -124,7 +124,7 @@ exports.updateUserSetting = async (req, res) => {
       await GoogleToken.deleteMany({ user_id: userId });
     }
 
-    const updatedSetting = await UserSetting.findOne({ user_id: userId }).lean();
+    const updatedSetting = await UserSetting.findOne({ user_id: userId });
 
     if (io) {
       io.to(`user_${userId}`).emit('user-settings-updated', { userId, settings: updatedSetting });

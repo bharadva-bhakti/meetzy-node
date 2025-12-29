@@ -7,7 +7,7 @@ const Subscription = db.Subscription;
 const Plan = db.Plan;
 
 async function getEffectiveLimits(userId, userRole = 'user') {
-  const globalSettings = await Setting.findOne().lean();
+  const globalSettings = await Setting.findOne();
 
   const defaults = {
     max_groups_per_user: globalSettings?.max_groups_per_user || 500,

@@ -1,5 +1,6 @@
 const mongoose = require('mongoose');
 const { Schema } = mongoose;
+const { addVirtualId } = require('../utils/modelHelper');
 
 const FriendSchema = new Schema(
   {
@@ -29,6 +30,8 @@ const FriendSchema = new Schema(
     timestamps: { createdAt: 'created_at', updatedAt: 'updated_at' },
   }
 );
+
+addVirtualId(FriendSchema);
 
 FriendSchema.index({ user_id: 1, friend_id: 1 }, { unique: true });
 FriendSchema.index({ status: 1 });

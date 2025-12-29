@@ -4,7 +4,7 @@ const { loadGateways, sendViaGateway } = require('../services/customSMSService')
 
 exports.getAllGateways = async (req, res) => {
   try {
-    const gateway = await SMSGateway.findOne().sort({ created_at: -1 }).lean();
+    const gateway = await SMSGateway.findOne().sort({ created_at: -1 });
     res.json({ data: gateway || null });
   } catch (error) {
     console.error('Error in getAllGateways:', error);
@@ -16,7 +16,7 @@ exports.getGatewayById = async (req, res) => {
   try {
     const { id } = req.params;
 
-    const gateway = await SMSGateway.findById(id).lean();
+    const gateway = await SMSGateway.findById(id);
     if (!gateway) {
       return res.status(404).json({ message: 'SMS gateway not found'});
     }
@@ -65,27 +65,27 @@ exports.createGateway = async (req, res) => {
 };
 
 exports.updateGateway = async (req, res) => {
-    try {
-      const { id } = req.params;
-      const updateFields = req.body;
-  
-      const gateway = await SMSGateway.findById(id);
-      if (!gateway) return res.status(404).json({ message: 'SMS gateway not found' });
-  
-      if (updateFields.name && updateFields.name !== gateway.name) {
-        const duplicate = await SMSGateway.findOne({ name: updateFields.name, _id: { $ne: id } });
-        if (duplicate) return res.status(400).json({ message: 'Gateway with this name already exists' });
-      }
-  
-      await gateway.updateOne(updateFields);
-      await loadGateways;
-  
-      const updated = await SMSGateway.findById(id);
-      res.json({ data: updated, message: 'SMS gateway updated successfully' });
-    } catch (error) {
-      console.error('Error updating SMS gateway:', error);
-      res.status(500).json({ message: 'Internal server error' });
+  try {
+    const { id } = req.params;
+    const updateFields = req.body;
+
+    const gateway = await SMSGateway.findById(id);
+    if (!gateway) return res.status(404).json({ message: 'SMS gateway not found' });
+
+    if (updateFields.name && updateFields.name !== gateway.name) {
+      const duplicate = await SMSGateway.findOne({ name: updateFields.name, _id: { $ne: id } });
+      if (duplicate) return res.status(400).json({ message: 'Gateway with this name already exists' });
     }
+
+    await gateway.updateOne(updateFields);
+    await loadGateways;
+
+    const updated = await SMSGateway.findById(id);
+    res.json({ data: updated, message: 'SMS gateway updated successfully' });
+  } catch (error) {
+    console.error('Error updating SMS gateway:', error);
+    res.status(500).json({ message: 'Internal server error' });
+  }
 };
 
 exports.saveGateway = async (req, res) => {
@@ -98,7 +98,7 @@ exports.saveGateway = async (req, res) => {
       return res.status(400).json({ message: 'Name and Base URL are required fields' });
     }
 
-    const existingGateway = await SMSGateway.findOne().sort({ created_at: -1 }).lean();
+    const existingGateway = await SMSGateway.findOne().sort({ created_at: -1 });
 
     let gateway;
     let isNew = false;
@@ -155,7 +155,7 @@ exports.saveGateway = async (req, res) => {
 
       await SMSGateway.updateOne({ _id: existingGateway._id }, { $set: updateData });
 
-      gateway = await SMSGateway.findById(existingGateway._id).lean();
+      gateway = await SMSGateway.findById(existingGateway._id);
       isNew = false;
     }
 

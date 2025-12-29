@@ -1,5 +1,6 @@
 const mongoose = require('mongoose');
 const { Schema } = mongoose;
+const { addVirtualId } = require('../utils/modelHelper');
 
 const MutedStatusSchema = new Schema(
   {
@@ -19,6 +20,8 @@ const MutedStatusSchema = new Schema(
     timestamps: { createdAt: 'created_at', updatedAt: 'updated_at' },
   }
 );
+
+addVirtualId(MutedStatusSchema);
 
 MutedStatusSchema.index({ user_id: 1, target_id: 1 }, { unique: true });
 

@@ -1,5 +1,6 @@
 const mongoose = require('mongoose');
 const { Schema } = mongoose;
+const { addVirtualId } = require('../utils/modelHelper');
 
 const BroadcastSchema = new Schema(
   {
@@ -18,6 +19,8 @@ const BroadcastSchema = new Schema(
     timestamps: { createdAt: 'created_at', updatedAt: 'updated_at' },
   }
 );
+
+addVirtualId(BroadcastSchema);
 
 BroadcastSchema.index({ creator_id: 1 });
 

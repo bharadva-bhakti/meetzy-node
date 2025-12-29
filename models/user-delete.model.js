@@ -1,5 +1,6 @@
 const mongoose = require('mongoose');
 const { Schema } = mongoose;
+const { addVirtualId } = require('../utils/modelHelper');
 
 const UserDeleteSchema = new Schema(
   {
@@ -29,6 +30,8 @@ const UserDeleteSchema = new Schema(
     timestamps: { createdAt: 'created_at', updatedAt: 'updated_at' },
   }
 );
+
+addVirtualId(UserDeleteSchema);
 
 UserDeleteSchema.index(
   { user_id: 1, target_type: 1, target_id: 1 },

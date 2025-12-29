@@ -4,7 +4,7 @@ const Setting = db.Setting;
 
 const sendMail = async (to, subject, html) => {
   try {
-    const settings = await Setting.findOne().lean();
+    const settings = await Setting.findOne();
     if (!settings) throw new Error('SMTP settings not found.');
 
     const isUsingSSL = settings.mail_encryption === 'ssl';

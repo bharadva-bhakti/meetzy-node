@@ -47,8 +47,7 @@ exports.fetchReports = async (req, res) => {
         .populate('resolved_by', 'id name email')
         .sort(sortObj)
         .skip(skip)
-        .limit(limit)
-        .lean(),
+        .limit(limit),
       UserReport.countDocuments(query),
     ]);
 
@@ -162,8 +161,7 @@ exports.createUserReport = async (req, res) => {
         if (systemMessage) {
           const fullMsg = await Message.findById(systemMessage._id)
             .populate('sender', 'id name avatar')
-            .populate('group', 'id name avatar')
-            .lean();
+            .populate('group', 'id name avatar');
           io.to(`user_${reporterId}`).emit('receive-message', fullMsg);
         }
 

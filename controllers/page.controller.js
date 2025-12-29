@@ -22,7 +22,7 @@ exports.fetchPages = async (req, res) => {
     }
 
     const [pages, total] = await Promise.all([
-      Page.find(query).sort({ created_at: -1 }).skip(skip).limit(parseInt(limit)).lean(),
+      Page.find(query).sort({ created_at: -1 }).skip(skip).limit(parseInt(limit)),
       Page.countDocuments(query),
     ]);
 
@@ -46,7 +46,7 @@ exports.getPageBySlug = async (req, res) => {
   const { slug } = req.params;
 
   try {
-    const page = await Page.findOne({ slug, status: true }).lean();
+    const page = await Page.findOne({ slug, status: true });
     if (!page) return res.status(404).json({ message: 'Page not found.' });
 
     return res.status(200).json({ message: 'Page retrieved successfully.', page });
@@ -125,7 +125,7 @@ exports.updatePage = async (req, res) => {
       }
     );
 
-    const updatedPage = await Page.findById(id).lean();
+    const updatedPage = await Page.findById(id);
     return res.status(200).json({ message: 'Page updated successfully.', page: updatedPage });
   } catch (error) {
     console.error('Error in updatePage:', error);
@@ -143,7 +143,7 @@ exports.updatePageStatus = async (req, res) => {
 
     await Page.updateOne({ _id: id }, { status: Boolean(status) });
 
-    const updatedPage = await Page.findById(id).lean();
+    const updatedPage = await Page.findById(id);
     return res.status(200).json({ message: 'Page status updated successfully.', page: updatedPage });
   } catch (error) {
     console.error('Error in updatePageStatus:', error);

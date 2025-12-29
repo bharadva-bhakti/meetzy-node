@@ -1,5 +1,6 @@
 const mongoose = require('mongoose');
 const { Schema } = mongoose;
+const { addVirtualId } = require('../utils/modelHelper');
 
 const NotificationSchema = new Schema(
   {
@@ -19,24 +20,24 @@ const NotificationSchema = new Schema(
       required: true,
     },
     title: { 
-        type: String, 
-        required: true 
+      type: String, 
+      required: true 
     },
     message: { 
-        type: String, 
-        default: null 
+      type: String, 
+      default: null 
     },
     data: { 
-        type: Object, 
-        default: null 
+      type: Object, 
+      default: null 
     },
     is_read: { 
-        type: Boolean, 
-        default: false
+      type: Boolean, 
+      default: false
     },
     read_at: { 
-        type: Date, 
-        default: null 
+      type: Date, 
+      default: null 
     },
   },
   {
@@ -44,6 +45,8 @@ const NotificationSchema = new Schema(
     timestamps: { createdAt: 'created_at', updatedAt: 'updated_at' },
   }
 );
+
+addVirtualId(NotificationSchema);
 
 NotificationSchema.index({ user_id: 1, is_read: 1 });
 NotificationSchema.index({ type: 1 });

@@ -1,19 +1,20 @@
 const mongoose = require('mongoose');
 const { Schema } = mongoose;
+const { addVirtualId } = require('../utils/modelHelper');
 
 const GatewaySchema = new Schema(
   {
     name: { 
-        type: String, 
-        required: true 
+      type: String, 
+      required: true 
     },
     config: { 
-        type: Object, 
-        required: true 
+      type: Object, 
+      required: true 
     },
     enabled: { 
-        type: Boolean,
-        default: true 
+      type: Boolean,
+      default: true 
     },
   },
   {
@@ -21,5 +22,7 @@ const GatewaySchema = new Schema(
     timestamps: { createdAt: 'created_at', updatedAt: 'updated_at' },
   }
 );
+
+addVirtualId(GatewaySchema);
 
 module.exports = mongoose.model('Gateway', GatewaySchema);

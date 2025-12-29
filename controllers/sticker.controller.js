@@ -21,8 +21,7 @@ exports.getAllSticker = async (req, res) => {
       Sticker.find(query)
         .sort({ [safeSortField]: sortOrder })
         .skip(skip)
-        .limit(limit)
-        .lean(),
+        .limit(limit),
       Sticker.countDocuments(query),
     ]);
 

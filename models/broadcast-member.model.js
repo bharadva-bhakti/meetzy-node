@@ -1,5 +1,6 @@
 const mongoose = require('mongoose');
 const { Schema } = mongoose;
+const { addVirtualId } = require('../utils/modelHelper');
 
 const BroadcastMemberSchema = new Schema(
   {
@@ -24,6 +25,8 @@ const BroadcastMemberSchema = new Schema(
     timestamps: false,
   }
 );
+
+addVirtualId(BroadcastMemberSchema);
 
 BroadcastMemberSchema.index({ broadcast_id: 1 });
 BroadcastMemberSchema.index({ recipient_id: 1 });

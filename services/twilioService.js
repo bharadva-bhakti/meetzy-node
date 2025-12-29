@@ -7,7 +7,7 @@ exports.sendTwilioSMS = async (to, message) => {
     const gateway = await Gateway.findOne({
       name: { $regex: /^twilio$/i },
       enabled: true,
-    }).lean();
+    });
 
     if (!gateway) {
       throw new Error('Twilio gateway not found or disabled');

@@ -1,5 +1,6 @@
 const mongoose = require('mongoose');
 const { Schema } = mongoose;
+const { addVirtualId } = require('../utils/modelHelper');
 
 const PaymentSchema = new Schema(
   {
@@ -85,6 +86,8 @@ const PaymentSchema = new Schema(
     timestamps: { createdAt: 'created_at', updatedAt: 'updated_at' },
   }
 );
+
+addVirtualId(PaymentSchema);
 
 PaymentSchema.index({ user_id: 1 });
 PaymentSchema.index({ status: 1 });

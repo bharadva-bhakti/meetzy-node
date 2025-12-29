@@ -1,5 +1,6 @@
 const mongoose = require('mongoose');
 const { Schema } = mongoose;
+const { addVirtualId } = require('../utils/modelHelper');
 
 const SubscriptionSchema = new Schema(
   {
@@ -19,14 +20,14 @@ const SubscriptionSchema = new Schema(
       required: true,
     },
     stripe_subscription_id: { 
-        type: String, 
-        unique: true, 
-        sparse: true 
+      type: String, 
+      unique: true, 
+      sparse: true 
     },
     paypal_subscription_id: { 
-        type: String, 
-        unique: true, 
-        sparse: true 
+      type: String, 
+      unique: true, 
+      sparse: true 
     },
     payment_gateway: {
       type: String,
@@ -39,20 +40,20 @@ const SubscriptionSchema = new Schema(
       default: 'incomplete',
     },
     current_period_start: { 
-        type: Date, 
-        default: null 
+      type: Date, 
+      default: null 
     },
     current_period_end: { 
-        type: Date, 
-        default: null 
+      type: Date, 
+      default: null 
     },
     cancel_at_period_end: { 
-        type: Boolean, 
-        default: false 
+      type: Boolean, 
+      default: false 
     },
     canceled_at: { 
-        type: Date, 
-        default: null 
+      type: Date, 
+      default: null 
     },
     billing_cycle: {
       type: String,
@@ -60,16 +61,16 @@ const SubscriptionSchema = new Schema(
       default: 'monthly',
     },
     amount: { 
-        type: Number, 
-        required: true 
+      type: Number, 
+      required: true 
     },
     currency: { 
-        type: String, 
-        default: 'USD', maxlength: 3 
+      type: String, 
+      default: 'USD', maxlength: 3 
     },
     metadata: { 
-        type: Object, 
-        default: {} 
+      type: Object, 
+      default: {} 
     },
   },
   {
@@ -77,5 +78,7 @@ const SubscriptionSchema = new Schema(
     timestamps: { createdAt: 'created_at', updatedAt: 'updated_at' },
   }
 );
+
+addVirtualId(SubscriptionSchema);
 
 module.exports = mongoose.model('Subscription', SubscriptionSchema);

@@ -1,5 +1,6 @@
 const mongoose = require('mongoose');
 const { Schema } = mongoose;
+const { addVirtualId } = require('../utils/modelHelper');
 
 const SessionSchema = new Schema(
   {
@@ -39,6 +40,8 @@ const SessionSchema = new Schema(
     timestamps: { createdAt: 'created_at', updatedAt: 'updated_at' },
   }
 );
+
+addVirtualId(SessionSchema);
 
 SessionSchema.index({ user_id: 1, status: 1 });
 SessionSchema.index({ expires_at: 1 });

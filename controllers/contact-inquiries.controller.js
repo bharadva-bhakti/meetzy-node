@@ -28,8 +28,7 @@ exports.getAllInquiries = async (req, res) => {
       ContactInquiry.find(query)
         .sort({ [safeSortField]: sortOrder })
         .skip(skip)
-        .limit(limit)
-        .lean(),
+        .limit(limit),
       ContactInquiry.countDocuments(query),
     ]);
 

@@ -1,5 +1,6 @@
 const mongoose = require('mongoose');
 const { Schema } = mongoose;
+const { addVirtualId } = require('../utils/modelHelper');
 
 const MessagePinSchema = new Schema(
   {
@@ -23,6 +24,8 @@ const MessagePinSchema = new Schema(
     timestamps: { createdAt: 'created_at', updatedAt: 'updated_at' },
   }
 );
+
+addVirtualId(MessagePinSchema);
 
 MessagePinSchema.index({ message_id: 1 });
 

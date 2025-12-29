@@ -120,7 +120,7 @@ exports.getUserGroup = async (req, res) => {
       }),
       Group.find({
         memberships: { $elemMatch: { user_id } }, ...query,
-      }).populate('creator', 'id name email').sort({ updated_at: -1 }).skip(skip).limit(limit).lean(),
+      }).populate('creator', 'id name email').sort({ updated_at: -1 }).skip(skip).limit(limit),
     ]);
 
     const updatedGroups = groups.map(g => ({
@@ -450,7 +450,7 @@ exports.createGroup = async (req, res) => {
       const fullSystemMessage = await Message.findById(systemMessage._id)
         .populate('sender', 'id name avatar')
         .populate('group', 'id name avatar')
-        .lean();
+        ;
 
       allMembers.forEach(memberId => {
         io.to(`user_${memberId}`).emit('receive-message', fullSystemMessage);
@@ -737,7 +737,7 @@ exports.getAllGroups = async (req, res) => {
 
     const [total, groups] = await Promise.all([
       Group.countDocuments(query),
-      Group.find(query).populate('creator', 'id name email avatar') .sort(sortObj) .skip(skip) .limit(parseInt(limit)) .lean(),
+      Group.find(query).populate('creator', 'id name email avatar') .sort(sortObj) .skip(skip) .limit(parseInt(limit)) ,
     ]);
 
     res.status(200).json({

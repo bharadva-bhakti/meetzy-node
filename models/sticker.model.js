@@ -1,5 +1,6 @@
 const mongoose = require('mongoose');
 const { Schema } = mongoose;
+const { addVirtualId } = require('../utils/modelHelper');
 
 const StickerSchema = new Schema(
   {
@@ -27,5 +28,7 @@ const StickerSchema = new Schema(
     timestamps: { createdAt: 'created_at', updatedAt: 'updated_at' },
   }
 );
+
+addVirtualId(StickerSchema);
 
 module.exports = mongoose.model('Sticker', StickerSchema);

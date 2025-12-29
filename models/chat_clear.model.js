@@ -1,5 +1,6 @@
 const mongoose = require('mongoose');
 const { Schema } = mongoose;
+const { addVirtualId } = require('../utils/modelHelper');
 
 const ChatClearSchema = new Schema(
   {
@@ -34,6 +35,8 @@ const ChatClearSchema = new Schema(
     timestamps: false,
   }
 );
+
+addVirtualId(ChatClearSchema);
 
 ChatClearSchema.index(
   { user_id: 1, recipient_id: 1 }, 

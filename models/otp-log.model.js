@@ -1,5 +1,6 @@
 const mongoose = require('mongoose');
 const { Schema } = mongoose;
+const { addVirtualId } = require('../utils/modelHelper');
 
 const OTPLogSchema = new Schema(
   {
@@ -22,13 +23,15 @@ const OTPLogSchema = new Schema(
     verified: { 
       type: Boolean, 
       default: false
-     },
+    },
   },
   {
     collection: 'otp_logs',
     timestamps: { createdAt: 'created_at', updatedAt: 'updated_at' },
   }
 );
+
+addVirtualId(OTPLogSchema);
 
 OTPLogSchema.index({ email: 1 });
 OTPLogSchema.index({ phone: 1 });

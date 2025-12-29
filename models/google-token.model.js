@@ -1,5 +1,6 @@
 const mongoose = require('mongoose');
 const { Schema } = mongoose;
+const { addVirtualId } = require('../utils/modelHelper');
 
 const GoogleTokenSchema = new Schema(
   {
@@ -9,20 +10,20 @@ const GoogleTokenSchema = new Schema(
       required: true,
     },
     google_email: { 
-        type: String, 
-        default: null 
+      type: String, 
+      default: null 
     },
     access_token: { 
-        type: String, 
-        required: true
+      type: String, 
+      required: true
     },
     refresh_token: { 
-        type: String, 
-        required: true
+      type: String, 
+      required: true
     },
     expiry_date: { 
-        type: Number, 
-        default: null 
+      type: Number, 
+      default: null 
     },
   },
   {
@@ -30,5 +31,7 @@ const GoogleTokenSchema = new Schema(
     timestamps: { createdAt: 'created_at', updatedAt: 'updated_at' },
   }
 );
+
+addVirtualId(GoogleTokenSchema);
 
 module.exports = mongoose.model('GoogleToken', GoogleTokenSchema);

@@ -1,5 +1,6 @@
 const mongoose = require('mongoose');
 const { Schema } = mongoose;
+const { addVirtualId } = require('../utils/modelHelper');
 
 const GroupSchema = new Schema(
   {
@@ -26,5 +27,7 @@ const GroupSchema = new Schema(
     timestamps: { createdAt: 'created_at', updatedAt: 'updated_at' },
   }
 );
+
+addVirtualId(GroupSchema);
 
 module.exports = mongoose.model('Group', GroupSchema);

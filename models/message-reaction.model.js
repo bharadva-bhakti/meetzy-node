@@ -1,5 +1,6 @@
 const mongoose = require('mongoose');
 const { Schema } = mongoose;
+const { addVirtualId } = require('../utils/modelHelper');
 
 const MessageReactionSchema = new Schema(
   {
@@ -23,6 +24,8 @@ const MessageReactionSchema = new Schema(
     timestamps: true,
   }
 );
+
+addVirtualId(MessageReactionSchema);
 
 MessageReactionSchema.index(
   { message_id: 1, user_id: 1, emoji: 1 },

@@ -1,5 +1,6 @@
 const mongoose = require('mongoose');
 const { Schema } = mongoose;
+const { addVirtualId } = require('../utils/modelHelper');
 
 const ContactInquirySchema = new Schema(
   {
@@ -25,5 +26,7 @@ const ContactInquirySchema = new Schema(
     timestamps: { createdAt: 'created_at', updatedAt: 'updated_at' },
   }
 );
+
+addVirtualId(ContactInquirySchema);
 
 module.exports = mongoose.model('ContactInquiry', ContactInquirySchema);
