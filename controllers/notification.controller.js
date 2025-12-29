@@ -1,6 +1,5 @@
 const { db } = require('../models');
 const Notification = db.Notification;
-const User = db.User;
 const Friend = db.Friend;
 
 async function isFriendWith(userId1, userId2) {

@@ -1,5 +1,6 @@
 const fs = require('fs');
 const path = require('path');
+const mongoose = require('mongoose')
 const { db } = require('../models');
 const Group = db.Group;
 const GroupMember = db.GroupMember;
@@ -15,11 +16,16 @@ const createSystemMessage = async (req, groupId, action, metadata = {}) => {
   try {
     let content = '';
     let systemMetadata = { system_action: action, ...metadata };
+    
+    const senderId = metadata.creator_user_id || metadata.updater_user_id || req.user._id;
+    if (!senderId) {
+      throw new Error('Sender ID is required to create a system message');
+    }
 
     switch (action) {
       case 'group_created':
-        const group = await Group.findById(groupId).populate('creator', 'name');
-        const creatorName = group?.creator?.name || 'Someone';
+        const group = await Group.findById(groupId).populate('created_by', 'name');
+        const creatorName = group?.created_by?.name || 'Someone';
         content = `${creatorName} created this group.`;
         break;
       case 'member_added':
@@ -51,14 +57,17 @@ const createSystemMessage = async (req, groupId, action, metadata = {}) => {
 
     const systemMessage = await Message.create({
       group_id: groupId,
-      sender_id: metadata.creator_user_id,
+      sender_id: senderId,
       message_type: 'system',
       content,
       metadata: systemMetadata,
     });
 
+    const fullSystemMessage = await Message.findById(systemMessage._id)
+    .populate('sender_id', 'id name avatar').populate('group_id', 'id name avatar');
+
     const io = req.app.get('io');
-    io.to(`group_${groupId}`).emit('receive-message', systemMessage);
+    io.to(`group_${groupId}`).emit('receive-message', fullSystemMessage);
 
     return systemMessage;
   } catch (error) {
@@ -72,21 +81,29 @@ exports.getGroupInfo = async (req, res) => {
   const userId = req.user?._id;
 
   try {
-    const group = await Group.findById(groupId)
-      .populate('creator', 'id name')
-      .populate('memberships.user', 'id name avatar')
-      .populate('setting');
+    const group = await Group.findById(groupId).populate('created_by', 'id name');
 
-    if (!group) return res.status(404).json({ message: 'Group not Found.' });
+    if (!group) {
+      return res.status(404).json({ message: 'Group not Found.' });
+    }
+
+    const members = await GroupMember.find({ group_id: groupId }).populate('user_id', 'id name avatar');
 
     let myRole = null;
     if (userId) {
-      const membership = await GroupMember.findOne({ group_id: groupId, user_id: userId });
-      myRole = membership?.role || null;
+      const me = members.find(m => m.user_id?.id === userId.toString());
+      myRole = me?.role || null;
     }
 
-    const groupJson = group.toJSON();
-    if (myRole) groupJson.myRole = myRole;
+    const groupJson = group.toObject();
+    groupJson.members = members.map(m => ({
+      ...m.user_id.toObject(),
+      role: m.role,
+    }));
+
+    if (myRole) {
+      groupJson.myRole = myRole;
+    }
 
     return res.status(200).json({ group: groupJson });
   } catch (error) {
@@ -107,34 +124,58 @@ exports.getUserGroup = async (req, res) => {
       Archive.find({ user_id, target_type: 'group' }).select('target_id'),
       Favorite.find({ user_id, target_type: 'group' }).select('target_id'),
     ]);
+      
 
     const archivedSet = new Set(archived.map(a => a.target_id.toString()));
     const favoriteSet = new Set(favorites.map(f => f.target_id.toString()));
 
-    const query = search ? { name: { $regex: search, $options: 'i' } } : {};
+    const memberships = await GroupMember.find({ user_id }).select('group_id');
+    const groupIds = memberships.map(m => m.group_id);
+
+    if (groupIds.length === 0) {
+      return res.status(200).json({
+        groups: [],
+        pagination: {
+          page,
+          limit,
+          totalCount: 0,
+          totalPages: 0,
+          hasMore: false,
+        },
+      });
+    }
+
+    const groupQuery = {
+      _id: { $in: groupIds },
+      ...(search && { name: { $regex: search, $options: 'i' } }),
+    };
 
     const [totalCount, groups] = await Promise.all([
-      Group.countDocuments({
-        memberships: { $elemMatch: { user_id } },
-        ...query,
-      }),
-      Group.find({
-        memberships: { $elemMatch: { user_id } }, ...query,
-      }).populate('creator', 'id name email').sort({ updated_at: -1 }).skip(skip).limit(limit),
+      Group.countDocuments(groupQuery),
+      Group.find(groupQuery).populate('created_by', 'id name email').sort({ updated_at: -1 }).skip(skip).limit(limit),
     ]);
 
-    const updatedGroups = groups.map(g => ({
-      ...g,
-      isArchived: archivedSet.has(g._id.toString()),
-      isFavorite: favoriteSet.has(g._id.toString()),
-    }));
+    const updatedGroups = groups.map(g => {
+      const group = g.toObject();
+      return {
+        ...group,
+        isArchived: archivedSet.has(group.id.toString()),
+        isFavorite: favoriteSet.has(group.id.toString()),
+      };
+    });
 
     const totalPages = Math.ceil(totalCount / limit);
     const hasMore = page < totalPages;
 
     return res.status(200).json({
       groups: updatedGroups,
-      pagination: { page, limit, totalCount, totalPages, hasMore },
+      pagination: {
+        page,
+        limit,
+        totalCount,
+        totalPages,
+        hasMore,
+      },
     });
   } catch (error) {
     console.error('Error in getUserGroup:', error);
@@ -178,8 +219,8 @@ exports.getGroupMembers = async (req, res) => {
       { $skip: skip },
       { $limit: parseInt(limit) },
       { $project: {
-          id: '$user._id', name: '$user.name', email: '$user.email', avatar: '$user.avatar', group_role: '$role',
-          joined_at: '$created_at', updated_at: '$updated_at',
+        id: '$user._id', name: '$user.name', email: '$user.email', avatar: '$user.avatar', group_role: '$role',
+        joined_at: '$created_at', updated_at: '$updated_at',
       }},
     ]);
 
@@ -208,8 +249,10 @@ exports.addMembersToGroup = async (req, res) => {
       return res.status(400).json({ message: 'Group ID and members array are required' });
     }
 
-    const group = await Group.findById(group_id).populate('setting');
+    const group = await Group.findById(group_id);
     if (!group) return res.status(404).json({ message: 'Group not found.' });
+
+    const groupSetting = await GroupSetting.findOne({ group_id });
 
     const limits = await getEffectiveLimits(group.created_by);
 
@@ -223,7 +266,7 @@ exports.addMembersToGroup = async (req, res) => {
     const requester = await GroupMember.findOne({ group_id, user_id: requestingUserId });
     if (!requester) return res.status(404).json({ message: 'You are not a member of this group.' });
 
-    const canAddMember = !group.setting || group.setting.allow_add_member === 'everyone' || requester.role === 'admin';
+    const canAddMember = !groupSetting || groupSetting.allow_add_member === 'everyone' || requester.role === 'admin';
     if (!canAddMember) return res.status(403).json({ message: 'Only admins can add members.' });
 
     const added = [];
@@ -254,8 +297,7 @@ exports.addMembersToGroup = async (req, res) => {
 
     if (added.length > 0) {
       const io = req.app.get('io');
-      const updatedMembers = await GroupMember.find({ group_id })
-        .populate('user', 'id name avatar email');
+      const updatedMembers = await GroupMember.find({ group_id }).populate('user', 'id name avatar email');  // Populate the 'user' field
 
       const groupPayload = {
         id: group._id,
@@ -279,7 +321,9 @@ exports.addMembersToGroup = async (req, res) => {
         io.to(`user_${member.user_id}`).emit('group-added', groupPayload);
         if (member.role === 'admin') {
           io.to(`group_${group_id}`).emit('member-role-updated', {
-            groupId: group_id, userId: member.user_id, newRole: 'admin',
+            groupId: group_id,
+            userId: member.user_id,
+            newRole: 'admin',
           });
         }
       });
@@ -448,9 +492,7 @@ exports.createGroup = async (req, res) => {
 
     if (systemMessage && io) {
       const fullSystemMessage = await Message.findById(systemMessage._id)
-        .populate('sender', 'id name avatar')
-        .populate('group', 'id name avatar')
-        ;
+        .populate('sender_id', 'id name avatar').populate('group_id', 'id name avatar');
 
       allMembers.forEach(memberId => {
         io.to(`user_${memberId}`).emit('receive-message', fullSystemMessage);
@@ -478,22 +520,23 @@ exports.updateGroup = async (req, res) => {
   const { name, description, remove_avatar, group_id } = req.body;
 
   try {
-    const group = await Group.findById(group_id).populate('setting');
+    const group = await Group.findById(group_id);
     if (!group) return res.status(404).json({ message: 'Group not found' });
 
+    const groupSetting = await GroupSetting.findOne({ group_id });
     const isSuperAdmin = req.user.role === 'super_admin';
 
-    const groupMember = await GroupMember.findOne({ group_id, user_id: requestingUserId });
+    const groupMember = await GroupMember.findOne({ group_id, user_id: requestingUserId,});
+
     if (!isSuperAdmin && !groupMember) {
-      return res.status(404).json({ message: 'You are not a member of the group.' });
+      return res.status(403).json({ message: 'You are not a member of the group.' });
     }
 
-    const canEditInfo = isSuperAdmin ||
-      !group.setting ||
-      group.setting.allow_edit_info === 'everyone' ||
-      groupMember?.role === 'admin';
+    const canEditInfo = isSuperAdmin || !groupSetting || groupSetting.allow_edit_info === 'everyone' || groupMember?.role === 'admin';
 
-    if (!canEditInfo) return res.status(403).json({ message: 'Only admins can edit group info.' });
+    if (!canEditInfo) {
+      return res.status(403).json({ message: 'Only admins can edit group info.' });
+    }
 
     const updateData = {};
     const changes = {};
@@ -502,6 +545,7 @@ exports.updateGroup = async (req, res) => {
       updateData.name = name.trim();
       changes.name = { old: group.name, new: name.trim() };
     }
+
     if (description !== undefined && description?.trim() !== group.description) {
       updateData.description = description.trim();
       changes.description = { old: group.description, new: description.trim() };
@@ -524,7 +568,7 @@ exports.updateGroup = async (req, res) => {
     }
 
     if (Object.keys(updateData).length > 0) {
-      await group.updateOne(updateData);
+      await Group.updateOne({ _id: group_id }, updateData);
     }
 
     if (Object.keys(changes).length > 0) {
@@ -536,7 +580,11 @@ exports.updateGroup = async (req, res) => {
     }
 
     const updatedGroup = await Group.findById(group_id);
-    return res.status(200).json({ message: 'Group updated successfully.', data: updatedGroup });
+
+    return res.status(200).json({
+      message: 'Group updated successfully.',
+      data: updatedGroup,
+    });
   } catch (error) {
     console.error('Error in updateGroup:', error);
     return res.status(500).json({ message: 'Internal server error' });
@@ -550,30 +598,27 @@ exports.updateGroupSetting = async (req, res) => {
   try {
     if (!group_id) return res.status(400).json({ message: 'Group id is required.' });
 
-    const group = await Group.findById(group_id).populate('setting');
+    const group = await Group.findById(group_id);
     if (!group) return res.status(400).json({ message: 'Group not found.' });
-
+    
+    const groupSetting = await GroupSetting.findOne({ group_id });
+    if (!groupSetting) return res.status(400).json({ message: 'Group settings not found.' });
+    
     const member = await GroupMember.findOne({ group_id, user_id });
     if (!member || member.role !== 'admin') {
       return res.status(403).json({ message: 'Only admins can update group settings.' });
     }
-
     const updateData = {};
     if (['admin', 'everyone'].includes(allow_edit_info)) updateData.allow_edit_info = allow_edit_info;
     if (['admin', 'everyone'].includes(allow_send_message)) updateData.allow_send_message = allow_send_message;
     if (['admin', 'everyone'].includes(allow_add_member)) updateData.allow_add_member = allow_add_member;
     if (['admin', 'everyone'].includes(allow_mentions)) updateData.allow_mentions = allow_mentions;
-
     if (Object.keys(updateData).length === 0) {
       return res.status(400).json({ message: 'No valid settings provided.' });
     }
+    await groupSetting.updateOne(updateData);
 
-    let setting = group.setting;
-    if (setting) {
-      await setting.updateOne(updateData);
-    } else {
-      setting = await GroupSetting.create({ group_id, ...updateData });
-    }
+    const updatedSetting = await GroupSetting.findOne({ group_id });
 
     if (updateData.allow_send_message) {
       const updater = await User.findById(user_id).select('name');
@@ -585,18 +630,17 @@ exports.updateGroupSetting = async (req, res) => {
         setting_text: settingText,
       });
     }
-
     const io = req.app.get('io');
     if (io) {
       io.to(`group_${group_id}`).emit('group-settings-updated', {
         groupId: group_id,
-        settings: setting,
+        settings: updatedSetting,
       });
     }
 
     return res.status(200).json({
       message: 'Group settings updated successfully.',
-      data: setting,
+      data: updatedSetting,
     });
   } catch (error) {
     console.error('Error in updateGroupSetting:', error);
@@ -619,11 +663,7 @@ exports.deleteGroup = async (req, res) => {
     }
 
     if (req.user.role !== 'super_admin') {
-      const adminGroups = await GroupMember.find({
-        group_id: { $in: ids },
-        user_id: requestingUserId,
-        role: 'admin',
-      });
+      const adminGroups = await GroupMember.find({group_id: { $in: ids },user_id: requestingUserId,role: 'admin'});
       const adminGroupIds = adminGroups.map(m => m.group_id.toString());
       const unauthorized = ids.filter(id => !adminGroupIds.includes(id.toString()));
       if (unauthorized.length > 0) {
@@ -708,9 +748,7 @@ exports.leaveGroup = async (req, res) => {
     io.to(`group_${group_id}`).emit('member-left-group', { groupId: group_id, userId: user_id });
     if (newAdminPromoted) {
       io.to(`group_${group_id}`).emit('member-role-updated', {
-        groupId: group_id,
-        userId: newAdminPromoted,
-        newRole: 'admin',
+        groupId: group_id, userId: newAdminPromoted, newRole: 'admin',
       });
     }
     io.to(`user_${user_id}`).emit('group-left', { groupId: group_id });
@@ -737,7 +775,7 @@ exports.getAllGroups = async (req, res) => {
 
     const [total, groups] = await Promise.all([
       Group.countDocuments(query),
-      Group.find(query).populate('creator', 'id name email avatar') .sort(sortObj) .skip(skip) .limit(parseInt(limit)) ,
+      Group.find(query).populate('created_by', 'id name email avatar') .sort(sortObj) .skip(skip) .limit(parseInt(limit)) ,
     ]);
 
     res.status(200).json({

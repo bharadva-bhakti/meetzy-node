@@ -21,6 +21,11 @@ const GroupSchema = new Schema(
       ref: 'User',
       default: null,
     },
+    setting: {
+      type: Schema.Types.ObjectId,
+      ref: 'GroupSetting',
+      default: null
+    }
   },
   {
     collection: 'groups',

@@ -28,6 +28,7 @@ const GroupMemberSchema = new Schema(
 
 addVirtualId(GroupMemberSchema);
 
+GroupMemberSchema.virtual('user', {ref: 'User', localField: 'user_id', foreignField: '_id', justOne: true,});
 GroupMemberSchema.index({ group_id: 1, user_id: 1 }, { unique: true });
 GroupMemberSchema.index({ user_id: 1 });
 GroupMemberSchema.index({ group_id: 1, role: 1 });
