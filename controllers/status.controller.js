@@ -11,6 +11,7 @@ const MessageStatus = db.MessageStatus;
 const User = db.User;
 const fs = require('fs');
 const path = require('path');
+const mongoose = require('mongoose');
 const { getEffectiveLimits } = require('../utils/userLimits');
 
 function timeAgo(date) {
@@ -30,30 +31,25 @@ function timeAgo(date) {
 }
 
 exports.getStatusFeed = async (req, res) => {
-  const user_id = req.user._id;
+  const user_id = req.user._id.toString();
   const now = new Date();
 
   try {
-    // Get friends
     const friends = await Friend.find({
-      $or: [
-        { user_id, status: 'accepted' },
-        { friend_id: user_id, status: 'accepted' },
-      ],
+      $or: [{ user_id, status: 'accepted' },{ friend_id: user_id, status: 'accepted' }],
     }).lean();
 
-    const friendIds = friends.map(f => (f.user_id.toString() === user_id.toString() ? f.friend_id : f.user_id));
+    const friendIds = friends.map(f => 
+      f.user_id.toString() === user_id ? f.friend_id.toString() : f.user_id.toString()
+    );
 
-    // Get blocked users
-    const blocks = await Block.find({
-      $or: [{ blocker_id: user_id }, { blocked_id: user_id }],
-    }).lean();
+    const blocks = await Block.find({$or: [{ blocker_id: user_id }, { blocked_id: user_id }],}).lean();
+    const blockedIds = blocks.map(b => 
+      b.blocker_id.toString() === user_id ? b.blocked_id.toString() : b.blocker_id.toString()
+    );
 
-    const blockedIds = blocks.map(b => (b.blocker_id.toString() === user_id.toString() ? b.blocked_id : b.blocker_id));
-
-    const visibleFriendIds = friendIds.filter(id => !blockedIds.includes(id.toString()));
-
-    // Get privacy settings
+    const visibleFriendIds = friendIds.filter(id => !blockedIds.includes(id));
+    
     const settings = await UserSetting.find({
       user_id: { $in: [user_id, ...visibleFriendIds] },
     }).select('user_id status_privacy shared_with').lean();
@@ -74,29 +70,65 @@ exports.getStatusFeed = async (req, res) => {
 
       privacyMap[s.user_id.toString()] = {
         status_privacy: s.status_privacy || 'my_contacts',
-        shared_with: shared,
+        shared_with: shared.map(id => id.toString()),
       };
     }
 
-    // Get muted users
     const mutedUsers = await MutedStatus.find({ user_id }).select('target_id').lean();
     const mutedIds = mutedUsers.map(m => m.target_id.toString());
 
-    // Get active statuses with user and views
-    const statuses = await Status.find({
-      expires_at: { $gt: now },
-    })
-      .populate('user', 'id name avatar')
-      .populate({
-        path: 'views',
-        populate: { path: 'viewer', select: 'id name avatar' },
-      })
-      .sort({ created_at: 1 })
-      .lean({ virtuals: true });
+    const statuses = await Status.aggregate([
+      { $match: { expires_at: { $gt: now } } },
+      { $sort: { created_at: 1 } },
+      { $lookup: { from: 'users', localField: 'user_id', foreignField: '_id', as: 'user'}},
+      { $unwind: { path: '$user', preserveNullAndEmptyArrays: true } },
+      { $lookup: { from: 'status_views', localField: '_id', foreignField: 'status_id', as: 'views'}},
+      { $lookup: { from: 'users', localField: 'views.viewer_id', foreignField: '_id', as: 'viewerUsers'}},
+      {
+        $addFields: {
+          views: {
+            $map: {
+              input: '$views',
+              as: 'view',
+              in: {
+                $let: {
+                  vars: {
+                    matchedViewer: {
+                      $arrayElemAt: [
+                        { $filter: { input: '$viewerUsers', as: 'vu', cond: { $eq: ['$$vu._id', '$$view.viewer_id'] }}},
+                        0,
+                      ],
+                    },
+                  },
+                  in: {id: '$$matchedViewer._id',name: '$$matchedViewer.name',avatar: '$$matchedViewer.avatar',viewed_at: '$$view.viewer_at'},
+                },
+              },
+            },
+          },
+        },
+      },
+      {
+        $project: {
+          id: '$_id',
+          _id: 0,
+          user_id: 1,
+          type: 1,
+          file_url: 1,
+          caption: 1,
+          sponsored: 1,
+          created_at: 1,
+          expires_at: 1,
+          user: { id: '$user._id', name: '$user.name', avatar: '$user.avatar'},
+          views: { id: 1, name: 1, avatar: 1, viewed_at: 1,},
+        },
+      },
+    ]);
 
     const feed = {};
     for (const status of statuses) {
-      const ownerId = status.user.id.toString();
+      const ownerId = status.user?.id?.toString();
+      if (!ownerId) continue;
+
       const isSponsored = Boolean(status.sponsored);
 
       if (!isSponsored) {
@@ -107,9 +139,9 @@ exports.getStatusFeed = async (req, res) => {
           shared_with: [],
         };
 
-        if (ownerId !== user_id.toString()) {
+        if (ownerId !== user_id) {
           if (status_privacy === 'my_contacts' && !friendIds.includes(ownerId)) continue;
-          if (status_privacy === 'only_share_with' && !shared_with.includes(user_id.toString())) continue;
+          if (status_privacy === 'only_share_with' && !shared_with.includes(user_id)) continue;
         }
       }
 
@@ -128,12 +160,12 @@ exports.getStatusFeed = async (req, res) => {
         };
       }
 
-      const views = (status.views || []).map(v => ({
-        id: v.viewer.id,
-        name: v.viewer.name,
-        avatar: v.viewer.avatar,
-        viewed_at: v.viewer_at,
-        viewed_ago: timeAgo(v.viewer_at),
+      const views = status.views.map(v => ({
+        id: v.id,
+        name: v.name,
+        avatar: v.avatar,
+        viewed_at: v.viewed_at,
+        viewed_ago: timeAgo(v.viewed_at),
       }));
 
       feed[ownerId].statuses.push({
@@ -144,7 +176,7 @@ exports.getStatusFeed = async (req, res) => {
         sponsored: isSponsored,
         created_at: status.created_at,
         expires_at: status.expires_at,
-        view_count: status.views?.length || 0,
+        view_count: views.length,
         views,
       });
     }
@@ -152,8 +184,8 @@ exports.getStatusFeed = async (req, res) => {
     const sortedFeed = Object.values(feed).sort((a, b) => {
       if (a.is_sponsored !== b.is_sponsored) return b.is_sponsored - a.is_sponsored;
 
-      if (a.user.id.toString() === user_id.toString()) return -1;
-      if (b.user.id.toString() === user_id.toString()) return 1;
+      if (a.user.id.toString() === user_id) return -1;
+      if (b.user.id.toString() === user_id) return 1;
 
       const lastA = a.statuses[a.statuses.length - 1]?.created_at;
       const lastB = b.statuses[b.statuses.length - 1]?.created_at;
@@ -179,26 +211,27 @@ exports.getMutedStatuses = async (req, res) => {
   const search = req.query.search?.trim() || '';
 
   try {
-    const match = { user_id: userId };
-    if (search) {
-      match['mutedUser.name'] = { $regex: search, $options: 'i' };
-    }
+    const baseMatch = { user_id: userId };
 
-    const pipeline = [
-      { $match: match },
-      {
-        $lookup: {
-          from: 'users',
-          localField: 'target_id',
-          foreignField: '_id',
-          as: 'mutedUser',
-        },
-      },
-      { $unwind: '$mutedUser' },
+    let pipeline = [
+      { $match: baseMatch },
+      { $lookup: { from: 'users', localField: 'target_id', foreignField: '_id', as: 'mutedUser'}},
+      { $unwind: { path: '$mutedUser', preserveNullAndEmptyArrays: false } },
       { $sort: { created_at: -1 } },
       { $skip: skip },
       { $limit: limit },
+      {
+        $project: {
+          target_id: 1,
+          created_at: 1,
+          mutedUser: { id: '$mutedUser._id', name: '$mutedUser.name', avatar: '$mutedUser.avatar'},
+        },
+      },
     ];
+
+    if (search) {
+      pipeline.splice(3, 0, { $match: { 'mutedUser.name': { $regex: search, $options: 'i' } } });
+    }
 
     const [mutes, totalCount] = await Promise.all([
       MutedStatus.aggregate(pipeline),
@@ -212,22 +245,15 @@ exports.getMutedStatuses = async (req, res) => {
         const statuses = await Status.find({
           user_id: mute.target_id,
           expires_at: { $gt: now },
-        })
-          .select('id file_url type caption created_at expires_at')
-          .sort({ created_at: 1 })
-          .lean();
+        }).lean({ virtuals: true }).select('file_url type caption created_at expires_at').sort({ created_at: 1 });
 
         if (statuses.length === 0) return null;
-
+        
         return {
-          muted_user: {
-            id: mute.mutedUser.id,
-            name: mute.mutedUser.name,
-            avatar: mute.mutedUser.avatar,
-          },
+          muted_user: { id: mute.mutedUser.id, name: mute.mutedUser.name, avatar: mute.mutedUser.avatar},
           muted_at: mute.created_at,
           statuses: statuses.map(s => ({
-            id: s.id,
+            id: s._id,
             type: s.type,
             file_url: s.file_url,
             caption: s.caption,
@@ -270,10 +296,7 @@ exports.getSponsoredStatuses = async (req, res) => {
     const allowedSortFields = ['id', 'caption', 'sponsored', 'created_at', 'updated_at', 'expires_at'];
     const safeSortField = allowedSortFields.includes(sortField) ? sortField : 'created_at';
 
-    const match = {
-      user_id: req.user._id,
-      sponsored: true,
-    };
+    const match = { user_id: req.user._id, sponsored: true};
 
     if (search) {
       match.$or = [
@@ -285,31 +308,22 @@ exports.getSponsoredStatuses = async (req, res) => {
 
     const pipeline = [
       { $match: match },
-      {
-        $lookup: {
-          from: 'users',
-          localField: 'user_id',
-          foreignField: '_id',
-          as: 'user',
-        },
-      },
+      { $lookup: { from: 'users', localField: 'user_id', foreignField: '_id', as: 'user'}},
       { $unwind: '$user' },
       { $sort: { [safeSortField]: sortOrder } },
       { $skip: skip },
       { $limit: limit },
       {
         $project: {
-          id: 1,
+          id: '$_id',
+          _id: 0,
           type: 1,
           file_url: 1,
           caption: 1,
           sponsored: 1,
           created_at: 1,
           expires_at: 1,
-          'user.id': 1,
-          'user.name': 1,
-          'user.email': 1,
-          'user.avatar': 1,
+          user: { id: '$user._id', name: '$user.name', email: '$user.email', avatar: '$user.avatar'},
         },
       },
     ];
@@ -325,10 +339,7 @@ exports.getSponsoredStatuses = async (req, res) => {
       const expiresAt = status.expires_at;
       const isExpired = expiresAt ? new Date(expiresAt) < now : false;
 
-      return {
-        ...status,
-        isExpired,
-      };
+      return { ...status, isExpired};
     });
 
     return res.status(200).json({
@@ -412,11 +423,7 @@ exports.createStatus = async (req, res) => {
         view_count: 0,
         views: [],
       },
-      user: {
-        id: user.id,
-        name: user.name,
-        avatar: user.avatar,
-      },
+      user: { id: user.id, name: user.name, avatar: user.avatar},
     };
 
     const io = req.app.get('io');
@@ -428,21 +435,15 @@ exports.createStatus = async (req, res) => {
       });
     } else {
       const friends = await Friend.find({
-        $or: [
-          { user_id, status: 'accepted' },
-          { friend_id: user_id, status: 'accepted' },
-        ],
+        $or: [{ user_id, status: 'accepted' },{ friend_id: user_id, status: 'accepted' }],
       }).lean();
 
       const friendIds = friends.map(f => (f.user_id.toString() === user_id.toString() ? f.friend_id : f.user_id));
 
-      const blocks = await Block.find({
-        $or: [{ blocker_id: user_id }, { blocked_id: user_id }],
-      }).lean();
-
+      const blocks = await Block.find({$or: [{ blocker_id: user_id }, { blocked_id: user_id }],}).lean();
       const blockedIds = blocks.map(b => (b.blocker_id.toString() === user_id.toString() ? b.blocked_id : b.blocker_id));
-      const visibleFriendIds = friendIds.filter(id => !blockedIds.includes(id.toString()));
 
+      const visibleFriendIds = friendIds.filter(id => !blockedIds.includes(id.toString()));
       const userSetting = await UserSetting.findOne({ user_id }).lean();
 
       let notifyUserIds = [];
@@ -478,49 +479,50 @@ exports.createStatus = async (req, res) => {
 };
 
 exports.viewStatus = async (req, res) => {
-  const viewer_id = req.user._id;
+  const viewer_id = req.user._id.toString();
   const { status_id } = req.body;
 
   try {
-    const status = await Status.findOne({
-      _id: status_id,
-      expires_at: { $gt: new Date() },
-    })
-      .populate('user', 'id name')
-      .lean();
+    if (!status_id) {
+      return res.status(400).json({ message: 'status_id is required.' });
+    }
 
-    if (!status) return res.status(404).json({ message: 'Status not found or expired.' });
+    const statusData = await Status.aggregate([
+      { $match: { _id: new mongoose.Types.ObjectId(status_id), expires_at: { $gt: new Date() } } },
+      { $lookup: { from: 'users', localField: 'user_id', foreignField: '_id', as: 'owner'}},
+      { $unwind: { path: '$owner', preserveNullAndEmptyArrays: true } },
+      { $project: { user_id: 1, owner_name: '$owner.name',}},
+    ]);
 
-    if (status.user_id.toString() === viewer_id.toString()) {
+    const status = statusData[0];
+
+    if (!status) {
+      return res.status(404).json({ message: 'Status not found or expired.' });
+    }
+
+    if (status.user_id.toString() === viewer_id) {
       return res.status(200).json({ message: 'It is your own status' });
     }
 
-    const existingView = await StatusView.findOne({ status_id, viewer_id }).lean();
+    const existingView = await StatusView.findOne({ status_id, viewer_id, }).lean();
 
     if (existingView) {
-      return res.status(200).json({
-        message: 'Status already viewed.',
-        viewed_at: existingView.viewer_at,
-      });
+      return res.status(200).json({ message: 'Status already viewed.', viewed_at: existingView.viewer_at,});
     }
 
-    const statusView = await StatusView.create({
-      status_id,
-      viewer_id,
-      viewer_at: new Date(),
-    });
-
-    const io = req.app.get('io');
-    const ownerRoom = `user_${status.user_id}`;
+    const statusView = await StatusView.create({ status_id, viewer_id, viewer_at: new Date(),});
     const viewCount = await StatusView.countDocuments({ status_id });
 
-    io.to(ownerRoom).emit('status-viewed', {
-      status_id,
-      viewer_id,
-      viewer_name: req.user.name,
-      viewed_at: statusView.viewer_at,
-      view_count: viewCount,
-    });
+    const io = req.app.get('io');
+    if (io) {
+      io.to(`user_${status.user_id}`).emit('status-viewed', {
+        status_id,
+        viewer_id,
+        viewer_name: req.user.name,
+        viewed_at: statusView.viewer_at,
+        view_count: viewCount,
+      });
+    }
 
     return res.status(201).json({
       message: 'Status viewed successfully.',
@@ -533,7 +535,7 @@ exports.viewStatus = async (req, res) => {
 };
 
 exports.deleteStatus = async (req, res) => {
-  const user_id = req.user._id;
+  const user_id = req.user._id.toString();
   const { status_ids } = req.body;
 
   try {
@@ -541,15 +543,11 @@ exports.deleteStatus = async (req, res) => {
       return res.status(400).json({ message: 'Status IDs array is required' });
     }
 
-    const statuses = await Status.find({
-      _id: { $in: status_ids.map(id => new mongoose.Types.ObjectId(id)) },
-      user_id,
-    }).lean();
+    const objectIds = status_ids.map(id => new mongoose.Types.ObjectId(id));
+    const statuses = await Status.find({ _id: { $in: objectIds }, user_id, }).lean({ virtuals: true });
 
     if (statuses.length === 0) {
-      return res.status(404).json({
-        message: 'Status not found or you are not authorized to delete it.',
-      });
+      return res.status(404).json({ message: 'Status not found or you are not authorized to delete it.'});
     }
 
     const deletedStatusIds = [];
@@ -563,52 +561,48 @@ exports.deleteStatus = async (req, res) => {
       }
 
       await Status.deleteOne({ _id: status._id });
+      await StatusView.deleteMany({ status_id: status._id });
+
       deletedStatusIds.push(status.id);
     }
 
     const friends = await Friend.find({
-      $or: [
-        { user_id, status: 'accepted' },
-        { friend_id: user_id, status: 'accepted' },
-      ],
+      $or: [{ user_id, status: 'accepted' },{ friend_id: user_id, status: 'accepted' }],
     }).lean();
 
-    const friendIds = friends.map(f => (f.user_id.toString() === user_id.toString() ? f.friend_id : f.user_id));
+    const friendIds = friends.map(f =>
+      f.user_id.toString() === user_id ? f.friend_id.toString() : f.user_id.toString()
+    );
 
-    const blocks = await Block.find({
-      $or: [{ blocker_id: user_id }, { blocked_id: user_id }],
-    }).lean();
+    const blocks = await Block.find({$or: [{ blocker_id: user_id }, { blocked_id: user_id }],}).lean();
+    const blockedIds = blocks.map(b =>
+      b.blocker_id.toString() === user_id ? b.blocked_id.toString() : b.blocker_id.toString()
+    );
 
-    const blockedIds = blocks.map(b => (b.blocker_id.toString() === user_id.toString() ? b.blocked_id : b.blocker_id));
-    const visibleFriendIds = friendIds.filter(id => !blockedIds.includes(id.toString()));
+    const visibleFriendIds = friendIds.filter(id => !blockedIds.includes(id));
 
     const io = req.app.get('io');
 
-    deletedStatusIds.forEach(async (status_id) => {
-      const isSponsored = statuses.find(s => s.id.toString() === status_id.toString())?.sponsored;
+    for (const status_id of deletedStatusIds) {
+      const status = statuses.find(s => s.id === status_id);
+      const isSponsored = Boolean(status?.sponsored);
 
       if (isSponsored) {
-        const allUsers = await User.find().select('id').lean();
+        const allUsers = await User.find().select('id').lean({ virtuals: true });
         allUsers.forEach(u => {
-          io.to(`user_${u.id}`).emit('status-deleted', { status_id, user_id, sponsored: isSponsored });
+          io.to(`user_${u.id}`).emit('status-deleted', { status_id, user_id, sponsored: isSponsored});
         });
       } else {
         visibleFriendIds.forEach(friend => {
-          io.to(`user_${friend}`).emit('status-deleted', {
-            status_id,
-            user_id,
-            sponsored: isSponsored,
-          });
+          io.to(`user_${friend}`).emit('status-deleted', { status_id, user_id, sponsored: isSponsored,});
         });
-        io.to(`user_${user_id}`).emit('status-deleted', {
-          status_id,
-          user_id,
-          sponsored: isSponsored,
-        });
+        io.to(`user_${user_id}`).emit('status-deleted', { status_id, user_id, sponsored: isSponsored,});
       }
-    });
+    }
 
-    return res.status(200).json({ message: `${deletedStatusIds.length} status(s) deleted successfully.` });
+    return res.status(200).json({
+      message: `${deletedStatusIds.length} status(s) deleted successfully.`,
+    });
   } catch (error) {
     console.error('Error in deleteStatus:', error);
     return res.status(500).json({ message: 'Internal server error' });
@@ -644,7 +638,7 @@ exports.toggleMuteStatus = async (req, res) => {
 };
 
 exports.replyToStatus = async (req, res) => {
-  const sender_id = req.user._id;
+  const sender_id = req.user._id.toString();
   const { status_id, message } = req.body;
 
   try {
@@ -652,28 +646,28 @@ exports.replyToStatus = async (req, res) => {
       return res.status(400).json({ message: 'Status ID and message are required.' });
     }
 
-    const status = await Status.findOne({
-      _id: status_id,
-      expires_at: { $gt: new Date() },
-    })
-      .populate('user', 'id name avatar')
-      .lean();
+    const statusResult = await Status.aggregate([
+      { $match: { _id: new mongoose.Types.ObjectId(status_id), expires_at: { $gt: new Date() } } },
+      { $lookup: { from: 'users', localField: 'user_id', foreignField: '_id', as: 'owner'}},
+      { $unwind: { path: '$owner', preserveNullAndEmptyArrays: true } },
+      { $project: 
+        { user_id: 1, type: 1, file_url: 1, caption: 1, created_at: 1, sponsored: 1, owner_name: '$owner.name', owner_avatar: '$owner.avatar'}, 
+      },
+    ]);
+
+    const status = statusResult[0];
 
     if (!status) {
       return res.status(404).json({ message: 'Status not found or expired.' });
     }
 
-    const receiver_id = status.user_id;
-
-    if (sender_id.toString() === receiver_id.toString()) {
+    const receiver_id = status.user_id.toString();
+    if (sender_id === receiver_id) {
       return res.status(400).json({ message: 'You cannot reply to your own status.' });
     }
 
     const blockExists = await Block.findOne({
-      $or: [
-        { blocker_id: sender_id, blocked_id: receiver_id },
-        { blocker_id: receiver_id, blocked_id: sender_id },
-      ],
+      $or: [{ blocker_id: sender_id, blocked_id: receiver_id },{ blocker_id: receiver_id, blocked_id: sender_id }],
     }).lean();
 
     if (blockExists) {
@@ -704,32 +698,51 @@ exports.replyToStatus = async (req, res) => {
       message_type: 'text',
       metadata: {
         is_status_reply: true,
-        status_id: status.id,
+        status_id,
         status_type: status.type,
         status_file_url: status.file_url,
         status_caption: status.caption,
         status_created_at: status.created_at,
         status_owner_id: status.user_id,
-        status_owner_name: status.user.name,
+        status_owner_name: status.owner_name,
+        status_owner_avatar: status.owner_avatar,
       },
     });
 
-    await MessageStatus.create({
-      message_id: statusReplyMessage._id,
-      user_id: receiver_id,
-      status: 'sent',
-    });
+    await MessageStatus.create({message_id: statusReplyMessage._id,user_id: receiver_id,status: 'sent',});
 
-    const fullMessage = await Message.findById(statusReplyMessage._id)
-      .populate('sender', 'id name avatar')
-      .populate('recipient', 'id name avatar')
-      .lean({ virtuals: true });
+    const messageResult = await Message.aggregate([
+      { $match: { _id: statusReplyMessage._id } },
+      { $lookup: { from: 'users', localField: 'sender_id', foreignField: '_id', as: 'sender'}},
+      { $unwind: '$sender' },
+      { $lookup: { from: 'users', localField: 'recipient_id', foreignField: '_id', as: 'recipient'}},
+      { $unwind: '$recipient' },
+      {
+        $project: {
+          id: '$_id',
+          _id: 0,
+          sender_id: 1,
+          recipient_id: 1,
+          content: 1,
+          message_type: 1,
+          metadata: 1,
+          created_at: 1,
+          updated_at: 1,
+          sender: { id: '$sender._id', name: '$sender.name', avatar: '$sender.avatar',},
+          recipient: { id: '$recipient._id', name: '$recipient.name', avatar: '$recipient.avatar',},
+        },
+      },
+    ]);
+
+    const fullMessage = messageResult[0];
 
     const io = req.app.get('io');
-    io.to(`user_${sender_id}`).emit('receive-message', fullMessage);
-    io.to(`user_${receiver_id}`).emit('receive-message', fullMessage);
+    if (io) {
+      io.to(`user_${sender_id}`).emit('receive-message', fullMessage);
+      io.to(`user_${receiver_id}`).emit('receive-message', fullMessage);
+    }
 
-    return res.status(201).json({ message: 'Reply sent successfully.', fullMessage });
+    return res.status(201).json({ message: 'Reply sent successfully.', fullMessage,});
   } catch (error) {
     console.error('Error in replyToStatus:', error);
     return res.status(500).json({ message: 'Internal server error' });
@@ -737,21 +750,44 @@ exports.replyToStatus = async (req, res) => {
 };
 
 exports.getStatusReplyConversations = async (req, res) => {
-  const user_id = req.user._id;
+  const user_id = req.user._id.toString();
 
   try {
-    const replyMessages = await Message.find({
-      recipient_id: user_id,
-      message_type: 'text',
-      'metadata.is_status_reply': true,
-    })
-      .populate('sender', 'id name avatar')
-      .populate({
-        path: 'statuses',
-        match: { user_id },
-      })
-      .sort({ created_at: -1 })
-      .lean({ virtuals: true });
+    const pipeline = [
+      { $match: { recipient_id: new mongoose.Types.ObjectId(user_id), message_type: 'text', 'metadata.is_status_reply': true,}},
+      { $sort: { created_at: -1 } },
+      { $lookup: { from: 'users', localField: 'sender_id', foreignField: '_id', as: 'sender'}},
+      { $unwind: '$sender' },
+      { $lookup: { from: 'message_statuses', localField: '_id', foreignField: 'message_id', as: 'statuses'}},
+      {
+        $addFields: {
+          userStatus: {
+            $arrayElemAt: [
+              {
+                $filter: {
+                  input: '$statuses',
+                  as: 'status',
+                  cond: { $eq: ['$$status.user_id', new mongoose.Types.ObjectId(user_id)] },
+                },
+              },
+              0,
+            ],
+          },
+        },
+      },
+      {
+        $project: {
+          id: '$_id',
+          _id: 0,
+          content: 1,
+          created_at: 1,
+          sender: { id: '$sender._id', name: '$sender.name', avatar: '$sender.avatar',},
+          userStatus: { status: 1,},
+        },
+      },
+    ];
+
+    const replyMessages = await Message.aggregate(pipeline);
 
     const conversationsMap = {};
 
@@ -760,11 +796,7 @@ exports.getStatusReplyConversations = async (req, res) => {
 
       if (!conversationsMap[senderId]) {
         conversationsMap[senderId] = {
-          user: {
-            id: msg.sender.id,
-            name: msg.sender.name,
-            avatar: msg.sender.avatar,
-          },
+          user: { id: msg.sender.id, name: msg.sender.name, avatar: msg.sender.avatar},
           last_reply: msg.content,
           last_reply_time: msg.created_at,
           unread_count: 0,
@@ -773,9 +805,7 @@ exports.getStatusReplyConversations = async (req, res) => {
       }
 
       conversationsMap[senderId].total_replies++;
-
-      const messageStatus = msg.statuses?.find(s => s.user_id.toString() === user_id.toString());
-      if (messageStatus && ['sent', 'delivered'].includes(messageStatus.status)) {
+      if (msg.userStatus && ['sent', 'delivered'].includes(msg.userStatus.status)) {
         conversationsMap[senderId].unread_count++;
       }
     }
