@@ -4,14 +4,12 @@ const crypto = require('crypto');
 
 const getEncryptionKey = () => {
   const envKey = process.env.E2E_PRIVATE_KEY_ENCRYPTION_KEY;
-  
+
   if (envKey) {
-    // Ensure the key is 32 bytes (256 bits) for AES-256
     const keyBuffer = Buffer.from(envKey, 'utf8');
     if (keyBuffer.length === 32) {
       return keyBuffer;
     }
-    // If key is not exactly 32 bytes, hash it to get 32 bytes
     return crypto.createHash('sha256').update(keyBuffer).digest();
   }
 
@@ -29,24 +27,23 @@ const encryptPrivateKey = (privateKey) => {
   if (!privateKey) {
     return null;
   }
-  
+
   try {
     const key = getEncryptionKey();
-    const iv = crypto.randomBytes(12); // 12 bytes for GCM
+    const iv = crypto.randomBytes(12);
     const cipher = crypto.createCipheriv('aes-256-gcm', key, iv);
-    
+
     let encrypted = cipher.update(privateKey, 'utf8', 'base64');
     encrypted += cipher.final('base64');
-    
+
     const authTag = cipher.getAuthTag();
-    
-    // Combine IV, auth tag, and encrypted data
+
     const result = {
       iv: iv.toString('base64'),
       authTag: authTag.toString('base64'),
-      encrypted: encrypted
+      encrypted,
     };
-    
+
     return JSON.stringify(result);
   } catch (error) {
     console.error('Error encrypting private key:', error);
@@ -62,29 +59,29 @@ const decryptPrivateKey = (encryptedPrivateKey) => {
   if (!encryptedPrivateKey) {
     return null;
   }
-  
+
   try {
     if (!encryptedPrivateKey.startsWith('{')) {
       return encryptedPrivateKey;
     }
-    
+
     const key = getEncryptionKey();
     const data = JSON.parse(encryptedPrivateKey);
-    
+
     if (!data.iv || !data.authTag || !data.encrypted) {
       return encryptedPrivateKey;
     }
-    
+
     const iv = Buffer.from(data.iv, 'base64');
     const authTag = Buffer.from(data.authTag, 'base64');
     const encrypted = data.encrypted;
-    
+
     const decipher = crypto.createDecipheriv('aes-256-gcm', key, iv);
     decipher.setAuthTag(authTag);
-    
+
     let decrypted = decipher.update(encrypted, 'base64', 'utf8');
     decrypted += decipher.final('utf8');
-    
+
     return decrypted;
   } catch (error) {
     console.error('Error decrypting private key:', error);
@@ -95,7 +92,5 @@ const decryptPrivateKey = (encryptedPrivateKey) => {
 
 module.exports = {
   encryptPrivateKey,
-  decryptPrivateKey
+  decryptPrivateKey,
 };
-
-
