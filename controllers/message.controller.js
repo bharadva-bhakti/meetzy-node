@@ -2,10 +2,17 @@ const { db } = require('../models');
 const User = db.User;
 const Message = db.Message;
 const MessageStatus = db.MessageStatus;
+const MessageReaction = db.MessageReaction;
+const MessageAction = db.MessageAction;
+const MessagePin = db.MessagePin;
 const Group = db.Group;
 const GroupMember = db.GroupMember;
 const Block = db.Block;
 const Setting = db.Setting;
+const Friend = db.Friend;
+const MutedChat = db.MutedChat;
+const Favorite = db.Favorite;
+const Archive = db.Archive;
 const ChatClear = db.ChatClear;
 const UserSetting = db.UserSetting;
 const MessageDisappearing = db.MessageDisappearing;
@@ -13,13 +20,9 @@ const Broadcast = db.Broadcast;
 const BroadcastMember = db.BroadcastMember;
 const fs = require('fs');
 const bcrypt = require('bcryptjs');
+const mongoose = require('mongoose')
 const {
-  groupMessagesBySender,
-  groupMessagesByDate,
-  getMessageReactionCount,
-  buildMessagePayloads,
-  createMessageWithStatus,
-  groupBroadcastMessages,
+  groupMessagesBySender, groupMessagesByDate, getMessageReactionCount, buildMessagePayloads, createMessageWithStatus, groupBroadcastMessages,
 } = require('../helper/messageHelpers');
 const { getEffectiveLimits } = require('../utils/userLimits');
 
@@ -29,7 +32,7 @@ exports.sendMessage = async (req, res) => {
   const singleFile = req.file;
 
   const {
-    recipientId,groupId,broadcastId,content,message_type = 'text',metadata = null,parent_id,file_url = null,mentions,is_encrypted,
+    recipientId, groupId, broadcastId, content, message_type = 'text', metadata = null, parent_id, file_url = null, mentions, is_encrypted,
   } = req.body;
 
   if (!senderId) return res.status(401).json({ message: 'Unauthorized' });
@@ -78,9 +81,14 @@ exports.sendMessage = async (req, res) => {
 
     if (broadcastId) {
       isBroadcast = true;
-      const broadcast = await Broadcast.findOne({ _id: broadcastId, creator_id: senderId })
-        .populate('recipients').lean({ virtuals: true });
 
+      const broadcastResult = await Broadcast.aggregate([
+        { $match: { _id: new mongoose.Types.ObjectId(broadcastId), creator_id: senderId } },
+        { $lookup: { from: 'broadcast_members', localField: '_id', foreignField: 'broadcast_id', as: 'recipients'}},
+        { $project: { id: '$_id', _id: 0, creator_id: 1, recipients: { recipient_id: 1 }}},
+      ]);
+
+      const broadcast = broadcastResult[0];
       if (!broadcast || !broadcast.recipients.length) {
         return res.status(400).json({ message: 'Invalid broadcast' });
       }
@@ -103,13 +111,7 @@ exports.sendMessage = async (req, res) => {
     if (groupId) {
       for (const payload of payloads) {
         const message = await createMessageWithStatus({
-          senderId,
-          recipientId: null,
-          groupId,
-          payload,
-          mentions: validatedMentions,
-          isEncrypted,
-          isBlocked: false,
+          senderId, recipientId: null, groupId, payload, mentions: validatedMentions, isEncrypted, isBlocked: false,
         });
 
         messages.push(message);
@@ -125,30 +127,42 @@ exports.sendMessage = async (req, res) => {
 
       const fullMessages = await Message.aggregate([
         { $match: { _id: { $in: messages.map(m => m._id) } } },
-        { $lookup: { from: 'users', localField: 'sender_id', foreignField: '_id', as: 'sender'}},
-        { $unwind: { path: '$sender', preserveNullAndEmptyArrays: true } },
-        { $lookup: { from: 'groups', localField: 'group_id', foreignField: '_id', as: 'group'}},
-        { $unwind: { path: '$group', preserveNullAndEmptyArrays: true } },
+        { $lookup: { from: 'users', localField: 'sender_id', foreignField: '_id', as: 'sender_doc', }},
+        { $unwind: { path: '$sender_doc', preserveNullAndEmptyArrays: true } },
+        { $lookup: { from: 'groups', localField: 'group_id', foreignField: '_id', as: 'group_doc', }},
+        { $unwind: { path: '$group_doc', preserveNullAndEmptyArrays: true } },
         {
-          $project: {
+          $addFields: {
             id: '$_id',
-            _id: 0,
-            content: 1,
-            message_type: 1,
-            file_url: 1,
-            file_type: 1,
-            metadata: 1,
-            created_at: 1,
-            updated_at: 1,
-            sender_id: 1,
-            recipient_id: 1,
-            group_id: 1,
-            sender: { id: '$sender._id', name: '$sender.name', avatar: '$sender.avatar' },
-            group: { id: '$group._id', name: '$group.name', avatar: '$group.avatar' },
+            sender: { id: '$sender_doc._id', name: '$sender_doc.name', avatar: '$sender_doc.avatar', },
+            group: { id: '$group_doc._id', name: '$group_doc.name', avatar: '$group_doc.avatar',},
+            recipient: null,
           },
         },
+        {$project: {
+          _id: 0,
+          id: 1,
+          sender_id: 1,
+          recipient_id: 1,
+          parent_id: 1,
+          group_id: 1,
+          content: 1,
+          message_type: 1,
+          file_url: 1,
+          file_type: 1,
+          mentions: 1,
+          has_unread_mentions: 1,
+          metadata: 1,
+          is_encrypted: 1,
+          created_at: 1,
+          updated_at: 1,
+          deleted_at: 1,
+          sender: 1,
+          recipient: 1,
+          group: 1,
+        }},
       ]);
-      
+
       const groupMembers = await GroupMember.find({ group_id: groupId }).select('user_id').lean();
 
       groupMembers.forEach(member => {
@@ -159,7 +173,10 @@ exports.sendMessage = async (req, res) => {
     }
 
     for (const rid of recipientIds) {
-      const blocked = await Block.findOne({blocker_id: rid,blocked_id: senderId,}).lean();
+      const blocked = await Block.findOne({
+        blocker_id: rid,
+        blocked_id: senderId,
+      }).lean();
 
       for (const payload of payloads) {
         const msg = await createMessageWithStatus({
@@ -167,14 +184,7 @@ exports.sendMessage = async (req, res) => {
           recipientId: isBroadcast ? rid : recipientId,
           groupId,
           payload: isBroadcast
-            ? {
-                ...payload,
-                metadata: {
-                  ...payload.metadata,
-                  is_broadcast: true,
-                  broadcast_id: broadcastId,
-                },
-              }
+            ? { ...payload, metadata: { ...payload.metadata, is_broadcast: true, broadcast_id: broadcastId,}}
             : payload,
           mentions: validatedMentions,
           isEncrypted,
@@ -187,26 +197,40 @@ exports.sendMessage = async (req, res) => {
 
     const fullMessages = await Message.aggregate([
       { $match: { _id: { $in: messages.map(m => m._id) } } },
-      { $lookup: {from: 'users',localField: 'sender_id',foreignField: '_id',as: 'sender'}},
-      { $unwind: { path: '$sender', preserveNullAndEmptyArrays: true } },
-      { $lookup: { from: 'users', localField: 'recipient_id', foreignField: '_id', as: 'recipient', }},
-      { $unwind: { path: '$recipient', preserveNullAndEmptyArrays: true } },
+      { $lookup: { from: 'users', localField: 'sender_id', foreignField: '_id', as: 'sender_doc', }, },
+      { $unwind: { path: '$sender_doc', preserveNullAndEmptyArrays: true } },
+      { $lookup: { from: 'users', localField: 'recipient_id', foreignField: '_id', as: 'recipient_doc'}},
+      { $unwind: { path: '$recipient_doc', preserveNullAndEmptyArrays: true } },
+      {
+        $addFields: {
+          id: '$_id',
+          sender: { id: '$sender_doc._id', name: '$sender_doc.name', avatar: '$sender_doc.avatar'},
+          recipient: { id: '$recipient_doc._id', name: '$recipient_doc.name', avatar: '$recipient_doc.avatar', },
+          group: null,
+        },
+      },
       {
         $project: {
-          id: '$_id',
           _id: 0,
+          id: 1,
+          sender_id: 1,
+          recipient_id: 1,
+          group_id: 1,
+          parent_id: 1,
           content: 1,
           message_type: 1,
           file_url: 1,
           file_type: 1,
+          mentions: 1,
+          has_unread_mentions: 1,
           metadata: 1,
+          is_encrypted: 1,
           created_at: 1,
           updated_at: 1,
-          sender_id: 1,
-          recipient_id: 1,
-          group_id: 1,
-          sender: { id: '$sender._id', name: '$sender.name', avatar: '$sender.avatar' },
-          recipient: { id: '$recipient._id', name: '$recipient.name', avatar: '$recipient.avatar' },
+          deleted_at: 1,
+          sender: 1,
+          recipient: 1,
+          group: 1,
         },
       },
     ]);
@@ -267,30 +291,81 @@ exports.getMessages = async (req, res) => {
       return false;
     };
 
+    // Common meta fetch function
+    const getCommonChatMeta = async (targetType, targetId) => {
+      const whereCondition = targetId ? { user_id: userId, target_id: targetId, target_type: targetType } : null;
+      if (!whereCondition) return {};
+
+      const [muteEntry, favoriteEntry, archiveEntry] = await Promise.all([
+        MutedChat.findOne(whereCondition),
+        Favorite.findOne(whereCondition),
+        Archive.findOne(whereCondition),
+      ]);
+
+      return {
+        isMuted: !!muteEntry,
+        isFavorite: !!favoriteEntry,
+        isArchived: !!archiveEntry,
+      };
+    };
+
     if (isAnnouncement === 'true' || isAnnouncement === true) {
       if (!announcementId) return res.status(404).json({ message: 'Announcement Id is required.' });
 
-      const messages = await Message.find({
-        message_type: 'announcement',
-        recipient_id: null,
-        group_id: null,
-      })
-        .sort({ created_at: -1 })
-        .skip(parseInt(offset))
-        .limit(parseInt(limit))
-        .populate('sender', 'id name avatar')
-        .lean({ virtuals: true });
+      const pipeline = [
+        { $match: { message_type: 'announcement', recipient_id: null, group_id: null } },
+        { $sort: { created_at: -1 } },
+        { $skip: parseInt(offset) },
+        { $limit: parseInt(limit) },
+        {
+          $lookup: { from: 'users', localField: 'sender_id', foreignField: '_id', as: 'sender_doc' },
+        },
+        { $unwind: { path: '$sender_doc', preserveNullAndEmptyArrays: true } },
+        {
+          $addFields: {
+            id: '$_id',
+            sender: {
+              id: '$sender_doc._id',
+              name: '$sender_doc.name',
+              avatar: '$sender_doc.avatar',
+            },
+          },
+        },
+        {
+          $project: {
+            _id: 0,
+            id: 1,
+            sender_id: 1,
+            content: 1,
+            message_type: 1,
+            file_url: 1,
+            metadata: 1,
+            created_at: 1,
+            sender: 1,
+          },
+        },
+      ];
+
+      messages = await Message.aggregate(pipeline);
 
       const groupedMessages = await groupMessagesBySender(messages, userId);
       const dateGroupedMessages = groupMessagesByDate(groupedMessages);
 
+      const commonMeta = await getCommonChatMeta('announcement', announcementId);
+
+      chatTarget = {
+        type: 'direct',
+        name: 'Announcements',
+        isAnnouncement: true,
+        ...commonMeta,
+        isBlocked: false,
+        hasBlockedMe: false,
+        blockedBy: null,
+      };
+
       return res.json({
         messages: dateGroupedMessages,
-        chatTarget: {
-          type: 'direct',
-          name: 'Announcements',
-          isAnnouncement: true,
-        },
+        chatTarget,
         metadata: {
           offset,
           limit,
@@ -303,31 +378,40 @@ exports.getMessages = async (req, res) => {
 
     if (isBroadcast === 'true' || isBroadcast === true) {
       if (!broadcastId) return res.status(400).json({ message: 'broadcastId is required' });
+      
+      const pipeline = [
+        {
+          $match: {
+            sender_id: userId,
+            'metadata.is_broadcast': true,
+            'metadata.broadcast_id': broadcastId,
+          },
+        },
+        { $sort: { created_at: 1 } },
+        { $skip: parseInt(offset) },
+        { $limit: parseInt(limit) },
+        { $addFields: { id: '$_id' } },
+        { $project: { _id: 0, id: 1, content: 1, message_type: 1, file_url: 1, metadata: 1, created_at: 1 } },
+      ];
+      console.log("🚀 ~ pipeline:", pipeline)
 
-      const messages = await Message.find({
-        sender_id: userId,
-        'metadata.is_broadcast': true,
-        'metadata.broadcast_id': broadcastId,
-      })
-        .sort({ created_at: 1 })
-        .skip(parseInt(offset))
-        .limit(parseInt(limit))
-        .lean({ virtuals: true });
+      messages = await Message.aggregate(pipeline);
 
       const merged = groupBroadcastMessages(messages, userId);
-      const dateGrouped = groupMessagesByDate([
-        {
-          sender_id: userId,
-          messages: merged,
-        },
-      ]);
+      const dateGrouped = groupMessagesByDate([{ sender_id: userId, messages: merged }]);
+
+      const commonMeta = await getCommonChatMeta('broadcast', broadcastId);
+
+      chatTarget = {
+        type: 'broadcast',
+        broadcast_id: broadcastId,
+        isArchived: commonMeta.isArchived,
+        ...commonMeta,
+      };
 
       return res.json({
         messages: dateGrouped,
-        chatTarget: {
-          type: 'broadcast',
-          broadcast_id: broadcastId,
-        },
+        chatTarget,
         metadata: {
           offset,
           limit,
@@ -344,22 +428,70 @@ exports.getMessages = async (req, res) => {
       const group = await Group.findById(groupId).lean({ virtuals: true });
       if (!group) return res.status(404).json({ message: 'Group not found' });
 
-      const messages = await Message.find({ group_id: groupId })
-        .sort({ created_at: -1 })
-        .skip(parseInt(offset))
-        .limit(parseInt(limit))
-        .populate('sender', 'id name avatar')
-        .lean({ virtuals: true });
+      const groupObjId = new mongoose.Types.ObjectId(groupId);
+
+      const pipeline = [
+        { $match: { group_id: groupObjId } },
+        { $sort: { created_at: -1 } },
+        { $skip: parseInt(offset) },
+        { $limit: parseInt(limit) },
+        { $lookup: { from: 'users', localField: 'sender_id', foreignField: '_id', as: 'sender_doc' } },
+        { $unwind: { path: '$sender_doc', preserveNullAndEmptyArrays: true } },
+        { $lookup: { from: 'groups', localField: 'group_id', foreignField: '_id', as: 'group_doc' } },
+        { $unwind: { path: '$group_doc', preserveNullAndEmptyArrays: true } },
+        {
+          $addFields: {
+            id: '$_id',
+            sender: { id: '$sender_doc._id', name: '$sender_doc.name', avatar: '$sender_doc.avatar' },
+            group: { id: '$group_doc._id', name: '$group_doc.name', avatar: '$group_doc.avatar' },
+          },
+        },
+        {
+          $project: {
+            _id: 0,
+            id: 1,
+            sender_id: 1,
+            recipient_id: 1,
+            group_id: 1,
+            content: 1,
+            message_type: 1,
+            file_url: 1,
+            file_type: 1,
+            mentions: 1,
+            has_unread_mentions: 1,
+            metadata: 1,
+            is_encrypted: 1,
+            created_at: 1,
+            updated_at: 1,
+            deleted_at: 1,
+            sender: 1,
+            recipient: { id: null, name: null, avatar: null },
+            group: 1,
+          },
+        },
+      ];
+
+      messages = await Message.aggregate(pipeline);
 
       const groupedMessages = await groupMessagesBySender(messages, userId);
       const dateGroupedMessages = groupMessagesByDate(groupedMessages);
 
+      const commonMeta = await getCommonChatMeta('group', groupId);
+      const groupBlockEntry = await Block.findOne({ blocker_id: userId, group_id: groupId, block_type: 'group' });
+
+      chatTarget = {
+        id: group._id.toString(),
+        name: group.name,
+        avatar: group.avatar,
+        description: group.description || null,
+        type: 'group',
+        ...commonMeta,
+        isBlocked: !!groupBlockEntry,
+      };
+
       return res.json({
         messages: dateGroupedMessages,
-        chatTarget: {
-          ...group,
-          type: 'group',
-        },
+        chatTarget,
         metadata: {
           offset,
           limit,
@@ -376,28 +508,116 @@ exports.getMessages = async (req, res) => {
       const recipient = await User.findById(recipientId).lean({ virtuals: true });
       if (!recipient) return res.status(404).json({ message: 'User not found' });
 
-      const messages = await Message.find({
-        $or: [
-          { sender_id: userId, recipient_id: recipientId },
-          { sender_id: recipientId, recipient_id: userId },
-        ],
-      })
-        .sort({ created_at: -1 })
-        .skip(parseInt(offset))
-        .limit(parseInt(limit))
-        .populate('sender', 'id name avatar')
-        .populate('recipient', 'id name avatar')
-        .lean({ virtuals: true });
+      const userObjId = new mongoose.Types.ObjectId(userId);
+      const recipientObjId = new mongoose.Types.ObjectId(recipientId);
+
+      const pipeline = [
+        {
+          $match: {
+            $or: [
+              { sender_id: userObjId, recipient_id: recipientObjId },
+              { sender_id: recipientObjId, recipient_id: userObjId },
+            ],
+          },
+        },
+        { $sort: { created_at: -1 } },
+        { $skip: parseInt(offset) },
+        { $limit: parseInt(limit) },
+        { $lookup: { from: 'users', localField: 'sender_id', foreignField: '_id', as: 'sender_doc' } },
+        { $unwind: { path: '$sender_doc', preserveNullAndEmptyArrays: true } },
+        { $lookup: { from: 'users', localField: 'recipient_id', foreignField: '_id', as: 'recipient_doc' } },
+        { $unwind: { path: '$recipient_doc', preserveNullAndEmptyArrays: true } },
+        {
+          $addFields: {
+            id: '$_id',
+            sender: { id: '$sender_doc._id', name: '$sender_doc.name', avatar: '$sender_doc.avatar' },
+            recipient: { id: '$recipient_doc._id', name: '$recipient_doc.name', avatar: '$recipient_doc.avatar' },
+            group: null,
+          },
+        },
+        {
+          $project: {
+            _id: 0,
+            id: 1,
+            sender_id: 1,
+            recipient_id: 1,
+            group_id: 1,
+            content: 1,
+            message_type: 1,
+            file_url: 1,
+            file_type: 1,
+            mentions: 1,
+            has_unread_mentions: 1,
+            metadata: 1,
+            is_encrypted: 1,
+            created_at: 1,
+            updated_at: 1,
+            deleted_at: 1,
+            sender: 1,
+            recipient: 1,
+            group: 1,
+          },
+        },
+      ];
+
+      messages = await Message.aggregate(pipeline);
 
       const groupedMessages = await groupMessagesBySender(messages, userId);
       const dateGroupedMessages = groupMessagesByDate(groupedMessages);
 
+      const commonMeta = await getCommonChatMeta('user', recipientId);
+
+      const [iBlockedThem, theyBlockedMe, friendEntry] = await Promise.all([
+        Block.findOne({ blocker_id: userId, blocked_id: recipientId }),
+        Block.findOne({ blocker_id: recipientId, blocked_id: userId }),
+        Friend.findOne({
+          $or: [
+            { user_id: userId, friend_id: recipientId },
+            { user_id: recipientId, friend_id: userId },
+          ],
+        }),
+      ]);
+
+      const canSendMessages = !iBlockedThem && !theyBlockedMe;
+      const canReceiveMessages = !theyBlockedMe;
+
+      chatTarget = {
+        id: recipient._id.toString(),
+        avatar: recipient.avatar,
+        name: recipient.name,
+        bio: recipient.bio || "Hey, I am using chatifyyy.",
+        email: recipient.email,
+        country: recipient.country || null,
+        country_code: recipient.country_code || null,
+        phone: recipient.phone || null,
+        role: recipient.role || 'user',
+        email_verified: recipient.email_verified || false,
+        last_login: recipient.last_login || null,
+        is_online: recipient.is_online || false,
+        last_seen: recipient.last_seen || null,
+        status: recipient.status || 'active',
+        public_key: recipient.public_key || null,
+        private_key: recipient.private_key || null,
+        stripe_customer_id: recipient.stripe_customer_id || null,
+        is_verified: recipient.is_verified || false,
+        verified_at: recipient.verified_at || null,
+        created_at: recipient.created_at,
+        updated_at: recipient.updated_at,
+        deleted_at: recipient.deleted_at || null,
+        type: 'direct',
+        ...commonMeta,
+        isBlocked: !!iBlockedThem,
+        hasBlockedMe: !!theyBlockedMe,
+        blockedBy: theyBlockedMe ? { id: theyBlockedMe.blocker_id.toString() } : null,
+        blockedAt: iBlockedThem?.created_at || null,
+        isFriend: !!friendEntry,
+        canSendMessages,
+        canReceiveMessages,
+      };
+
       return res.json({
         messages: dateGroupedMessages,
-        chatTarget: {
-          ...recipient,
-          type: 'direct',
-        },
+        chatTarget,
         metadata: {
           offset,
           limit,

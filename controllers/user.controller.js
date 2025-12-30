@@ -37,7 +37,7 @@ exports.getAllUsers = async (req, res) => {
 
     const [users, total] = await Promise.all([
       User.find(query)
-        .select('id avatar name bio email country country_code phone role last_login status created_at')
+        .select('id avatar name bio email is_verified country country_code phone role last_login status created_at')
         .sort({ [safeSortField]: sortOrder })
         .skip(skip)
         .limit(parseInt(limit)),
