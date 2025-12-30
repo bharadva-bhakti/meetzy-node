@@ -34,7 +34,7 @@ exports.getPublicSettings = async (req, res) => {
 
 exports.updateSettings = async (req, res) => {
   try {
-    const settings = await Setting.findOne();
+    const settings = await Setting.findOne().lean({ virtuals: true });
     if (!settings) return res.status(404).json({ message: 'Settings not found' });
 
     const updateData = {};
@@ -90,6 +90,7 @@ exports.updateSettings = async (req, res) => {
       }
     });
 
+    // Handle file removal
     Object.keys(fieldMap).forEach((uploadField) => {
       if (req.body[uploadField] === 'null' || req.body[uploadField] == null) {
         const dbField = fieldMap[uploadField];
@@ -101,6 +102,7 @@ exports.updateSettings = async (req, res) => {
       }
     });
 
+    // Handle file uploads
     if (req.files) {
       Object.keys(req.files).forEach((uploadField) => {
         const file = req.files[uploadField][0];
@@ -115,6 +117,7 @@ exports.updateSettings = async (req, res) => {
       });
     }
 
+    // Convert numeric fields
     const numericFields = [
       'document_file_limit', 'audio_file_limit', 'video_file_limit', 'image_file_limit', 'multiple_file_share_limit',
       'maximum_message_length', 'call_timeout_seconds', 'session_expiration_days', 'max_groups_per_user', 'max_group_members',
@@ -126,6 +129,7 @@ exports.updateSettings = async (req, res) => {
       }
     });
 
+    // Validations (unchanged)
     if (updateData.status_expiry_time !== undefined && (updateData.status_expiry_time < 1 || updateData.status_expiry_time > 24)) {
       return res.status(400).json({ message: 'Status expiry time must be between 1 and 24 hours' });
     }
@@ -147,26 +151,34 @@ exports.updateSettings = async (req, res) => {
     }
 
     if (updateData.default_language) {
-      const validLang = await Language.findOne({ locale: updateData.default_language, is_active: true });
+      const validLang = await Language.findOne({ locale: updateData.default_language, is_active: true }).lean();
       if (!validLang) {
         return res.status(400).json({ message: 'Default language is invalid or inactive' });
       }
     }
 
+    // Update settings
     await Setting.updateOne({}, { $set: updateData }, { upsert: true });
 
-    const updated = await Setting.findOne();
-    const { smtp_pass, ...safe } = updated;
+    // Fetch updated settings cleanly
+    const updatedSettings = await Setting.findOne().lean({ virtuals: true });
 
+    // Remove sensitive field and _id
+    const { smtp_pass, _id, ...safeSettings } = updatedSettings || {};
+
+    // Manually add id from _id if virtual didn't work
+    safeSettings.id = updatedSettings.id || updatedSettings._id?.toString();
+
+    // Emit to online users
     const io = req.app.get('io');
-    const onlineUsers = await User.find({ is_online: true }).select('id');
+    const onlineUsers = await User.find({ is_online: true }).select('id').lean({ virtuals: true });
     onlineUsers.forEach((user) => {
-      io.to(`user_${user.id}`).emit('admin-settings-updated', safe);
+      io.to(`user_${user.id}`).emit('admin-settings-updated', safeSettings);
     });
 
     return res.status(200).json({
       message: 'Settings updated successfully',
-      settings: safe,
+      settings: safeSettings,
     });
   } catch (err) {
     console.error('Error updating settings:', err);
@@ -177,6 +189,6 @@ exports.updateSettings = async (req, res) => {
       });
     }
 
-    res.status(500).json({ message: 'Internal Server Error' });
+    return res.status(500).json({ message: 'Internal Server Error' });
   }
 };

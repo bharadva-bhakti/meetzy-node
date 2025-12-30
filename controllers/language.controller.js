@@ -1,33 +1,51 @@
-const { Op } = require('sequelize');
-const { Language } = require('../models');
+const { db } = require('../models');
+const Language = db.Language;
+const Setting = db.Setting;
+const fs = require('fs');
+const mongoose = require('mongoose');
 
-exports.fetchLanguages = async (req,res) => {
+exports.fetchLanguages = async (req, res) => {
   const { search, page = 1, limit = 10 } = req.query;
-  const offset = (page - 1) * limit;
-  const whereClause = { };
+  const skip = (parseInt(page) - 1) * parseInt(limit);
 
   try {
+    const match = {};
     if (search) {
-      whereClause[Op.or] = [{ name: { [Op.like]: `%${search}%` } }, { locale: { [Op.like]: `%${search}%` } }];
+      match.$or = [
+        { name: { $regex: search, $options: 'i' } },
+        { locale: { $regex: search, $options: 'i' } },
+      ];
     }
-    const total = await Language.count({ where: whereClause });
 
-    const pages = await Language.findAll({
-      where: whereClause,
-      order: [['created_at', 'DESC']],
-      limit: parseInt(limit),
-      offset: parseInt(offset)
-    });
+    const settings = await Setting.findOne().select('default_language').lean();
+    const defaultLanguage = settings?.default_language;
 
-    res.status(201).json({
+    const [total, languages] = await Promise.all([
+      Language.countDocuments(match),
+      Language.find(match).sort({ created_at: -1 }).skip(skip).limit(parseInt(limit)).lean({ virtuals: true }),
+    ]);
+
+    const formattedLanguages = languages.map(lang => ({
+      id: lang._id,
+      name: lang.name,
+      locale: lang.locale,
+      is_active: lang.is_active,
+      translation_json: lang.translation_json,
+      flag: lang.flag,
+      created_at: lang.created_at,
+      updated_at: lang.updated_at,
+      is_default: lang.locale === defaultLanguage,
+    }));
+
+    return res.status(200).json({
       message: 'Languages retrieved successfully',
       data: {
-        pages: pages,
-        total: total,
+        pages: formattedLanguages,
+        total,
         totalPages: Math.ceil(total / parseInt(limit)),
         page: parseInt(page),
-        limit: parseInt(limit)
-      }
+        limit: parseInt(limit),
+      },
     });
   } catch (error) {
     console.error('Error in fetchLanguages:', error);
@@ -35,38 +53,102 @@ exports.fetchLanguages = async (req,res) => {
   }
 };
 
-exports.createLanguage = async (req,res) => {
-  const { locale, name, isActive } = req.body
+exports.fetchActiveLanguages = async (req, res) => {
+  const { search, page = 1, limit = 10 } = req.query;
+  const skip = (parseInt(page) - 1) * parseInt(limit);
+
+  try {
+    const match = { is_active: true };
+    if (search) {
+      match.$or = [
+        { name: { $regex: search, $options: 'i' } },
+        { locale: { $regex: search, $options: 'i' } },
+      ];
+    }
+
+    const settings = await Setting.findOne().select('default_language').lean();
+    const defaultLanguage = settings?.default_language;
+
+    const [total, languages] = await Promise.all([
+      Language.countDocuments(match),
+      Language.find(match).sort({ created_at: -1 }).skip(skip).limit(parseInt(limit)).lean({ virtuals: true }),
+    ]);
+
+    const formattedLanguages = languages.map(lang => ({
+      id: lang._id,
+      name: lang.name,
+      locale: lang.locale,
+      is_active: lang.is_active,
+      translation_json: lang.translation_json,
+      flag: lang.flag,
+      created_at: lang.created_at,
+      updated_at: lang.updated_at,
+      is_default: lang.locale === defaultLanguage,
+    }));
+
+    return res.status(200).json({
+      message: 'Languages retrieved successfully',
+      data: {
+        pages: formattedLanguages,
+        total,
+        totalPages: Math.ceil(total / parseInt(limit)),
+        page: parseInt(page),
+        limit: parseInt(limit),
+      },
+    });
+  } catch (error) {
+    console.error('Error in fetchActiveLanguages:', error);
+    return res.status(500).json({ message: 'Internal server error' });
+  }
+};
+
+exports.createLanguage = async (req, res) => {
+  const { locale, name, isActive } = req.body;
 
   try {
     if (!locale || !name) {
-      return res.status(400).json({ message: 'name, and locale are required' });
+      return res.status(400).json({ message: 'name and locale are required' });
     }
 
-    const exists = await Language.findOne({ where: { locale } });
+    const exists = await Language.findOne({ locale: locale.trim().toLowerCase() });
     if (exists) {
       return res.status(400).json({ message: 'Language already exists' });
     }
-    let translationJson;
-    if (req.file) {
-      const fileContent = require('fs').readFileSync(req.file.path, 'utf8');
+
+    let translationJson = null;
+    let metadata = {};
+    let flagPath = null;
+
+    if (req.files?.translation?.[0]) {
+      const file = req.files.translation[0];
+      const fileContent = fs.readFileSync(file.path, 'utf8');
+
       try {
         translationJson = JSON.parse(fileContent);
-      } catch (e) {
+      } catch {
         return res.status(400).json({ message: 'Invalid JSON file for translations' });
       }
-      require('fs').unlinkSync(req.file.path);
+
+      metadata.fileName = file.originalname;
+    }
+
+    if (req.files?.flag?.[0]) {
+      flagPath = req.files.flag[0].path;
     }
 
     const language = await Language.create({
       name: name.trim(),
       locale: locale.trim().toLowerCase(),
-      is_active: isActive,
+      is_active: isActive ?? true,
       translation_json: translationJson,
+      flag: flagPath,
+      metadata,
     });
 
-    return res.status(201).json({ message: 'Language created successfully.', language });
-
+    return res.status(201).json({
+      message: 'Language created successfully.',
+      language,
+    });
   } catch (error) {
     console.error('Error in createLanguage', error);
     return res.status(500).json({ message: 'Internal server error' });
@@ -75,65 +157,109 @@ exports.createLanguage = async (req,res) => {
 
 exports.updateLanguage = async (req, res) => {
   const { id } = req.params;
-  const { name, locale, is_active } = req.body;
-  
+  const { name, locale, is_active, remove_flag = false } = req.body;
+
   try {
-    const language = await Language.findByPk(id);
-    if (!language) {
-      return res.status(404).json({ message: 'Language not found' });
+    const language = await Language.findById(id);
+    if (!language) return res.status(404).json({ message: 'Language not found' });
+
+    const settings = await Setting.findOne().select('default_language').lean();
+    if (language.locale === settings?.default_language && is_active === false) {
+      return res.status(400).json({
+        message: 'Default language cannot be disabled. Please change the default language first.',
+      });
     }
 
     if (locale && locale !== language.locale) {
-      const existingLocale = await Language.findOne({ where: { locale, id: { [Op.ne]: id }} });
-  
-      if (existingLocale) {
-        return res.status(400).json({ message: `Language with locale ${locale} already exists`});
+      const exists = await Language.findOne({locale: locale.trim().toLowerCase(),_id: { $ne: id },});
+      if (exists) {
+        return res.status(400).json({ message: `Language with locale ${locale} already exists` });
       }
     }
 
-    if (req.file) {
-      const fileContent = require('fs').readFileSync(req.file.path, 'utf8');
+    let translationJson = language.translation_json;
+    let metadata = language.metadata || {};
+    let flagPath = language.flag;
+
+    if (req.files?.translation?.[0]) {
+      const file = req.files.translation[0];
+      const fileContent = fs.readFileSync(file.path, 'utf8');
+
       try {
-        newTranslationJson = JSON.parse(fileContent);
-      } catch (e) {
+        translationJson = JSON.parse(fileContent);
+      } catch {
         return res.status(400).json({ message: 'Invalid JSON file for translations' });
       }
-      require('fs').unlinkSync(req.file.path);
-    } else if (translation_json) {
-      try {
-        newTranslationJson = typeof translation_json === 'string' ? JSON.parse(translation_json) : translation_json;
-      } catch (e) {
-        return res.status(400).json({ message: 'Invalid translation JSON' });
-      }
+
+      metadata.fileName = file.originalname;
     }
 
-    await language.update({ name, locale, is_active, translation_json: newTranslationJson ?? language.translation_json });
+    if (remove_flag === true || remove_flag === 'true') {
+      if (flagPath && fs.existsSync(flagPath)) {
+        fs.unlinkSync(flagPath);
+      }
+      flagPath = null;
+    }
 
-    res.status(200).json({ message: 'Language updated', language });
+    if (req.files?.flag?.[0]) {
+      if (flagPath && fs.existsSync(flagPath)) {
+        fs.unlinkSync(flagPath);
+      }
+      flagPath = req.files.flag[0].path;
+    }
+
+    await Language.updateOne(
+      { _id: id },
+      {
+        $set: {
+          name: name ? name.trim() : language.name,
+          locale: locale ? locale.trim().toLowerCase() : language.locale,
+          is_active: is_active !== undefined ? is_active : language.is_active,
+          translation_json: translationJson,
+          flag: flagPath,
+          metadata,
+        },
+      }
+    );
+
+    const updatedLanguage = await Language.findById(id).lean({ virtuals: true });
+
+    return res.status(200).json({ message: 'Language updated', language: updatedLanguage });
   } catch (error) {
     console.error('Error in updateLanguage', error);
     return res.status(500).json({ message: 'Internal server error' });
   }
 };
-  
-exports.updateLanguageStatus = async (req,res) => {
+
+exports.updateLanguageStatus = async (req, res) => {
   const { id } = req.params;
   const { status } = req.body;
 
   try {
-    const language = await Language.findByPk(id);
-    if(!language) return res.status(404).json({ message: 'Language not found.'});
+    const language = await Language.findById(id);
+    if (!language) return res.status(404).json({ message: 'Language not found.' });
 
-    await language.update({is_active: status});
+    const settings = await Setting.findOne().select('default_language').lean();
+    if (language.locale === settings?.default_language && status === false) {
+      return res.status(400).json({
+        message: 'Default language cannot be disabled. Please change the default language first.',
+      });
+    }
 
-    return res.status(200).json({ message: 'Language status updated successfully.', language});
+    await Language.updateOne({ _id: id }, { is_active: status });
+
+    const updatedLanguage = await Language.findById(id);
+    return res.status(200).json({
+      message: 'Language status updated successfully.',
+      language: updatedLanguage,
+    });
   } catch (error) {
     console.error('Error in updateLanguageStatus', error);
     return res.status(500).json({ message: 'Internal server error' });
   }
 };
 
-exports.deleteLanguages = async (req,res) => {
+exports.deleteLanguages = async (req, res) => {
   const { ids } = req.body;
 
   try {
@@ -141,14 +267,24 @@ exports.deleteLanguages = async (req,res) => {
       return res.status(400).json({ message: 'No language IDs provided or invalid format' });
     }
 
-    const languages = await Language.findAll({ where: { id: ids, }});
+    const objectIds = ids.map(id => new mongoose.Types.ObjectId(id));
+    const languages = await Language.find({ _id: { $in: objectIds } }).lean({ virtuals: true });
+
     if (languages.length === 0) {
       return res.status(404).json({ message: 'No languages found for the provided IDs' });
     }
 
-    await Language.destroy({ where: { id: ids } });
-    return res.status(200).json({ message: `Successfully deleted ${languages.length} language(s)`});
+    for (const lang of languages) {
+      if (lang.flag && fs.existsSync(lang.flag)) {
+        fs.unlinkSync(lang.flag);
+      }
+    }
 
+    await Language.deleteMany({ _id: { $in: objectIds } });
+
+    return res.status(200).json({
+      message: `Successfully deleted ${languages.length} language(s)`,
+    });
   } catch (error) {
     console.error('Error in deleteLanguages', error);
     return res.status(500).json({ message: 'Internal server error' });
@@ -159,13 +295,14 @@ exports.getTranslationFile = async (req, res) => {
   const { locale } = req.params;
 
   try {
-    const language = await Language.findOne({ where: { locale } });
+    const language = await Language.findOne({ locale });
     if (!language || !language.translation_json) {
       return res.status(404).json({ message: 'Translation file not found' });
     }
 
-    res.status(200).json({translation : language});
+    return res.status(200).json({ translation: language });
   } catch (error) {
-    res.status(500).json({ message: 'Internal server error' });
+    console.error('Error in getTranslationFile:', error);
+    return res.status(500).json({ message: 'Internal server error' });
   }
 };

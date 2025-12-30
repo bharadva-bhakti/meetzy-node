@@ -4,25 +4,36 @@ const { addVirtualId } = require('../utils/modelHelper');
 
 const LanguageSchema = new Schema(
   {
-    name: { 
-      type: String, 
-      maxlength: 50, 
-      required: true 
+    name: {
+      type: String,
+      maxlength: 50,
+      required: true,
+      trim: true,
     },
-    locale: { 
-      type: String, 
-      maxlength: 10, 
-      required: true, 
-      unique: true 
+    locale: {
+      type: String,
+      maxlength: 10,
+      required: true,
+      lowercase: true,
+      unique: true,
+      trim: true,
     },
-    is_active: { 
+    is_active: {
       type: Boolean,
-      default: true 
+      default: true,
     },
-    translation_json: { 
-      type: Object, 
-      default: null 
-    }
+    translation_json: {
+      type: Object,
+      default: null,
+    },
+    flag: {
+      type: String,
+      default: null,
+    },
+    metadata: {
+      type: Object,
+      default: {},
+    },
   },
   {
     collection: 'languages',
