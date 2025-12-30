@@ -1,12 +1,17 @@
-const { Op } = require('sequelize');
-const { User, Message, sequelize, Announcement, Group, UserDelete, ChatClear } = require('../models');
+const { db } = require('../models');
+const Message = db.Message;
+const Announcement = db.Announcement;
+const User = db.User;
+const mongoose = require('mongoose');
+const fs = require('fs');
+const path = require('path');
 
 exports.sendAnnouncement = async (req, res) => {
-  const adminId = req.user.id;
+  const adminId = req.user._id;
   let { content, title, announcement_type, action_link, redirect_url } = req.body;
   let fileUrl = null;
   let fileType = null;
-  
+
   try {
     if (req.user.role !== 'super_admin') {
       return res.status(400).json({ message: 'Only admin can send announcements' });
@@ -17,11 +22,6 @@ exports.sendAnnouncement = async (req, res) => {
     if (req.file) {
       fileUrl = req.file.path;
       fileType = req.file.mimetype;
-
-      if (fileType.startsWith('image/')) message_type = 'image';
-      else if (fileType.startsWith('video/')) message_type = 'video';
-      else if (fileType.startsWith('audio/')) message_type = 'audio';
-      else message_type = 'document';
     }
 
     if (!content || !content.trim()) {
@@ -36,77 +36,77 @@ exports.sendAnnouncement = async (req, res) => {
       return res.status(400).json({ message: 'redirect_url is required for get_started announcements' });
     }
 
-    const transaction = await sequelize.transaction();
-
-    try {
-      const message = await Message.create({
-        sender_id: adminId,
-        recipient_id: null,
-        group_id: null,
-        content,
-        message_type: 'announcement',
-        file_url: fileUrl,
-        file_type: fileType,
-        metadata: { 
-          sent_by_admin: adminId,
-          announcement_type: announcement_type,
-          title: title,
-          action_link: action_link,
-          redirect_url: redirect_url
-        },
-        is_encrypted: false
-      }, { transaction });
-
-      const announcement = await Announcement.create({
-        message_id: message.id,
-        title: title || null,
+    const message = await Message.create({
+      sender_id: adminId,
+      recipient_id: null,
+      group_id: null,
+      content: content.trim(),
+      message_type: 'announcement',
+      file_url: fileUrl,
+      file_type: fileType,
+      metadata: {
+        sent_by_admin: adminId,
         announcement_type,
-        action_link: ['get_started', 'learn_more'].includes(announcement_type) ? action_link : null,
-        redirect_url: redirect_url ? redirect_url : null
-      }, { transaction });
+        title,
+        action_link,
+        redirect_url,
+      },
+      is_encrypted: false,
+    });
 
-      await transaction.commit();
+    const announcement = await Announcement.create({
+      message_id: message._id,
+      title: title || null,
+      announcement_type,
+      action_link: ['get_started', 'learn_more'].includes(announcement_type) ? action_link : null,
+      redirect_url: redirect_url || null,
+    });
 
-      await UserDelete.destroy({
-        where: {
-          target_type: 'user',
-          target_id: adminId,
-          delete_type: 'hide_chat'
-        }
-      });
+    const fullMessageResult = await Message.aggregate([
+      { $match: { _id: message._id } },
+      { $lookup: { from: 'users', localField: 'sender_id', foreignField: '_id', as: 'sender',}},
+      { $unwind: '$sender' },
+      {
+        $project: {
+          id: '$_id',
+          _id: 0,
+          sender_id: 1,
+          content: 1,
+          message_type: 1,
+          file_url: 1,
+          file_type: 1,
+          metadata: 1,
+          created_at: 1,
+          updated_at: 1,
+          sender: {id: '$sender._id',name: '$sender.name',avatar: '$sender.avatar',},
+        },
+      },
+    ]);
 
-      const users = await User.findAll({ attributes: ['id'], raw: true });
-      
-      const announcementData = {
-        id: message.id,
-        content: message.content,
-        title: announcement.title,
-        announcement_type: announcement.announcement_type,
-        action_link: announcement.action_link,
-        redirect_url: announcement.redirect_url,
-        file_url: message.file_url,
-        file_type: message.file_type,
-        created_at: message.created_at,
-      };
+    const fullMessage = fullMessageResult[0];
 
-      const fullMessage = await Message.findByPk(message.id, {
-        include: [
-          { model: User, as: 'sender', attributes: ['id', 'name', 'avatar'] },
-          { model: User, as: 'recipient', attributes: ['id', 'name', 'avatar'], required: false },
-          { model: Group, as: 'group', attributes: ['id', 'name', 'avatar'], required: false },
-        ],
-      });
+    const users = await User.find().select('id').lean({ virtuals: true });
 
-      users.forEach(user => {
-        io.to(`user_${user.id}`).emit('receive-message', fullMessage);
-      });
+    users.forEach(user => {
+      io.to(`user_${user.id}`).emit('receive-message', fullMessage);
+    });
 
-      return res.status(200).json({ message: 'Announcement sent successfully', data: announcementData});
+    const announcementData = {
+      id: announcement.id,
+      content: message.content,
+      title: announcement.title,
+      announcement_type: announcement.announcement_type,
+      action_link: announcement.action_link,
+      redirect_url: announcement.redirect_url,
+      file_url: message.file_url,
+      file_type: message.file_type,
+      created_at: message.created_at,
+    };
 
-    } catch (error) {
-      throw error;
-    }
-
+    return res.status(200).json({
+      message: 'Announcement sent successfully',
+      data: announcementData,
+    });
   } catch (error) {
     console.error('Error in sendAnnouncement:', error);
     return res.status(500).json({ message: 'Internal Server Error' });
@@ -114,7 +114,7 @@ exports.sendAnnouncement = async (req, res) => {
 };
 
 exports.editAnnouncement = async (req, res) => {
-  const adminId = req.user.id;
+  const adminId = req.user._id;
   const announcementId = req.params.id;
   const { content, title, announcement_type, action_link, redirect_url } = req.body;
 
@@ -126,113 +126,113 @@ exports.editAnnouncement = async (req, res) => {
       return res.status(403).json({ message: 'Only admin can edit announcements' });
     }
 
-    const announcement = await Announcement.findOne({
-      where: { id: announcementId },
-      include: [{ model: Message, as: 'message', where: { sender_id: adminId }, required: true }]
-    });
-
-    if (!announcement) {
-      return res.status(404).json({ message: 'Announcement not found' });
+    if (req.file) {
+      fileUrl = req.file.path;
+      fileType = req.file.mimetype;
     }
 
     if (announcement_type === 'learn_more' && !action_link) {
       return res.status(400).json({ message: 'action_link is required for learn_more announcements' });
     }
 
-    if (req.file) {
-      fileUrl = req.file.path;
-      fileType = req.file.mimetype;
-    }
-
-    const transaction = await sequelize.transaction();
-
-    try {
-      const messageUpdateData = {
-        content: content ?? announcement.message.content,
-        metadata: {
-          title,
-          announcement_type,
-          action_link,
-          redirect_url
-        }
-      };
-
-      if (req.file) {
-        messageUpdateData.file_url = fileUrl;
-        messageUpdateData.file_type = fileType;
-      }
-
-      await Message.update(messageUpdateData, {
-        where: { id: announcement.message_id },
-        transaction
-      });
-
-      await Announcement.update(
-        {
-          title: title ?? announcement.title,
-          announcement_type: announcement_type ?? announcement.announcement_type,
-          action_link: action_link ?? announcement.action_link,
-          redirect_url: redirect_url ?? announcement.redirect_url
+    const announcementResult = await Announcement.aggregate([
+      { $match: { _id: new mongoose.Types.ObjectId(announcementId) } },
+      { $lookup: { from: 'messages', localField: 'message_id', foreignField: '_id', as: 'message',}},
+      { $unwind: '$message' },
+      { $match: { 'message.sender_id': adminId } },
+      {
+        $project: {
+          _id: 1,
+          message_id: '$message._id',
+          title: 1,
+          announcement_type: 1,
+          action_link: 1,
+          redirect_url: 1,
+          message: { content: 1, file_url: 1, file_type: 1, metadata: 1, },
         },
-        { where: { id: announcementId }, transaction }
-      );
+      },
+    ]);
 
-      await transaction.commit();
-    } catch (err) {
-      await transaction.rollback();
-      throw err;
+    const announcementData = announcementResult[0];
+
+    if (!announcementData) {
+      return res.status(404).json({ message: 'Announcement not found' });
     }
 
-    const fullMessage = await Message.findByPk(announcement.message_id, {
-      include: [
-        { model: User, as: 'sender', attributes: ['id', 'name', 'avatar'] },
-        { model: User, as: 'recipient', attributes: ['id', 'name', 'avatar'], required: false },
-        { model: Group, as: 'group', attributes: ['id', 'name', 'avatar'], required: false }
-      ]
-    });
+    const messageUpdate = {
+      content: content ?? announcementData.message.content,
+      metadata: {
+        ...announcementData.message.metadata,
+        title,
+        announcement_type,
+        action_link,
+        redirect_url,
+      },
+    };
 
-    const users = await User.findAll({ attributes: ['id'], raw: true });
+    if (fileUrl) {
+      messageUpdate.file_url = fileUrl;
+      messageUpdate.file_type = fileType;
+    }
 
-    const chatClears = await ChatClear.findAll({
-      where: { recipient_id: adminId },
-      attributes: ['user_id', 'cleared_at'],
-      raw: true
-    });
-
-    const clearedMap = new Map(
-      chatClears.map(c => [c.user_id, new Date(c.cleared_at)])
+    await Message.updateOne( { _id: announcementData.message_id }, { $set: messageUpdate });
+    await Announcement.updateOne(
+      { _id: announcementId },
+      {
+        $set: {
+          title: title ?? announcementData.title,
+          announcement_type: announcement_type ?? announcementData.announcement_type,
+          action_link: action_link ?? announcementData.action_link,
+          redirect_url: redirect_url ?? announcementData.redirect_url,
+        },
+      }
     );
 
-    const messageCreatedAt = new Date(fullMessage.created_at);
+    const fullMessageResult = await Message.aggregate([
+      { $match: { _id: announcementData.message_id } },
+      { $lookup: { from: 'users', localField: 'sender_id', foreignField: '_id', as: 'sender',}},
+      { $unwind: '$sender' },
+      {
+        $project: {
+          id: '$_id',
+          _id: 0,
+          content: 1,
+          message_type: 1,
+          file_url: 1,
+          file_type: 1,
+          metadata: 1,
+          created_at: 1,
+          updated_at: 1,
+          sender: { id: '$sender._id', name: '$sender.name', avatar: '$sender.avatar',},
+        },
+      },
+    ]);
+
+    const fullMessage = fullMessageResult[0];
+
+    const users = await User.find().select('id').lean({ virtuals: true });
+
     const io = req.app.get('io');
-
-    users.forEach(user => {
-      const clearedAt = clearedMap.get(user.id);
-
-      if (!clearedAt) {
+    if (io) {
+      users.forEach(user => {
         io.to(`user_${user.id}`).emit('message-updated', fullMessage);
-        return;
-      }
-
-      if (messageCreatedAt > clearedAt) {
-        io.to(`user_${user.id}`).emit('message-updated', fullMessage);
-      }
-    });
+      });
+    }
 
     return res.status(200).json({
       message: 'Announcement updated successfully',
       data: {
         id: fullMessage.id,
         content: fullMessage.content,
-        title,
-        announcement_type,
-        action_link,
-        redirect_url,
+        title: title ?? announcementData.title,
+        announcement_type: announcement_type ?? announcementData.announcement_type,
+        action_link: action_link ?? announcementData.action_link,
+        redirect_url: redirect_url ?? announcementData.redirect_url,
         file_url: fullMessage.file_url,
         file_type: fullMessage.file_type,
         created_at: fullMessage.created_at,
-        updated_at: fullMessage.updated_at
-      }
+        updated_at: fullMessage.updated_at,
+      },
     });
   } catch (error) {
     console.error('Error editing announcement:', error);
@@ -241,9 +241,9 @@ exports.editAnnouncement = async (req, res) => {
 };
 
 exports.deleteAnnouncement = async (req, res) => {
-  const adminId = req.user.id;
-  const {announcement_ids} = req.body;
-  
+  const adminId = req.user._id;
+  const { announcement_ids } = req.body;
+
   try {
     if (req.user.role !== 'super_admin') {
       return res.status(403).json({ message: 'Only admin can delete announcements' });
@@ -253,50 +253,49 @@ exports.deleteAnnouncement = async (req, res) => {
       return res.status(400).json({ message: 'Announcement IDs array is required' });
     }
 
-    const announcements = await Announcement.findAll({
-      where: { id: announcement_ids },
-      include: [{ model: Message, as: 'message', where: { sender_id: adminId }, required: true, attributes: ['id']}]
-    });
+    const objectIds = announcement_ids.map(id => new mongoose.Types.ObjectId(id));
 
-    if (announcements.length === 0) {
+    const announcementsResult = await Announcement.aggregate([
+      { $match: { _id: { $in: objectIds } } },
+      { $lookup: { from: 'messages', localField: 'message_id', foreignField: '_id', as: 'message'}},
+      { $unwind: '$message' },
+      { $match: { 'message.sender_id': adminId } },
+      { $project: { id: '$_id', _id: 0, announcement_id: '$_id', message_id: '$message._id'}},
+    ]);
+
+    if (announcementsResult.length === 0) {
       return res.status(404).json({ message: 'Announcement not found' });
     }
 
-    const foundIds = announcements.map(a => a.id);
+    const foundIds = announcementsResult.map(a => a.id.toString());
+    const messageIds = announcementsResult.map(a => a.message_id);
     const notFoundIds = announcement_ids.filter(id => !foundIds.includes(id));
-    const messageIds = announcements.map(a => a.message_id);
 
-    const transaction = await sequelize.transaction();
+    await Announcement.deleteMany({ _id: { $in: announcementsResult.map(a => a.announcement_id) } });
+    await Message.deleteMany({ _id: { $in: messageIds } });
 
-    try {
-      await Announcement.destroy({ where: { id: foundIds }, transaction });
+    const io = req.app.get('io');
+    const users = await User.find().select('id').lean({ virtuals: true });
 
-      await transaction.commit();
-
-      const io = req.app.get('io');
-      const users = await User.findAll({ attributes: ['id'], raw: true });
-      
-      users.forEach(user => {
-        io.to(`user_${user.id}`).emit('announcement:delete', { id: messageIds, deleted_at: new Date()});
+    users.forEach(user => {
+      io.to(`user_${user.id}`).emit('announcement:delete', {
+        id: messageIds.map(id => id.toString()),
+        deleted_at: new Date(),
       });
+    });
 
-      const response = {
-        message: `${foundIds.length} announcement(s) deleted successfully`,
-        deletedCount: foundIds.length,
-        deletedIds: foundIds
-      };
-  
-      if (notFoundIds.length > 0) {
-        response.notFound = notFoundIds;
-        response.message += `, ${notFoundIds.length} announcement(s) not found`;
-      }
-  
-      return res.status(200).json(response);
+    const response = {
+      message: `${foundIds.length} announcement(s) deleted successfully`,
+      deletedCount: foundIds.length,
+      deletedIds: foundIds,
+    };
 
-    } catch (error) {
-      await transaction.rollback();
-      throw error;
+    if (notFoundIds.length > 0) {
+      response.notFound = notFoundIds;
+      response.message += `, ${notFoundIds.length} announcement(s) not found`;
     }
+
+    return res.status(200).json(response);
   } catch (error) {
     console.error('Error deleting announcement:', error);
     return res.status(500).json({ message: 'Internal Server Error' });
@@ -304,61 +303,77 @@ exports.deleteAnnouncement = async (req, res) => {
 };
 
 exports.getAnnouncements = async (req, res) => {
-  const adminId = req.user.id;
-  const { page = 1, limit = 20, type, search } = req.query;
-  const offset = (parseInt(page) - 1) * parseInt(limit);
+  const adminId = req.user._id;
+  const page = parseInt(req.query.page) || 1;
+  const limit = parseInt(req.query.limit) || 20;
+  const skip = (page - 1) * limit;
+  const type = req.query.type;
+  const search = req.query.search?.trim();
 
   try {
     if (req.user.role !== 'super_admin') {
       return res.status(403).json({ message: 'Only admin can view announcements' });
     }
 
-    const announcementWhere = {};
-    if (type) announcementWhere.announcement_type = type;
+    const pipeline = [
+      { $lookup: { from: 'messages', localField: 'message_id', foreignField: '_id', as: 'message'}},
+      { $unwind: { path: '$message', preserveNullAndEmptyArrays: false } },
+      { $match: { 'message.sender_id': adminId, 'message.recipient_id': null, 'message.group_id': null}},
+    ];
 
-    const messageWhere = { sender_id: adminId, recipient_id: null, group_id: null };
+    if (type) pipeline.push({ $match: { announcement_type: type } });
 
-    if (search && search.trim().length >= 2) {
-      const searchTerm = search.trim();
-
-      messageWhere[Op.or] = [
-        { content: { [Op.like]: `%${searchTerm}%` } },
-        { '$Announcement.title$': { [Op.like]: `%${searchTerm}%` } }
-      ];
+    if (search && search.length >= 2) {
+      pipeline.push({
+        $match: {
+          $or: [
+            { 'message.content': { $regex: search, $options: 'i' } },
+            { title: { $regex: search, $options: 'i' } },
+          ],
+        },
+      });
     }
 
-    const { rows: announcements, count } = await Announcement.findAndCountAll({
-      where: announcementWhere,
-      include: [{ model: Message, as: 'message', where: messageWhere, required: true }],
-      order: [['created_at', 'DESC']],
-      limit: parseInt(limit),
-      offset,
-      distinct: true
-    });
+    pipeline.push(
+      { $sort: { created_at: -1 } },
+      { $skip: skip },
+      { $limit: limit },
+      {
+        $project: {
+          id: '$_id',
+          _id: 0,
+          message_id: '$message._id',
+          content: '$message.content',
+          title: 1,
+          announcement_type: 1,
+          action_link: 1,
+          is_highlighted: 1,
+          file_url: '$message.file_url',
+          file_type: '$message.file_type',
+          created_at: 1,
+          expires_at: 1,
+          metadata: '$message.metadata',
+        },
+      }
+    );
 
-    const formattedAnnouncements = announcements.map(ann => ({
-      id: ann.id,
-      message_id: ann.message.id,
-      content: ann.message.content,
-      title: ann.title,
-      announcement_type: ann.announcement_type,
-      action_link: ann.action_link,
-      is_highlighted: ann.is_highlighted,
-      file_url: ann.message.file_url,
-      file_type: ann.message.file_type,
-      created_at: ann.created_at,
-      expires_at: ann.expires_at,
-      metadata: ann.message.metadata
-    }));
+    const countPipeline = pipeline.slice(0, -4);
+    countPipeline.push({ $count: 'total' });
+
+    const [announcements, countResult] = await Promise.all([
+      Announcement.aggregate(pipeline),
+      Announcement.aggregate(countPipeline),
+    ]);
+
+    const total = countResult[0]?.total || 0;
 
     return res.status(200).json({
       message: 'Announcements fetched',
-      total: count,
-      page: parseInt(page),
-      limit: parseInt(limit),
-      announcements: formattedAnnouncements
+      total,
+      page,
+      limit,
+      announcements,
     });
-
   } catch (error) {
     console.error('Error fetching announcements:', error);
     return res.status(500).json({ message: 'Internal Server Error' });

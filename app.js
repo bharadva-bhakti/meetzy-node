@@ -52,7 +52,7 @@ const smsGatewayRoutes = require('./routes/sms-gateway.routes');
 // const planRoutes = require('./routes/plan.routes');
 // const userVerificationRoutes = require('./routes/user-verification.routes');
 // const subscriptionRoutes = require('./routes/subscription.routes');
-// const announcementRoutes = require('./routes/announcement.routes');
+const announcementRoutes = require('./routes/announcement.routes');
 const broadcastRoutes = require('./routes/broadcast.routes');
 // const languageRoutes = require('./routes/language.routes');
 
@@ -88,7 +88,7 @@ app.use('/api/gateway', smsGatewayRoutes);
 // app.use('/api/verification', userVerificationRoutes);
 // app.use('/api/plan', planRoutes);
 // app.use('/api/subscription', subscriptionRoutes);
-// app.use('/api/announcement', announcementRoutes);
+app.use('/api/announcement', announcementRoutes);
 app.use('/api/broadcast', broadcastRoutes);
 // app.use('/api/language', languageRoutes);
 
