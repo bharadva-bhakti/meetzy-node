@@ -291,7 +291,6 @@ exports.getMessages = async (req, res) => {
       return false;
     };
 
-    // Common meta fetch function
     const getCommonChatMeta = async (targetType, targetId) => {
       const whereCondition = targetId ? { user_id: userId, target_id: targetId, target_type: targetType } : null;
       if (!whereCondition) return {};
@@ -317,33 +316,10 @@ exports.getMessages = async (req, res) => {
         { $sort: { created_at: -1 } },
         { $skip: parseInt(offset) },
         { $limit: parseInt(limit) },
-        {
-          $lookup: { from: 'users', localField: 'sender_id', foreignField: '_id', as: 'sender_doc' },
-        },
+        { $lookup: { from: 'users', localField: 'sender_id', foreignField: '_id', as: 'sender_doc' }},
         { $unwind: { path: '$sender_doc', preserveNullAndEmptyArrays: true } },
-        {
-          $addFields: {
-            id: '$_id',
-            sender: {
-              id: '$sender_doc._id',
-              name: '$sender_doc.name',
-              avatar: '$sender_doc.avatar',
-            },
-          },
-        },
-        {
-          $project: {
-            _id: 0,
-            id: 1,
-            sender_id: 1,
-            content: 1,
-            message_type: 1,
-            file_url: 1,
-            metadata: 1,
-            created_at: 1,
-            sender: 1,
-          },
-        },
+        { $addFields: {id: '$_id',sender: {id: '$sender_doc._id',name: '$sender_doc.name',avatar: '$sender_doc.avatar'}}},
+        { $project: { _id: 0, id: 1, sender_id: 1, content: 1, message_type: 1, file_url: 1, metadata: 1, created_at: 1, sender: 1}},
       ];
 
       messages = await Message.aggregate(pipeline);
@@ -378,37 +354,124 @@ exports.getMessages = async (req, res) => {
 
     if (isBroadcast === 'true' || isBroadcast === true) {
       if (!broadcastId) return res.status(400).json({ message: 'broadcastId is required' });
-      
+    
       const pipeline = [
-        {
-          $match: {
-            sender_id: userId,
-            'metadata.is_broadcast': true,
-            'metadata.broadcast_id': broadcastId,
-          },
-        },
+        { $match: { sender_id: userId, 'metadata.is_broadcast': true, 'metadata.broadcast_id': broadcastId }},
         { $sort: { created_at: 1 } },
         { $skip: parseInt(offset) },
         { $limit: parseInt(limit) },
-        { $addFields: { id: '$_id' } },
-        { $project: { _id: 0, id: 1, content: 1, message_type: 1, file_url: 1, metadata: 1, created_at: 1 } },
+        { $lookup: { from: 'users', localField: 'sender_id', foreignField: '_id', as: 'sender_doc' }},
+        { $unwind: { path: '$sender_doc', preserveNullAndEmptyArrays: true } },
+        { $lookup: { from: 'message_statuses', localField: '_id', foreignField: 'message_id', as: 'statuses' }},
+        {
+          $addFields: {
+            id: '$_id',
+            sender: { id: '$sender_doc._id', name: '$sender_doc.name', email: '$sender_doc.email', avatar: '$sender_doc.avatar'},
+          },
+        },
+        {
+          $project: {
+            _id: 0,
+            id: 1,
+            sender_id: 1,
+            recipient_id: 1,
+            group_id: 1,
+            content: 1,
+            message_type: 1,
+            file_url: 1,
+            file_type: 1,
+            mentions: 1,
+            has_unread_mentions: 1,
+            metadata: 1,
+            is_encrypted: 1,
+            created_at: 1,
+            updated_at: 1,
+            deleted_at: 1,
+            sender: 1,
+            statuses: {
+              $map: {
+                input: '$statuses',
+                as: 'status',
+                in: { user_id: '$$status.user_id', status: '$$status.status', updated_at: '$$status.updated_at'},
+              },
+            },
+            reactions: { $ifNull: ['$reactions', []] },
+            actions: { $ifNull: ['$actions', []] },
+            pin: { $ifNull: ['$pin', null] },
+            disappearing: { $ifNull: ['$disappearing', null] },
+            parent: { $ifNull: ['$parent', null] },
+            recipients: { $ifNull: ['$recipients', []] },
+          },
+        },
       ];
-      console.log("🚀 ~ pipeline:", pipeline)
-
-      messages = await Message.aggregate(pipeline);
-
-      const merged = groupBroadcastMessages(messages, userId);
-      const dateGrouped = groupMessagesByDate([{ sender_id: userId, messages: merged }]);
-
+    
+      let messages = await Message.aggregate(pipeline);
+    
+      messages = messages.filter(msg => {
+        const actions = msg.actions || [];
+        const deletedForMe = actions.some(a =>
+          a.user_id?.toString() === userId.toString() &&
+          a.action_type === 'delete' &&
+          a.details?.type === 'me'
+        );
+        const deletedForEveryone = actions.some(a =>
+          a.action_type === 'delete' &&
+          a.details?.type === 'everyone'
+        );
+    
+        if (deletedForMe && !deletedForEveryone) return false;
+        if (deletedForEveryone) {
+          msg.content = 'This message was deleted';
+          msg.isDeleted = true;
+          msg.isDeletedForEveryone = true;
+        }
+        return true;
+      });
+    
+      const mergedMap = new Map();
+      for (const msg of messages) {
+        const key = [
+          msg.created_at?.toISOString(),
+          msg.content || '',
+          msg.file_url || '',
+          msg.message_type,
+          msg.metadata?.file_index ?? '',
+        ].join('|');
+    
+        if (!mergedMap.has(key)) {
+          mergedMap.set(key, {
+            ...msg,
+            recipients: [],
+            statuses: msg.statuses || [],
+            isDeleted: msg.isDeleted || false,
+            isDeletedForEveryone: msg.isDeletedForEveryone || false,
+          });
+        } else {
+          const entry = mergedMap.get(key);
+          entry.statuses = [...entry.statuses, ...(msg.statuses || [])];
+        }
+      }
+    
+      const mergedMessages = Array.from(mergedMap.values());
+    
+      const wrapper = {
+        sender_id: userId,
+        sender: mergedMessages.length > 0 ? mergedMessages[0].sender : null,
+        messages: mergedMessages,
+        created_at: mergedMessages.length > 0 ? mergedMessages[0].created_at : new Date(),
+        lastMessageTime: mergedMessages.length > 0 ? mergedMessages[mergedMessages.length - 1].created_at : new Date(),
+        groupId: `broadcast_${broadcastId}`,
+      };
+    
+      const dateGrouped = groupMessagesByDate([wrapper]);
       const commonMeta = await getCommonChatMeta('broadcast', broadcastId);
-
+    
       chatTarget = {
         type: 'broadcast',
         broadcast_id: broadcastId,
-        isArchived: commonMeta.isArchived,
-        ...commonMeta,
+        isArchived: !!commonMeta.isArchived,
       };
-
+    
       return res.json({
         messages: dateGrouped,
         chatTarget,
@@ -655,7 +718,6 @@ exports.markMessagesAsRead = async (req, res) => {
       return res.status(400).json({ message: 'Invalid chat_type' });
     }
 
-    // Find unread statuses for this chat
     const unreadStatuses = await MessageStatus.find({
       user_id: userId,
       status: { $ne: 'seen' },
@@ -666,18 +728,13 @@ exports.markMessagesAsRead = async (req, res) => {
       return res.status(200).json({ message: 'No unread messages.' });
     }
 
-    // Mark as seen
     await MessageStatus.updateMany(
-      {
-        message_id: { $in: unreadStatuses.map(s => s.message_id) },
-        user_id: userId,
-      },
+      { message_id: { $in: unreadStatuses.map(s => s.message_id) }, user_id: userId },
       { status: 'seen' }
     );
 
     const now = new Date();
 
-    // Handle disappearing messages on read
     for (const status of unreadStatuses) {
       const disappearing = await MessageDisappearing.findOne({ message_id: status.message_id });
       if (!disappearing || !disappearing.enabled || disappearing.expire_at) continue;
@@ -693,7 +750,6 @@ exports.markMessagesAsRead = async (req, res) => {
       }
     }
 
-    // Clear unread mentions
     await Message.updateMany(
       { ...match, has_unread_mentions: true },
       { has_unread_mentions: false }

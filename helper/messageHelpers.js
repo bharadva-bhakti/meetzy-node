@@ -683,36 +683,40 @@ function groupBroadcastMessages(messages, currentUserId) {
 
   for (const msg of messages) {
     const actions = msg.actions || [];
-    const deletedForMe = actions.some(a => 
-      a.user_id.toString() === currentUserId.toString() && 
-      a.action_type === 'delete' && 
+
+    const deletedForMe = actions.some(a =>
+      a.user_id?.toString() === currentUserId.toString() &&
+      a.action_type === 'delete' &&
       a.details?.type === 'me'
     );
-    const deletedForEveryone = actions.some(a => 
-      a.action_type === 'delete' && 
+
+    const deletedForEveryone = actions.some(a =>
+      a.action_type === 'delete' &&
       a.details?.type === 'everyone'
     );
 
     if (deletedForMe && !deletedForEveryone) continue;
 
-    if (deletedForEveryone) {
-      msg.isDeleted = true;
-      msg.isDeletedForEveryone = true;
-      msg.content = 'This message was deleted';
-    }
-
-    const key = `${msg.created_at.toISOString()}_${msg.content}_${msg.file_url || ''}_${msg.message_type}`;
+    const key = [
+      msg.metadata?.broadcast_id,
+      msg.message_type,
+      msg.file_url || '',
+      msg.metadata?.file_index ?? '',
+      msg.content || ''
+    ].join('|');
 
     if (!map.has(key)) {
-      const base = { ...msg };
-      base.recipients = [];
-      base.statuses = [];
-      base.isDeleted = deletedForEveryone;
-      base.isDeletedForEveryone = deletedForEveryone;
-      map.set(key, base);
+      map.set(key, {
+        ...msg,
+        recipients: [],
+        statuses: [],
+        isDeleted: deletedForEveryone,
+        isDeletedForEveryone: deletedForEveryone,
+      });
     }
 
     const entry = map.get(key);
+
     if (msg.recipient) entry.recipients.push(msg.recipient);
     if (msg.statuses?.length) entry.statuses.push(...msg.statuses);
   }
