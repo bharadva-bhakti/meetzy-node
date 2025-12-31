@@ -66,23 +66,19 @@ async function formatMessageForDisplay(message, currentUserId) {
   });
 
   const deleteForMe = actions.find(
-    a => a.user_id.toString() === currentUserId.toString() &&
-         a.action_type === 'delete' &&
-         a.details?.type === 'me' &&
-         !a.details?.is_broadcast_view
+    a => a.user_id.toString() === currentUserId.toString() && a.action_type === 'delete' && a.details?.type === 'me' && !a.details?.is_broadcast_view
   );
 
-  const deleteForEveryone = actions.find(a => a.action_type === 'delete' && a.details?.type === 'everyone');
+  const deleteForEveryone = actions.find(a => a.action_type === 'delete' && a.details?.type === 'everyone');  
 
+  if(deleteForEveryone){
+    content = 'This message was deleted.';
+  }
   const isStarred = actions.some(a => a.user_id.toString() === currentUserId.toString() && a.action_type === 'star');
 
   if (deleteForMe) return null;
 
-  if (
-    message.disappearing?.enabled &&
-    message.disappearing.expire_after_seconds === null &&
-    message.disappearing.expire_at
-  ) {
+  if ( message.disappearing?.enabled && message.disappearing.expire_at ) {
     const expireTime = new Date(message.disappearing.expire_at);
     const now = new Date();
     if (expireTime <= now) return null;
@@ -293,63 +289,60 @@ async function getMessageReactionCount(messageId, currentUserId) {
 
 async function getUserDocuments(userId, { search = '', page = 1, limit = 20 }) {
   const offset = (page - 1) * limit;
+  const userObjectId = new mongoose.Types.ObjectId(userId);
 
-  const match = {
-    message_type: { $in: ['file', 'audio', 'video', 'image'] },
-    $or: [
-      { sender_id: userId },
-      { recipient_id: userId },
-      { group_id: { $in: await GroupMember.find({ user_id: userId }).distinct('group_id') } },
-    ],
-  };
+  const groupIds = await GroupMember.find({ user_id: userObjectId }).distinct('group_id');
+  const orConditions = [{ sender_id: userObjectId },{ recipient_id: userObjectId }];
 
-  if (search) {
-    match['metadata.original_filename'] = { $regex: search, $options: 'i' };
+  if (groupIds.length > 0) {
+    orConditions.push({ group_id: { $in: groupIds } });
   }
 
-  const pipeline = [
+  const match = { deleted_at: null, message_type: { $in: ['file', 'audio', 'video', 'image'] }, $or: orConditions };
+  
+  if (search) {
+    match['metadata.original_filename'] = { $regex: search, $options: 'i', };
+  }
+
+  const dataPipeline = [
     { $match: match },
     { $sort: { created_at: -1 } },
     { $skip: offset },
     { $limit: limit },
-    {
-      $lookup: { from: 'users', localField: 'sender_id', foreignField: '_id', as: 'sender' },
-    },
+    { $lookup: { from: 'users', localField: 'sender_id', foreignField: '_id', as: 'sender' }},
     { $unwind: { path: '$sender', preserveNullAndEmptyArrays: true } },
-    {
-      $lookup: { from: 'users', localField: 'recipient_id', foreignField: '_id', as: 'recipient' },
-    },
+    { $lookup: { from: 'users', localField: 'recipient_id', foreignField: '_id', as: 'recipient' }},
     { $unwind: { path: '$recipient', preserveNullAndEmptyArrays: true } },
-    {
-      $lookup: { from: 'groups', localField: 'group_id', foreignField: '_id', as: 'group' },
-    },
+    { $lookup: { from: 'groups', localField: 'group_id', foreignField: '_id', as: 'group' }},
     { $unwind: { path: '$group', preserveNullAndEmptyArrays: true } },
   ];
+  
+  const countPipeline = [ { $match: match }, { $count: 'total' }];
 
-  const [totalCount, docs] = await Promise.all([
-    Message.countDocuments(match),
-    Message.aggregate(pipeline),
+  const [docs, countResult] = await Promise.all([
+    Message.aggregate(dataPipeline),
+    Message.aggregate(countPipeline),
   ]);
+
+  const totalCount = countResult[0]?.total || 0;
 
   const formattedDocs = docs.map(doc => {
     let metadata = doc.metadata || {};
     if (typeof metadata === 'string') {
-      try {
-        metadata = JSON.parse(metadata);
-      } catch {}
+      try { metadata = JSON.parse(metadata); } catch {}
     }
 
     return {
-      id: doc.id,
+      id: doc._id,
       file_name: metadata.original_filename || 'Untitled',
       file_url: doc.file_url,
       file_type: doc.file_type || metadata.mime_type,
       file_size: metadata.file_size,
       message_type: doc.message_type,
       created_at: doc.created_at,
-      sender: doc.sender ? { id: doc.sender.id, name: doc.sender.name } : null,
-      recipient: doc.recipient ? { id: doc.recipient.id, name: doc.recipient.name } : null,
-      group: doc.group ? { id: doc.group.id, name: doc.group.name } : null,
+      sender: doc.sender ? { id: doc.sender._id, name: doc.sender.name } : null,
+      recipient: doc.recipient ? { id: doc.recipient._id, name: doc.recipient.name } : null,
+      group: doc.group ? { id: doc.group._id, name: doc.group.name } : null,
     };
   });
 
@@ -360,13 +353,9 @@ async function getUserDocuments(userId, { search = '', page = 1, limit = 20 }) {
     grouped[label].push(doc);
   });
 
-  const documents = Object.entries(grouped).map(([label, items]) => ({
-    dateLabel: label,
-    documents: items,
-  }));
+  const documents = Object.entries(grouped).map(([label, items]) => ({ dateLabel: label, documents: items }));
 
   const totalPages = Math.ceil(totalCount / limit);
-  const hasMore = page < totalPages;
 
   return {
     documents,
@@ -375,7 +364,7 @@ async function getUserDocuments(userId, { search = '', page = 1, limit = 20 }) {
       limit,
       totalCount,
       totalPages,
-      hasMore,
+      hasMore: page < totalPages,
     },
   };
 }
@@ -718,28 +707,30 @@ function groupBroadcastMessages(messages, currentUserId) {
 
 async function handleBroadcastDeletion({ userId, messages, isBroadcast, messageIds, deleteType, broadcastId, io, res }) {
   try {
-    const broadcast = await Broadcast.findOne({ _id: broadcastId, creator_id: userId })
-      .populate('recipients')
-      .lean({ virtuals: true });
-
+    const broadcast = await Broadcast.findOne({ _id: broadcastId, creator_id: userId }).lean();
     if (!broadcast) {
       return res.status(403).json({ message: 'Broadcast not found or unauthorized' });
     }
 
-    const recipientIds = broadcast.recipients.map(r => r.recipient_id);
+    const recipientEntries = await BroadcastMember.find({ broadcast_id: broadcastId }).lean();
+    const recipientIds = recipientEntries.map(r => r.recipient_id.toString());
+
+    if (recipientIds.length === 0) {
+      return res.status(400).json({ message: 'No recipients found for this broadcast' });
+    }
 
     const broadcastMessages = await Message.find({
       sender_id: userId,
-      recipient_id: { $in: recipientIds },
+      recipient_id: { $in: recipientIds.map(id => new mongoose.Types.ObjectId(id)) },
       'metadata.is_broadcast': true,
       'metadata.broadcast_id': broadcastId.toString(),
-    }).lean({ virtuals: true });
+    }).lean();
 
     const messagesToDelete = broadcastMessages.filter(msg => 
       messages.some(original => 
         original.content === msg.content &&
         original.file_url === msg.file_url &&
-        new Date(original.created_at).getTime() === new Date(msg.created_at).getTime()
+        Math.abs(new Date(original.created_at).getTime() - new Date(msg.created_at).getTime()) < 1000 // 1 second tolerance
       )
     );
 
@@ -777,14 +768,14 @@ async function handleBroadcastDeletion({ userId, messages, isBroadcast, messageI
       socketEvents.push({
         room: `user_${userId}`,
         payload: {
-          messageIds: messagesToDelete.map(m => m.id),
+          messageIds: messagesToDelete.map(m => m._id.toString()),
           deleteType: 'delete-for-me',
           isBroadcast: true,
           broadcastId,
         },
       });
     } else if (deleteType === 'delete-for-everyone') {
-      const allAffectedUsers = [userId, ...recipientIds];
+      const allAffectedUsers = [userId, ...recipientIds.map(id => id.toString())];
 
       for (const msg of messagesToDelete) {
         for (const targetUserId of allAffectedUsers) {
@@ -810,14 +801,12 @@ async function handleBroadcastDeletion({ userId, messages, isBroadcast, messageI
         }
       }
 
+      // Emit to all affected users
       for (const uid of allAffectedUsers) {
-        const affectedMsgs = messagesToDelete.filter(m => 
-          m.recipient_id?.toString() === uid.toString() || uid.toString() === userId.toString()
-        );
         socketEvents.push({
           room: `user_${uid}`,
           payload: {
-            messageIds: affectedMsgs.map(m => m.id),
+            messageIds: messagesToDelete.map(m => m._id.toString()),
             deleteType: 'delete-for-everyone',
             isBroadcast: true,
             broadcastId,
@@ -829,8 +818,9 @@ async function handleBroadcastDeletion({ userId, messages, isBroadcast, messageI
       await deleteMessageFiles(messagesToDelete);
     }
 
+    // Execute all actions and socket emits
     await Promise.all([
-      deleteActions.length > 0 ? MessageAction.insertMany(deleteActions) : null,
+      deleteActions.length > 0 ? MessageAction.insertMany(deleteActions) : Promise.resolve(),
       ...socketEvents.map(event => io.to(event.room).emit('message-deleted', event.payload)),
     ]);
 

@@ -18,11 +18,13 @@ const UserSetting = db.UserSetting;
 const MessageDisappearing = db.MessageDisappearing;
 const Broadcast = db.Broadcast;
 const BroadcastMember = db.BroadcastMember;
+const ChatSetting = db.ChatSetting;
 const fs = require('fs');
 const bcrypt = require('bcryptjs');
 const mongoose = require('mongoose')
 const {
   groupMessagesBySender, groupMessagesByDate, getMessageReactionCount, buildMessagePayloads, createMessageWithStatus, groupBroadcastMessages,
+  getUserDocuments, getConversationData, processDeleteForMe, processDeleteForEveryone, deleteMessageFiles, handleBroadcastDeletion
 } = require('../helper/messageHelpers');
 const { getEffectiveLimits } = require('../utils/userLimits');
 
@@ -351,6 +353,62 @@ exports.getMessages = async (req, res) => {
           },
         },
       },
+      { $lookup: { from: 'message_actions', localField: '_id', foreignField: 'message_id', as: 'action_docs' }},
+      {
+        $addFields: {
+          actions: {
+            $map: {
+              input: '$action_docs',
+              as: 'a',
+              in: {action_type: '$$a.action_type',user_id: '$$a.user_id',details: '$$a.details',created_at: '$$a.created_at',},
+            },
+          },
+        },
+      },
+      {
+        $lookup: {
+          from: 'message_pins',
+          let: { msgId: '$_id' },
+          pipeline: [
+            { $match: { $expr: { $eq: ['$message_id', '$$msgId'] } } },
+            { $lookup: { from: 'users', localField: 'pinned_by', foreignField: '_id', as: 'pinner_doc' }},
+            { $unwind: { path: '$pinner_doc', preserveNullAndEmptyArrays: true } },
+            { $addFields: { id: '$_id', pinner: { id: '$pinner_doc._id', name: '$pinner_doc.name', avatar: '$pinner_doc.avatar' }}},
+            { $project: { _id: 0, id: 1, message_id: 1, pinned_by: 1, pinned_until: 1, pinner: 1 } },
+          ],
+          as: 'pin_docs',
+        },
+      },
+      { $addFields: { pin: { $arrayElemAt: ['$pin_docs', 0] }}},
+      {
+        $lookup: {
+          from: 'message_disappearings',
+          localField: '_id',
+          foreignField: 'message_id',
+          as: 'disappearing_docs',
+        },
+      },
+      {
+        $addFields: {
+          disappearing: { $arrayElemAt: ['$disappearing_docs', 0] },
+        },
+      },
+      {
+        $addFields: {
+          disappearing: {
+            $cond: [
+              { $eq: ['$disappearing', null] },
+              null,
+              {
+                enabled: '$disappearing.enabled',
+                expire_after_seconds: '$disappearing.expire_after_seconds',
+                expire_at: '$disappearing.expire_at',
+                metadata: '$disappearing.metadata',
+              },
+            ],
+          },
+        },
+      },
     ];
 
     const commonProject = {
@@ -373,6 +431,9 @@ exports.getMessages = async (req, res) => {
       sender: 1,
       statuses: 1,
       reactions: 1,
+      actions: 1,
+      pin: 1,
+      disappearing: 1,
     };
 
     if (isAnnouncement === 'true' || isAnnouncement === true) {
@@ -417,19 +478,32 @@ exports.getMessages = async (req, res) => {
       if (!broadcastId) return res.status(400).json({ message: 'broadcastId is required' });
     
       const pipeline = [
-        { $match: { sender_id: userId, 'metadata.is_broadcast': true, 'metadata.broadcast_id': broadcastId }},
+        { $match: { 'metadata.is_broadcast': true, 'metadata.broadcast_id': broadcastId }},
         { $sort: { created_at: 1 } },
         { $skip: parseInt(offset) },
         { $limit: parseInt(limit) },
-        { $lookup: { from: 'users', localField: 'sender_id', foreignField: '_id', as: 'sender_doc' }},
+        { $lookup: { from: 'users', localField: 'sender_id', foreignField: '_id', as: 'sender_doc' } },
         { $unwind: { path: '$sender_doc', preserveNullAndEmptyArrays: true } },
-        { $lookup: { from: 'message_statuses', localField: '_id', foreignField: 'message_id', as: 'statuses' }},
+        { $lookup: { from: 'message_statuses', localField: '_id', foreignField: 'message_id', as: 'statuses' } },
         {
           $addFields: {
             id: '$_id',
-            sender: { id: '$sender_doc._id', name: '$sender_doc.name', email: '$sender_doc.email', avatar: '$sender_doc.avatar'},
+            sender: {
+              id: '$sender_doc._id',
+              name: '$sender_doc.name',
+              email: '$sender_doc.email',
+              avatar: '$sender_doc.avatar',
+            },
+            statuses: {
+              $map: {
+                input: '$statuses',
+                as: 's',
+                in: { user_id: '$$s.user_id', status: '$$s.status', updated_at: '$$s.updated_at' },
+              },
+            },
           },
         },
+        ...addStatusesAndReactions.slice(2),
         {
           $project: {
             _id: 0,
@@ -449,19 +523,9 @@ exports.getMessages = async (req, res) => {
             updated_at: 1,
             deleted_at: 1,
             sender: 1,
-            statuses: {
-              $map: {
-                input: '$statuses',
-                as: 'status',
-                in: { user_id: '$$status.user_id', status: '$$status.status', updated_at: '$$status.updated_at'},
-              },
-            },
-            reactions: { $ifNull: ['$reactions', []] },
-            actions: { $ifNull: ['$actions', []] },
-            pin: { $ifNull: ['$pin', null] },
-            disappearing: { $ifNull: ['$disappearing', null] },
-            parent: { $ifNull: ['$parent', null] },
-            recipients: { $ifNull: ['$recipients', []] },
+            statuses: 1,
+            reactions: 1,
+            actions: 1,
           },
         },
       ];
@@ -489,6 +553,7 @@ exports.getMessages = async (req, res) => {
         return true;
       });
     
+      // Merge duplicates
       const mergedMap = new Map();
       for (const msg of messages) {
         const key = [
@@ -502,10 +567,7 @@ exports.getMessages = async (req, res) => {
         if (!mergedMap.has(key)) {
           mergedMap.set(key, {
             ...msg,
-            recipients: [],
             statuses: msg.statuses || [],
-            isDeleted: msg.isDeleted || false,
-            isDeletedForEveryone: msg.isDeletedForEveryone || false,
           });
         } else {
           const entry = mergedMap.get(key);
@@ -514,23 +576,18 @@ exports.getMessages = async (req, res) => {
       }
     
       const mergedMessages = Array.from(mergedMap.values());
+
+      const groupedBySender = await groupBroadcastMessages(mergedMessages, userId);
+      const dateGrouped = groupMessagesByDate(groupedBySender);
     
-      const wrapper = {
-        sender_id: userId,
-        sender: mergedMessages.length > 0 ? mergedMessages[0].sender : null,
-        messages: mergedMessages,
-        created_at: mergedMessages.length > 0 ? mergedMessages[0].created_at : new Date(),
-        lastMessageTime: mergedMessages.length > 0 ? mergedMessages[mergedMessages.length - 1].created_at : new Date(),
-        groupId: `broadcast_${broadcastId}`,
-      };
-    
-      const dateGrouped = groupMessagesByDate([wrapper]);
       const commonMeta = await getCommonChatMeta('broadcast', broadcastId);
     
       chatTarget = {
         type: 'broadcast',
         broadcast_id: broadcastId,
         isArchived: !!commonMeta.isArchived,
+        isMuted: !!commonMeta.isMuted,
+        isFavorite: !!commonMeta.isFavorite,
       };
     
       return res.json({
@@ -544,7 +601,7 @@ exports.getMessages = async (req, res) => {
           isChatLocked,
         },
       });
-    }
+    }   
 
     if (groupId) {
       isChatLocked = checkLockedChat('group', groupId);
@@ -751,11 +808,27 @@ exports.markMessagesAsRead = async (req, res) => {
       const disappearing = await MessageDisappearing.findOne({ message_id: status.message_id });
       if (!disappearing || !disappearing.enabled || disappearing.expire_at) continue;
 
+      const now = new Date();
+
       if (disappearing.expire_after_seconds === null) {
-        await disappearing.updateOne({ expire_at: now, $set: { 'metadata.immediate_disappear': true }});
+        await MessageDisappearing.updateOne(
+          { _id: disappearing._id },
+          {
+            $set: {
+              expire_at: now,
+              metadata: { 
+                ...(disappearing.metadata || {}), 
+                immediate_disappear: true 
+              }
+            }
+          }
+        );
       } else {
         const expireAt = new Date(now.getTime() + disappearing.expire_after_seconds * 1000);
-        await disappearing.updateOne({ expire_at: expireAt });
+        await MessageDisappearing.updateOne(
+          { _id: disappearing._id },
+          { $set: { expire_at: expireAt } }
+        );
       }
     }
 
@@ -846,12 +919,10 @@ exports.toggleStarMessage = async (req, res) => {
     if (!Array.isArray(messageIds)) messageIds = [messageIds];
 
     const messages = await Message.find({ _id: { $in: messageIds } }).lean({ virtuals: true });
-
     if (messages.length === 0) {
       return res.status(404).json({ message: 'Messages not found.' });
     }
 
-    // Access check
     for (const msg of messages) {
       if (msg.group_id) {
         const isMember = await GroupMember.findOne({ group_id: msg.group_id, user_id: currentUserId });
@@ -861,11 +932,7 @@ exports.toggleStarMessage = async (req, res) => {
       }
     }
 
-    const existing = await MessageAction.find({
-      message_id: { $in: messageIds },
-      user_id: currentUserId,
-      action_type: 'star',
-    }).lean();
+    const existing = await MessageAction.find({message_id: { $in: messageIds },user_id: currentUserId,action_type: 'star',}).lean();
 
     const existingIds = existing.map(e => e.message_id.toString());
     let affectedIds = [];
@@ -873,11 +940,7 @@ exports.toggleStarMessage = async (req, res) => {
     if (isStarred) {
       const toInsert = messageIds
         .filter(id => !existingIds.includes(id.toString()))
-        .map(id => ({
-          message_id: id,
-          user_id: currentUserId,
-          action_type: 'star',
-        }));
+        .map(id => ({ message_id: id, user_id: currentUserId, action_type: 'star' }));
 
       if (toInsert.length > 0) {
         await MessageAction.insertMany(toInsert);
@@ -886,22 +949,14 @@ exports.toggleStarMessage = async (req, res) => {
       affectedIds = toInsert.map(i => i.message_id.toString());
     } else {
       if (existing.length > 0) {
-        await MessageAction.deleteMany({
-          message_id: { $in: existingIds },
-          user_id: currentUserId,
-          action_type: 'star',
-        });
+        await MessageAction.deleteMany({message_id: { $in: existingIds },user_id: currentUserId,action_type: 'star',});
       }
 
       affectedIds = existingIds;
     }
 
     if (io && affectedIds.length > 0) {
-      io.to(`user_${currentUserId}`).emit('message-favorite', {
-        messageId: affectedIds,
-        isStarred,
-        userId: currentUserId,
-      });
+      io.to(`user_${currentUserId}`).emit('message-favorite', {messageId: affectedIds,isStarred,userId: currentUserId,});
     }
 
     return res.status(200).json({
@@ -921,8 +976,14 @@ exports.editMessage = async (req, res) => {
   const userId = req.user._id;
   const { content, is_encrypted } = req.body;
 
+  if (!content) {
+    return res.status(400).json({ message: 'Content is required' });
+  }
+
   try {
-    const message = await Message.findById(messageId);
+    const messageObjId = new mongoose.Types.ObjectId(messageId);
+
+    const message = await Message.findById(messageObjId).lean();
     if (!message) return res.status(404).json({ message: 'Message not found' });
 
     if (message.sender_id.toString() !== userId.toString()) {
@@ -938,31 +999,65 @@ exports.editMessage = async (req, res) => {
     const updateData = { content };
     if (is_encrypted !== undefined) updateData.is_encrypted = is_encrypted;
 
-    await message.updateOne({ $set: updateData });
+    await Message.updateOne({ _id: messageObjId }, { $set: updateData });
 
     const existingAction = await MessageAction.findOne({
-      message_id: messageId,
+      message_id: messageObjId,
       user_id: userId,
       action_type: 'edit',
     });
 
     if (existingAction) {
-      await existingAction.updateOne({
-        details: { old_content: oldContent, new_content: content },
-      });
+      await existingAction.updateOne({details: { old_content: oldContent, new_content: content },});
     } else {
       await MessageAction.create({
-        message_id: messageId,
+        message_id: messageObjId,
         user_id: userId,
         action_type: 'edit',
         details: { old_content: oldContent, new_content: content },
       });
     }
 
-    const updatedMessage = await Message.findById(messageId)
-      .populate('sender', 'id name avatar')
-      .populate('recipient', 'id name avatar')
-      .lean({ virtuals: true });
+    const updatedMessages = await Message.aggregate([
+      { $match: { _id: messageObjId } },
+      { $lookup: { from: 'users', localField: 'sender_id', foreignField: '_id', as: 'sender_doc' }},
+      { $unwind: { path: '$sender_doc', preserveNullAndEmptyArrays: true } },
+      { $lookup: { from: 'users', localField: 'recipient_id', foreignField: '_id', as: 'recipient_doc' }},
+      { $unwind: { path: '$recipient_doc', preserveNullAndEmptyArrays: true } },
+      {
+        $addFields: {
+          id: '$_id',
+          sender: { id: '$sender_doc._id', name: '$sender_doc.name', avatar: '$sender_doc.avatar' },
+          recipient: message.recipient_id
+            ? {id: '$recipient_doc._id',name: '$recipient_doc.name',avatar: '$recipient_doc.avatar',}
+            : null,
+        },
+      },
+      {
+        $project: {
+          _id: 0,
+          id: 1,
+          sender_id: 1,
+          recipient_id: 1,
+          group_id: 1,
+          content: 1,
+          message_type: 1,
+          file_url: 1,
+          file_type: 1,
+          mentions: 1,
+          has_unread_mentions: 1,
+          metadata: 1,
+          is_encrypted: 1,
+          created_at: 1,
+          updated_at: 1,
+          deleted_at: 1,
+          sender: 1,
+          recipient: 1,
+        },
+      },
+    ]);
+
+    const updatedMessage = updatedMessages[0];
 
     const io = req.app.get('io');
 
@@ -991,20 +1086,89 @@ exports.forwardMessage = async (req, res) => {
 
     if (!Array.isArray(messageIds)) messageIds = [messageIds];
 
-    const originals = await Message.find({ _id: { $in: messageIds } }).lean({ virtuals: true });
+    const originalObjIds = messageIds.map(id => new mongoose.Types.ObjectId(id));
 
+    const originals = await Message.find({ _id: { $in: originalObjIds } }).lean();
     if (originals.length === 0) return res.status(404).json({ message: 'Message(s) not found.' });
 
-    const forwardedMessages = [];
+    const forwardedMessageIds = [];
     const io = req.app.get('io');
+
+    const getFullMessagePipeline = (messageId) => [
+      { $match: { _id: messageId } },
+      { $lookup: { from: 'users', localField: 'sender_id', foreignField: '_id', as: 'sender_doc' } },
+      { $unwind: { path: '$sender_doc', preserveNullAndEmptyArrays: true } },
+      { $lookup: { from: 'users', localField: 'recipient_id', foreignField: '_id', as: 'recipient_doc' } },
+      { $unwind: { path: '$recipient_doc', preserveNullAndEmptyArrays: true } },
+      { $lookup: { from: 'groups', localField: 'group_id', foreignField: '_id', as: 'group_doc' } },
+      { $unwind: { path: '$group_doc', preserveNullAndEmptyArrays: true } },
+      { $lookup: { from: 'message_actions', localField: '_id', foreignField: 'message_id', as: 'action_docs' } },
+      {
+        $addFields: {
+          id: '$_id',
+          sender: { id: '$sender_doc._id', name: '$sender_doc.name', avatar: '$sender_doc.avatar'},
+          recipient: {
+            $cond: [
+              { $ifNull: ['$recipient_id', false] },
+              { id: '$recipient_doc._id', name: '$recipient_doc.name', avatar: '$recipient_doc.avatar', }, null,
+            ],
+          },
+          group: {
+            $cond: [
+              { $ifNull: ['$group_id', false] },
+              { id: '$group_doc._id', name: '$group_doc.name', avatar: '$group_doc.avatar' }, null,
+            ],
+          },
+          actions: {
+            $map: {
+              input: '$action_docs',
+              as: 'a',
+              in: {
+                id: '$$a._id',
+                message_id: '$$a.message_id',
+                user_id: '$$a.user_id',
+                action_type: '$$a.action_type',
+                details: '$$a.details',
+                createdAt: '$$a.created_at',
+                updatedAt: '$$a.updated_at',
+              },
+            },
+          },
+        },
+      },
+      {
+        $project: {
+          _id: 0,
+          id: 1,
+          sender_id: 1,
+          recipient_id: 1,
+          group_id: 1,
+          content: 1,
+          message_type: 1,
+          file_url: 1,
+          file_type: 1,
+          mentions: 1,
+          has_unread_mentions: 1,
+          metadata: 1,
+          is_encrypted: 1,
+          created_at: 1,
+          updated_at: 1,
+          deleted_at: 1,
+          sender: 1,
+          recipient: 1,
+          group: 1,
+          actions: 1,
+        },
+      },
+    ];
 
     for (const existing of originals) {
       const fileMetadata = {};
-      const fileKeys = ['file_size', 'mime_type', 'file_index', 'is_multiple', 'original_filename', 'title', 'redirect_url', 'sent_by_admin', 'announcement_type'];
+      const fileKeys = [
+        'file_size', 'mime_type', 'file_index', 'is_multiple', 'original_filename', 'title', 'redirect_url', 'sent_by_admin', 'announcement_type'
+      ];
       if (existing.metadata) {
-        fileKeys.forEach(key => {
-          if (existing.metadata[key]) fileMetadata[key] = existing.metadata[key];
-        });
+        fileKeys.forEach(key => { if (existing.metadata[key]) fileMetadata[key] = existing.metadata[key]; });
       }
 
       for (const rec of recipients) {
@@ -1048,79 +1212,54 @@ exports.forwardMessage = async (req, res) => {
           is_encrypted: isEncryptedToUse,
         });
 
+        forwardedMessageIds.push(forwardMessage._id);
+
         if (isGroup) {
           const members = await GroupMember.find({ group_id }).select('user_id').lean();
           await MessageStatus.insertMany(
-            members
-              .filter(m => m.user_id.toString() !== senderId.toString())
-              .map(m => ({
-                message_id: forwardMessage._id,
-                user_id: m.user_id,
-                status: 'sent',
-              }))
+            members.filter(m => m.user_id.toString() !== senderId.toString())
+              .map(m => ({ message_id: forwardMessage._id, user_id: m.user_id, status: 'sent' }))
           );
         } else {
-          await MessageStatus.create({
-            message_id: forwardMessage._id,
-            user_id: recipient_id,
-            status: 'sent',
-          });
+          await MessageStatus.create({ message_id: forwardMessage._id, user_id: recipient_id, status: 'sent' });
         }
 
         await MessageAction.create({
           message_id: forwardMessage._id,
           user_id: senderId,
           action_type: 'forward',
-          details: {
-            original_message_id: existing._id,
-            original_sender_id: existing.sender_id,
-          },
+          details: { original_message_id: existing._id, original_sender_id: existing.sender_id },
         });
 
-        forwardedMessages.push(forwardMessage._id);
-
-        const fullMessage = await Message.findById(forwardMessage._id)
-          .populate('sender', 'id name avatar')
-          .populate('recipient', 'id name avatar')
-          .populate('group', 'id name avatar')
-          .lean({ virtuals: true });
+        const fullMessages = await Message.aggregate(getFullMessagePipeline(forwardMessage._id));
+        const fullMessage = fullMessages[0];
 
         if (fullMessage && io) {
+          const emitData = {
+            ...fullMessage,
+            isForwarded: true,
+            is_encrypted: fullMessage.is_encrypted || false,
+          };
+
           if (isGroup) {
             const members = await GroupMember.find({ group_id }).select('user_id').lean();
             members.forEach(member => {
-              io.to(`user_${member.user_id}`).emit('receive-message', {
-                ...fullMessage,
-                isForwarded: true,
-                is_encrypted: fullMessage.is_encrypted || false,
-              });
+              io.to(`user_${member.user_id}`).emit('receive-message', emitData);
             });
           } else {
-            io.to(`user_${recipient_id}`).emit('receive-message', {
-              ...fullMessage,
-              isForwarded: true,
-              is_encrypted: fullMessage.is_encrypted || false,
-            });
-            io.to(`user_${senderId}`).emit('receive-message', {
-              ...fullMessage,
-              isForwarded: true,
-              is_encrypted: fullMessage.is_encrypted || false,
-            });
+            io.to(`user_${recipient_id}`).emit('receive-message', emitData);
+            io.to(`user_${senderId}`).emit('receive-message', emitData);
           }
         }
       }
     }
 
-    const fullMessages = await Message.find({ _id: { $in: forwardedMessages } })
-      .populate('sender', 'id name avatar')
-      .populate('recipient', 'id name avatar')
-      .populate('group', 'id name avatar')
-      .lean({ virtuals: true });
+    const finalMessages = await Message.aggregate([
+      { $match: { _id: { $in: forwardedMessageIds.map(id => new mongoose.Types.ObjectId(id)) } } },
+      ...getFullMessagePipeline(null),
+    ].flat());
 
-    return res.status(200).json({
-      count: fullMessages.length,
-      messages: fullMessages,
-    });
+    return res.status(200).json({ count: finalMessages.length, messages: finalMessages });
   } catch (error) {
     console.error('Error in forwardMessage:', error);
     return res.status(500).json({ message: 'Internal Server Error' });
@@ -1146,16 +1285,7 @@ exports.deleteMessage = async (req, res) => {
     const io = req.app.get('io');
 
     if (isBroadcast && broadcastId) {
-      return await handleBroadcastDeletion({
-        userId,
-        messages,
-        isBroadcast,
-        messageIds,
-        deleteType,
-        broadcastId,
-        io,
-        res,
-      });
+      return await handleBroadcastDeletion({ userId, messages, isBroadcast, messageIds, deleteType, broadcastId, io, res,});
     }
 
     const userMessages = messages.filter(m => m.sender_id.toString() === userId.toString());
@@ -1212,13 +1342,12 @@ exports.toggleDisappearingMessages = async (req, res) => {
 
     let expireSeconds = null;
     if (enabled) {
-      if (!duration || !DURATION_MAP[duration]) {
+      if (!duration || !(duration in DURATION_MAP)) {
         return res.status(400).json({ message: 'Invalid duration value.' });
       }
       expireSeconds = DURATION_MAP[duration];
     }
 
-    // Access checks
     if (recipientId) {
       const recipient = await User.findById(recipientId);
       if (!recipient) return res.status(404).json({ message: 'User not found.' });
@@ -1276,6 +1405,8 @@ exports.toggleDisappearingMessages = async (req, res) => {
         duration: enabled ? duration : null,
         expire_after_seconds: expireSeconds,
       });
+
+      setting = await ChatSetting.findById(setting._id).lean();
     }
 
     const currentUser = await User.findById(userId).select('id name').lean({ virtuals: true });
@@ -1337,14 +1468,7 @@ exports.toggleDisappearingMessages = async (req, res) => {
 exports.searchMessages = async (req, res) => {
   const currentUserId = req.user._id;
   const {
-    searchTerm,
-    limit = 50,
-    recipientId = null,
-    groupId = null,
-    broadcast_id = null,
-    page = 1,
-    isAnnouncement = false,
-    isBroadcast = false,
+    searchTerm,limit = 50,recipientId = null,groupId = null,broadcast_id = null,page = 1,isAnnouncement = false,isBroadcast = false,
   } = req.query;
 
   try {
@@ -1358,46 +1482,88 @@ exports.searchMessages = async (req, res) => {
     const searchRegex = { $regex: searchTerm.trim(), $options: 'i' };
 
     let match = {};
+    let contextType = 'direct';
 
     if (isAnnouncement === 'true' || isAnnouncement === true) {
       match = {
         message_type: 'announcement',
-        $or: [{ content: searchRegex }, { 'announcement.title': searchRegex }],
+        recipient_id: null,
+        group_id: null,
+        $or: [{ content: searchRegex },{ 'metadata.title': searchRegex }],
       };
+      contextType = 'announcement';
     } else if (isBroadcast === 'true' || isBroadcast === true) {
       if (!broadcast_id) return res.status(400).json({ message: 'broadcast_id is required when isBroadcast=true' });
+      
       match = {
         sender_id: currentUserId,
         content: searchRegex,
         'metadata.is_broadcast': true,
         'metadata.broadcast_id': broadcast_id,
       };
+      contextType = 'broadcast';
     } else if (groupId) {
-      match = { group_id: groupId, message_type: 'text', content: searchRegex };
+      match = { group_id: new mongoose.Types.ObjectId(groupId), message_type: 'text', content: searchRegex };
+      contextType = 'group';
+
     } else if (recipientId) {
+      const recipientObjId = new mongoose.Types.ObjectId(recipientId);
       match = {
         message_type: 'text',
         content: searchRegex,
         $or: [
-          { sender_id: currentUserId, recipient_id: recipientId },
-          { sender_id: recipientId, recipient_id: currentUserId },
+          { sender_id: currentUserId, recipient_id: recipientObjId },
+          { sender_id: recipientObjId, recipient_id: currentUserId },
         ],
       };
+      contextType = 'direct';
     } else {
       return res.status(400).json({ message: 'Must provide one of: recipientId, groupId, broadcast_id with isBroadcast=true, or isAnnouncement=true' });
     }
 
     const total = await Message.countDocuments(match);
 
-    const messages = await Message.find(match)
-      .sort({ created_at: -1 })
-      .skip(offset)
-      .limit(parsedLimit)
-      .populate('sender', 'id name avatar')
-      .populate('announcement', 'id title announcement_type action_link redirect_url')
-      .populate('group', 'id name avatar')
-      .lean({ virtuals: true });
+    const pipeline = [
+      { $match: match },
+      { $sort: { created_at: -1 } },
+      { $skip: offset },
+      { $limit: parsedLimit },
+      { $lookup: { from: 'users', localField: 'sender_id', foreignField: '_id', as: 'sender_doc' } },
+      { $unwind: { path: '$sender_doc', preserveNullAndEmptyArrays: true } },
+      { $lookup: { from: 'groups', localField: 'group_id', foreignField: '_id', as: 'group_doc' } },
+      { $unwind: { path: '$group_doc', preserveNullAndEmptyArrays: true } },
+      {
+        $addFields: {
+          id: '$_id',
+          sender: { id: '$sender_doc._id', name: '$sender_doc.name', avatar: '$sender_doc.avatar' },
+          group: groupId ? { id: '$group_doc._id', name: '$group_doc.name', avatar: '$group_doc.avatar' } : null,
+          announcement: (isAnnouncement === 'true' || isAnnouncement === true) ? {
+            id: '$metadata.announcement_id',
+            title: '$metadata.title',
+            announcement_type: '$metadata.announcement_type',
+            action_link: '$metadata.action_link',
+            redirect_url: '$metadata.redirect_url',
+          } : null,
+        },
+      },
+      {
+        $project: {
+          _id: 0,
+          id: 1,
+          content: 1,
+          message_type: 1,
+          file_url: 1,
+          created_at: 1,
+          sender: 1,
+          announcement: 1,
+          group: 1,
+          broadcast_id: { $ifNull: ['$metadata.broadcast_id', null] },
+          is_broadcast: { $cond: [{ $eq: ['$metadata.is_broadcast', true] }, true, false] },
+        },
+      },
+    ];
 
+    const messages = await Message.aggregate(pipeline);
     const totalPages = Math.ceil(total / parsedLimit);
 
     const results = messages.map(msg => ({
@@ -1409,14 +1575,14 @@ exports.searchMessages = async (req, res) => {
       sender: msg.sender || null,
       announcement: msg.announcement || null,
       group: msg.group || null,
-      broadcast_id: msg.metadata?.broadcast_id || null,
-      is_broadcast: !!msg.metadata?.is_broadcast,
+      broadcast_id: msg.broadcast_id,
+      is_broadcast: msg.is_broadcast,
     }));
 
     return res.status(200).json({
       messages: results,
       context: {
-        type: isAnnouncement === 'true' ? 'announcement' : isBroadcast === 'true' ? 'broadcast' : groupId ? 'group' : 'direct',
+        type: contextType,
         recipientId: recipientId || null,
         groupId: groupId || null,
         broadcast_id: broadcast_id || null,
@@ -1445,12 +1611,15 @@ exports.togglePinMessage = async (req, res) => {
   }
 
   try {
-    const message = await Message.findById(messageId);
-    if (!message) return res.status(404).json({ message: 'Message not found' });
+    const messageObjId = new mongoose.Types.ObjectId(messageId);
+    const message = await Message.findById(messageObjId).lean();
+    if (!message) {
+      return res.status(404).json({ message: 'Message not found' });
+    }
 
-    const existingPin = await MessagePin.findOne({ message_id: messageId });
+    const existingPin = await MessagePin.findOne({ message_id: messageObjId });
     if (existingPin) {
-      await existingPin.deleteOne();
+      await MessagePin.deleteOne({ _id: existingPin._id });
 
       const payload = { message_id: messageId, isPinned: false };
 
@@ -1474,82 +1643,114 @@ exports.togglePinMessage = async (req, res) => {
       return res.status(400).json({ message: 'Invalid duration. Use 24h, 7d, or 30d' });
     }
 
-    // Get current pins for this chat
-    let chatPinsPipeline = [];
+    let pinQuery = {};
     if (message.group_id) {
-      chatPinsPipeline = [
-        { $match: { 'message.group_id': message.group_id } },
-        { $sort: { created_at: -1 } },
-      ];
+      pinQuery = { 'message.group_id': message.group_id };
     } else {
-      chatPinsPipeline = [
-        {
-          $match: {
-            $or: [
-              { 'message.sender_id': message.sender_id, 'message.recipient_id': message.recipient_id },
-              { 'message.sender_id': message.recipient_id, 'message.recipient_id': message.sender_id },
-            ],
-            'message.group_id': null,
-          },
-        },
-        { $sort: { created_at: -1 } },
-      ];
+      pinQuery = {
+        'message.group_id': null,
+        $or: [
+          { 'message.sender_id': message.sender_id, 'message.recipient_id': message.recipient_id },
+          { 'message.sender_id': message.recipient_id, 'message.recipient_id': message.sender_id },
+        ],
+      };
     }
 
-    const chatPins = await MessagePin.aggregate([
-      {
-        $lookup: {
-          from: 'messages',
-          localField: 'message_id',
-          foreignField: '_id',
-          as: 'message',
-        },
-      },
+    const currentPins = await MessagePin.aggregate([
+      { $lookup: { from: 'messages', localField: 'message_id', foreignField: '_id', as: 'message' } },
       { $unwind: '$message' },
-      ...chatPinsPipeline,
+      { $match: pinQuery },
+      { $sort: { created_at: 1 } },
     ]);
 
-    if (chatPins.length >= 3) {
-      const oldest = chatPins[chatPins.length - 1];
-      await MessagePin.deleteOne({ _id: oldest._id });
+    if (currentPins.length >= 3) {
+      const oldestPin = currentPins[0];
+      const oldMessageId = oldestPin.message_id.toString();
 
-      const unpinPayload = { message_id: oldest.message_id, isPinned: false };
+      await MessagePin.deleteOne({ _id: oldestPin._id });
 
-      if (message.group_id) {
-        io.to(`group_${message.group_id}`).emit('message-pin', unpinPayload);
-      } else {
-        io.to(`user_${message.sender_id}`).emit('message-pin', unpinPayload);
-        io.to(`user_${message.recipient_id}`).emit('message-pin', unpinPayload);
+      const unpinPayload = { message_id: oldMessageId, isPinned: false };
+
+      const oldMessage = await Message.findById(oldMessageId).lean();
+      if (oldMessage?.group_id) {
+        io.to(`group_${oldMessage.group_id}`).emit('message-pin', unpinPayload);
+      } else if (oldMessage?.recipient_id) {
+        io.to(`user_${oldMessage.sender_id}`).emit('message-pin', unpinPayload);
+        io.to(`user_${oldMessage.recipient_id}`).emit('message-pin', unpinPayload);
       }
     }
 
     const pinnedUntil = new Date(Date.now() + durationMap[duration]);
 
-    await MessagePin.create({
-      message_id: messageId,
-      pinned_by: userId,
-      pinned_until: pinnedUntil,
+    await MessagePin.create({ message_id: messageObjId, pinned_by: userId, pinned_until: pinnedUntil });
+    const pinningUser = await User.findById(userId).select('name avatar').lean();
+
+    const systemMessage = await Message.create({
+      sender_id: userId,
+      group_id: message.group_id || null,
+      recipient_id: message.recipient_id || null,
+      message_type: 'system',
+      content: `${pinningUser.name} pinned a message.`,
+      metadata: { action: 'pin', pinned_by: userId, original_message_id: messageId },
     });
 
-    const pinningUser = await User.findById(userId).select('id name avatar').lean({ virtuals: true });
+    const systemMessages = await Message.aggregate([
+      { $match: { _id: systemMessage._id } },
+      { $lookup: { from: 'users', localField: 'sender_id', foreignField: '_id', as: 'sender_doc' } },
+      { $unwind: { path: '$sender_doc', preserveNullAndEmptyArrays: true } },
+      { $lookup: { from: 'users', localField: 'recipient_id', foreignField: '_id', as: 'recipient_doc' } },
+      { $unwind: { path: '$recipient_doc', preserveNullAndEmptyArrays: true } },
+      { $lookup: { from: 'groups', localField: 'group_id', foreignField: '_id', as: 'group_doc' } },
+      { $unwind: { path: '$group_doc', preserveNullAndEmptyArrays: true } },
+      {
+        $addFields: {
+          id: '$_id',
+          sender: { id: '$sender_doc._id', name: '$sender_doc.name', avatar: '$sender_doc.avatar' },
+          recipient: message.recipient_id ? {
+            id: '$recipient_doc._id', name: '$recipient_doc.name', avatar: '$recipient_doc.avatar',
+          } : null,
+          group: message.group_id ? {
+            id: '$group_doc._id', name: '$group_doc.name', avatar: '$group_doc.avatar',
+          } : null,
+        },
+      },
+      {
+        $project: {
+          _id: 0,
+          id: 1,
+          sender_id: 1,
+          recipient_id: 1,
+          group_id: 1,
+          content: 1,
+          message_type: 1,
+          metadata: 1,
+          created_at: 1,
+          sender: 1,
+          recipient: 1,
+          group: 1,
+        },
+      },
+    ]);
+
+    const realtimeMessage = systemMessages[0];
 
     const payload = {
       message_id: messageId,
       isPinned: true,
-      pins: [{ pinned_by: userId, user: pinningUser }],
+      pins: [{ pinned_by: userId.toString(), user: pinningUser }],
     };
 
     if (message.group_id) {
       io.to(`group_${message.group_id}`).emit('message-pin', payload);
+      io.to(`group_${message.group_id}`).emit('receive-message', realtimeMessage);
     } else if (message.recipient_id) {
       io.to(`user_${message.sender_id}`).emit('message-pin', payload);
       io.to(`user_${message.recipient_id}`).emit('message-pin', payload);
+      io.to(`user_${message.sender_id}`).emit('receive-message', realtimeMessage);
+      io.to(`user_${message.recipient_id}`).emit('receive-message', realtimeMessage);
     }
 
-    return res.status(200).json({
-      pinned: true,
-      message: 'Message pinned successfully',
-    });
+    return res.status(200).json({ pinned: true, message: 'Message pinned successfully' });
   } catch (error) {
     console.error('Error in togglePinMessage:', error);
     return res.status(500).json({ message: 'Internal Server Error' });
