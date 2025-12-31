@@ -16,6 +16,7 @@ const Broadcast = db.Broadcast;
 const BroadcastMember = db.BroadcastMember;
 const fs = require('fs');
 const path = require('path');
+const mongoose = require('mongoose');
 
 async function formatMessageForDisplay(message, currentUserId) {
   let metadata = message.metadata || {};
@@ -90,8 +91,7 @@ async function formatMessageForDisplay(message, currentUserId) {
   const isEdited = actions.some(a => a.action_type === 'edit');
   const isForwarded = actions.some(a => a.action_type === 'forward');
 
-  const reactionCounts = await getMessageReactionCount(message._id, currentUserId);
-
+  const reactionCounts = await getMessageReactionCount(message.id, currentUserId);
   const formattedReactions = reactionCounts.map(reaction => ({
     emoji: reaction.emoji,
     count: reaction.count,
@@ -266,33 +266,25 @@ function getDefaultContentForFileType(fileType) {
 
 async function getMessageReactionCount(messageId, currentUserId) {
   try {
-    const reactions = await MessageReaction.find({ message_id: messageId })
-      .populate('user', 'id name avatar')
-      .lean({ virtuals: true });
+    const reactions = await MessageReaction.aggregate([
+      { $match: { message_id: new mongoose.Types.ObjectId(messageId) } },
+      { $lookup: { from: 'users', localField: 'user_id', foreignField: '_id', as: 'user_doc' }},
+      { $unwind: { path: '$user_doc', preserveNullAndEmptyArrays: true } },
+      {
+        $group: {
+          _id: '$emoji',
+          emoji: { $first: '$emoji' },
+          count: { $sum: 1 },
+          users: { $push: { id: '$user_doc._id', name: '$user_doc.name', avatar: '$user_doc.avatar' }},
+          userReacted: {
+            $max: { $cond: [ { $eq: ['$user_id', new mongoose.Types.ObjectId(currentUserId)] }, true, false ]},
+          },
+        },
+      },
+      { $project: { _id: 0, emoji: 1, count: 1, users: 1, userReacted: 1 }},
+    ]);
 
-    const groups = {};
-
-    reactions.forEach(r => {
-      if (!groups[r.emoji]) {
-        groups[r.emoji] = {
-          emoji: r.emoji,
-          count: 0,
-          userReacted: false,
-          users: [],
-        };
-      }
-      groups[r.emoji].count++;
-      groups[r.emoji].users.push({
-        id: r.user.id,
-        name: r.user.name,
-        avatar: r.user.avatar,
-      });
-      if (r.user_id.toString() === currentUserId.toString()) {
-        groups[r.emoji].userReacted = true;
-      }
-    });
-
-    return Object.values(groups);
+    return reactions;
   } catch (error) {
     console.error('Error in getMessageReactionCount:', error);
     return [];

@@ -308,6 +308,73 @@ exports.getMessages = async (req, res) => {
       };
     };
 
+    const addStatusesAndReactions = [
+      { $lookup: { from: 'message_statuses', localField: '_id', foreignField: 'message_id', as: 'statuses' } },
+      {
+        $addFields: {
+          statuses: {
+            $map: {
+              input: '$statuses',
+              as: 's',
+              in: { user_id: '$$s.user_id', status: '$$s.status', updated_at: '$$s.updated_at' },
+            },
+          },
+        },
+      },
+      { $lookup: { from: 'message_reactions', localField: '_id', foreignField: 'message_id', as: 'reaction_docs' } },
+      { $lookup: { from: 'users', localField: 'reaction_docs.user_id', foreignField: '_id', as: 'reaction_users' } },
+      {
+        $addFields: {
+          reactions: {
+            $map: {
+              input: '$reaction_docs',
+              as: 'r',
+              in: {
+                emoji: '$$r.emoji',
+                user: {
+                  id: '$$r.user_id',
+                  name: {
+                    $let: {
+                      vars: { u: { $arrayElemAt: [ { $filter: { input: '$reaction_users', as: 'u', cond: { $eq: ['$$u._id', '$$r.user_id'] } } }, 0 ] } },
+                      in: { $ifNull: ['$$u.name', 'Unknown'] }
+                    }
+                  },
+                  avatar: {
+                    $let: {
+                      vars: { u: { $arrayElemAt: [ { $filter: { input: '$reaction_users', as: 'u', cond: { $eq: ['$$u._id', '$$r.user_id'] } } }, 0 ] } },
+                      in: { $ifNull: ['$$u.avatar', null] }
+                    }
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+    ];
+
+    const commonProject = {
+      _id: 0,
+      id: 1,
+      sender_id: 1,
+      recipient_id: 1,
+      group_id: 1,
+      content: 1,
+      message_type: 1,
+      file_url: 1,
+      file_type: 1,
+      mentions: 1,
+      has_unread_mentions: 1,
+      metadata: 1,
+      is_encrypted: 1,
+      created_at: 1,
+      updated_at: 1,
+      deleted_at: 1,
+      sender: 1,
+      statuses: 1,
+      reactions: 1,
+    };
+
     if (isAnnouncement === 'true' || isAnnouncement === true) {
       if (!announcementId) return res.status(404).json({ message: 'Announcement Id is required.' });
 
@@ -342,13 +409,7 @@ exports.getMessages = async (req, res) => {
       return res.json({
         messages: dateGroupedMessages,
         chatTarget,
-        metadata: {
-          offset,
-          limit,
-          hasMore: messages.length === parseInt(limit),
-          messageCount: messages.length,
-          isChatLocked,
-        },
+        metadata: { offset, limit, hasMore: messages.length === parseInt(limit), messageCount: messages.length, isChatLocked},
       });
     }
 
@@ -507,31 +568,11 @@ exports.getMessages = async (req, res) => {
             id: '$_id',
             sender: { id: '$sender_doc._id', name: '$sender_doc.name', avatar: '$sender_doc.avatar' },
             group: { id: '$group_doc._id', name: '$group_doc.name', avatar: '$group_doc.avatar' },
-          },
-        },
-        {
-          $project: {
-            _id: 0,
-            id: 1,
-            sender_id: 1,
-            recipient_id: 1,
-            group_id: 1,
-            content: 1,
-            message_type: 1,
-            file_url: 1,
-            file_type: 1,
-            mentions: 1,
-            has_unread_mentions: 1,
-            metadata: 1,
-            is_encrypted: 1,
-            created_at: 1,
-            updated_at: 1,
-            deleted_at: 1,
-            sender: 1,
             recipient: { id: null, name: null, avatar: null },
-            group: 1,
           },
         },
+        ...addStatusesAndReactions,
+        { $project: { ...commonProject, recipient: { id: null, name: null, avatar: null }, group: 1 } },
       ];
 
       messages = await Message.aggregate(pipeline);
@@ -598,29 +639,8 @@ exports.getMessages = async (req, res) => {
             group: null,
           },
         },
-        {
-          $project: {
-            _id: 0,
-            id: 1,
-            sender_id: 1,
-            recipient_id: 1,
-            group_id: 1,
-            content: 1,
-            message_type: 1,
-            file_url: 1,
-            file_type: 1,
-            mentions: 1,
-            has_unread_mentions: 1,
-            metadata: 1,
-            is_encrypted: 1,
-            created_at: 1,
-            updated_at: 1,
-            deleted_at: 1,
-            sender: 1,
-            recipient: 1,
-            group: 1,
-          },
-        },
+        ...addStatusesAndReactions,
+        { $project: { ...commonProject, group: 1 } },
       ];
 
       messages = await Message.aggregate(pipeline);
@@ -634,10 +654,7 @@ exports.getMessages = async (req, res) => {
         Block.findOne({ blocker_id: userId, blocked_id: recipientId }),
         Block.findOne({ blocker_id: recipientId, blocked_id: userId }),
         Friend.findOne({
-          $or: [
-            { user_id: userId, friend_id: recipientId },
-            { user_id: recipientId, friend_id: userId },
-          ],
+          $or: [{ user_id: userId, friend_id: recipientId }, { user_id: recipientId, friend_id: userId }],
         }),
       ]);
 
@@ -648,7 +665,7 @@ exports.getMessages = async (req, res) => {
         id: recipient._id.toString(),
         avatar: recipient.avatar,
         name: recipient.name,
-        bio: recipient.bio || "Hey, I am using chatifyyy.",
+        bio: recipient.bio,
         email: recipient.email,
         country: recipient.country || null,
         country_code: recipient.country_code || null,
@@ -708,12 +725,7 @@ exports.markMessagesAsRead = async (req, res) => {
     if (chat_type === 'group') {
       match = { group_id: chat_id };
     } else if (chat_type === 'direct') {
-      match = {
-        $or: [
-          { sender_id: userId, recipient_id: chat_id },
-          { sender_id: chat_id, recipient_id: userId },
-        ],
-      };
+      match = { $or: [ { sender_id: userId, recipient_id: chat_id }, { sender_id: chat_id, recipient_id: userId }]};
     } else {
       return res.status(400).json({ message: 'Invalid chat_type' });
     }
@@ -740,20 +752,14 @@ exports.markMessagesAsRead = async (req, res) => {
       if (!disappearing || !disappearing.enabled || disappearing.expire_at) continue;
 
       if (disappearing.expire_after_seconds === null) {
-        await disappearing.updateOne({
-          expire_at: now,
-          $set: { 'metadata.immediate_disappear': true },
-        });
+        await disappearing.updateOne({ expire_at: now, $set: { 'metadata.immediate_disappear': true }});
       } else {
         const expireAt = new Date(now.getTime() + disappearing.expire_after_seconds * 1000);
         await disappearing.updateOne({ expire_at: expireAt });
       }
     }
 
-    await Message.updateMany(
-      { ...match, has_unread_mentions: true },
-      { has_unread_mentions: false }
-    );
+    await Message.updateMany({ ...match, has_unread_mentions: true },{ has_unread_mentions: false });
 
     return res.status(200).json({ message: 'Messages marked as read successfully.' });
   } catch (error) {
@@ -778,7 +784,6 @@ exports.toggleReaction = async (req, res) => {
     const message = await Message.findById(messageId);
     if (!message) return res.status(404).json({ message: 'Message Not Found.' });
 
-    // Access check
     const isDirect = message.recipient_id && !message.group_id;
     const isGroup = message.group_id;
 
@@ -791,11 +796,7 @@ exports.toggleReaction = async (req, res) => {
       if (!membership) return res.status(403).json({ message: 'Access Denied' });
     }
 
-    const existingReaction = await MessageReaction.findOne({
-      message_id: messageId,
-      user_id: userId,
-      emoji,
-    });
+    const existingReaction = await MessageReaction.findOne({ message_id: messageId, user_id: userId, emoji });
 
     let action;
     let reaction;
@@ -804,20 +805,13 @@ exports.toggleReaction = async (req, res) => {
       await existingReaction.deleteOne();
       action = 'removed';
     } else {
-      const differentReaction = await MessageReaction.findOne({
-        message_id: messageId,
-        user_id: userId,
-      });
+      const differentReaction = await MessageReaction.findOne({ message_id: messageId, user_id: userId });
 
       if (differentReaction) {
         await differentReaction.updateOne({ emoji });
         reaction = differentReaction;
       } else {
-        reaction = await MessageReaction.create({
-          message_id: messageId,
-          user_id: userId,
-          emoji,
-        });
+        reaction = await MessageReaction.create({ message_id: messageId, user_id: userId, emoji });
       }
       action = 'added';
     }
@@ -826,19 +820,10 @@ exports.toggleReaction = async (req, res) => {
     const io = req.app.get('io');
 
     if (message.group_id) {
-      io.to(`group_${message.group_id}`).emit('message-reaction-updated', {
-        messageId,
-        reactions: reactionCounts,
-      });
+      io.to(`group_${message.group_id}`).emit('message-reaction-updated', { messageId, reactions: reactionCounts });
     } else if (message.sender_id && message.recipient_id) {
-      io.to(`user_${message.sender_id}`).emit('message-reaction-updated', {
-        messageId,
-        reactions: reactionCounts,
-      });
-      io.to(`user_${message.recipient_id}`).emit('message-reaction-updated', {
-        messageId,
-        reactions: reactionCounts,
-      });
+      io.to(`user_${message.sender_id}`).emit('message-reaction-updated', { messageId, reactions: reactionCounts });
+      io.to(`user_${message.recipient_id}`).emit('message-reaction-updated', { messageId, reactions: reactionCounts });
     }
 
     return res.status(200).json({
