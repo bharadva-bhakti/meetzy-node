@@ -39,14 +39,15 @@ const ChatClearSchema = new Schema(
 addVirtualId(ChatClearSchema);
 
 ChatClearSchema.index(
-  { user_id: 1, recipient_id: 1 }, 
-  { unique: true, partialFilterExpression: { recipient_id: { $exists: true } } }
+  { user_id: 1, recipient_id: 1 }, { unique: true, partialFilterExpression: { recipient_id: { $ne: null }}}
 );
+
 ChatClearSchema.index(
-  { user_id: 1, group_id: 1 }, 
-  { unique: true, partialFilterExpression: { group_id: { $exists: true } } }
+  { user_id: 1, group_id: 1 }, { unique: true, partialFilterExpression: { group_id: { $ne: null }}}
 );
-ChatClearSchema.index({ cleared_at: 1 });
-ChatClearSchema.index({ user_id: 1, cleared_at: 1 });
+
+ChatClearSchema.index(
+  { user_id: 1, broadcast_id: 1 }, { unique: true, partialFilterExpression: { broadcast_id: { $ne: null }}}
+);
 
 module.exports = mongoose.model('ChatClear', ChatClearSchema);

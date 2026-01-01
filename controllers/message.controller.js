@@ -17,6 +17,7 @@ const ChatClear = db.ChatClear;
 const UserSetting = db.UserSetting;
 const MessageDisappearing = db.MessageDisappearing;
 const Broadcast = db.Broadcast;
+const UserDelete = db.UserDelete;
 const BroadcastMember = db.BroadcastMember;
 const ChatSetting = db.ChatSetting;
 const fs = require('fs');
@@ -81,6 +82,29 @@ exports.sendMessage = async (req, res) => {
     let recipientIds = [];
     let isBroadcast = false;
 
+    if (recipientId) {
+      const blockEntry = await Block.findOne({
+        blocker_id: senderId,
+        blocked_id: recipientId,
+      }).lean();
+
+      if (blockEntry) {
+        return res.status(403).json({ message: 'Cannot send message to blocked contact' });
+      }
+    }
+
+    if (groupId) {
+      const blockEntry = await Block.findOne({
+        blocker_id: senderId,
+        group_id: groupId,
+        block_type: 'group',
+      }).lean();
+
+      if (blockEntry) {
+        return res.status(403).json({ message: 'Cannot send message to blocked group' });
+      }
+    }
+
     if (broadcastId) {
       isBroadcast = true;
 
@@ -104,6 +128,20 @@ exports.sendMessage = async (req, res) => {
       const member = await GroupMember.findOne({ group_id: groupId, user_id: senderId });
       if (!member) return res.status(403).json({ message: 'Not a group member' });
     }
+
+    if (recipientId || groupId) {
+      const targetId = recipientId || groupId;
+    
+      const deleteChat = await UserDelete.findOne({
+        user_id: new mongoose.Types.ObjectId(senderId),
+        target_id: new mongoose.Types.ObjectId(targetId),
+        target_type: recipientId ? 'user' : 'group',
+      });
+    
+      if (deleteChat) {
+        await UserDelete.deleteOne({ _id: deleteChat._id });
+      }
+    }    
 
     const payloads = await buildMessagePayloads({ content, message_type, metadata, files, singleFile, file_url, parent_id});
 
@@ -293,6 +331,26 @@ exports.getMessages = async (req, res) => {
       return false;
     };
 
+    let clearFilter = null;
+    if (recipientId) {
+      const clearEntry = await ChatClear.findOne({ 
+        user_id: userId, recipient_id: new mongoose.Types.ObjectId(recipientId) 
+      }).lean();
+      if (clearEntry) clearFilter = { created_at: { $gt: clearEntry.cleared_at } };
+
+    } else if (groupId) {
+      const clearEntry = await ChatClear.findOne({ 
+        user_id: userId, group_id: new mongoose.Types.ObjectId(groupId) 
+      }).lean();
+      if (clearEntry) clearFilter = { created_at: { $gt: clearEntry.cleared_at } };
+
+    } else if (isBroadcast === 'true' && broadcastId) {
+      const clearEntry = await ChatClear.findOne({ 
+        user_id: userId, broadcast_id: new mongoose.Types.ObjectId(broadcastId) 
+      }).lean();
+      if (clearEntry) clearFilter = { created_at: { $gt: clearEntry.cleared_at } };
+    }
+    
     const getCommonChatMeta = async (targetType, targetId) => {
       const whereCondition = targetId ? { user_id: userId, target_id: targetId, target_type: targetType } : null;
       if (!whereCondition) return {};
@@ -441,6 +499,7 @@ exports.getMessages = async (req, res) => {
 
       const pipeline = [
         { $match: { message_type: 'announcement', recipient_id: null, group_id: null } },
+        ...(clearFilter ? [{ $match: clearFilter }] : []),
         { $sort: { created_at: -1 } },
         { $skip: parseInt(offset) },
         { $limit: parseInt(limit) },
@@ -479,6 +538,7 @@ exports.getMessages = async (req, res) => {
     
       const pipeline = [
         { $match: { 'metadata.is_broadcast': true, 'metadata.broadcast_id': broadcastId }},
+        ...(clearFilter ? [{ $match: clearFilter }] : []),
         { $sort: { created_at: 1 } },
         { $skip: parseInt(offset) },
         { $limit: parseInt(limit) },
@@ -613,6 +673,7 @@ exports.getMessages = async (req, res) => {
 
       const pipeline = [
         { $match: { group_id: groupObjId } },
+        ...(clearFilter ? [{ $match: clearFilter }] : []),
         { $sort: { created_at: -1 } },
         { $skip: parseInt(offset) },
         { $limit: parseInt(limit) },
@@ -681,6 +742,7 @@ exports.getMessages = async (req, res) => {
             ],
           },
         },
+        ...(clearFilter ? [{ $match: clearFilter }] : []),
         { $sort: { created_at: -1 } },
         { $skip: parseInt(offset) },
         { $limit: parseInt(limit) },

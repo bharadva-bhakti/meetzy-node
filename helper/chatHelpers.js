@@ -151,7 +151,9 @@ async function resolveChatObject(conv, currentUserId, relations) {
     };
   }
 
-  const convKey = `${conv.type}:${conv.id}`;
+  const convType = conv.type === 'direct' ? 'user' : conv.type;
+  const convKey = `${convType}:${conv.id}`;
+  
   chat.isGroup = conv.type === 'group';
   chat.isBlocked = conv.type === 'direct' || conv.type === 'announcement'
     ? blockedUsers.has(conv.id.toString())
@@ -824,7 +826,10 @@ async function fetchRecentChat(currentUserId, page = 1, limit = 20, options = {}
   const userBroadcasts = await Broadcast.find({ creator_id: currentUserId }).lean();
   const broadcastIds = userBroadcasts.map(b => b._id.toString());
 
-  const broadcastExcludeIds = Array.from(hiddenSet).filter(x => x.startsWith('broadcast_')).map(x => x.replace('broadcast_', ''));
+  const broadcastExcludeIds = [
+    ...Array.from(hiddenSet).filter(x => x.startsWith('broadcast_')).map(x => x.replace('broadcast_', '')),
+    ...Array.from(archivedSet).filter(x => x.startsWith('broadcast:')).map(x => x.replace('broadcast:', '')),
+  ] 
   const filteredBroadcastIds = broadcastIds.filter(id => !broadcastExcludeIds.includes(id));
 
   const broadcastConvos = filteredBroadcastIds.length > 0
@@ -850,7 +855,8 @@ async function fetchRecentChat(currentUserId, page = 1, limit = 20, options = {}
 
   announcementData.forEach(row => {
     const hiddenKey = `user${row._id}`;
-    if (!hiddenSet.has(hiddenKey)) {
+    const archivedKey = `announcement:${row._id}`;
+    if (!hiddenSet.has(hiddenKey) && !archivedSet.has(archivedKey)) {
       allConvos.push({ type: 'announcement', id: row._id.toString() });
     }
   });
@@ -884,24 +890,18 @@ async function fetchRecentChat(currentUserId, page = 1, limit = 20, options = {}
 async function fetchContacts(currentUserId, { search = '', page = 1, limit = 20 }) {
   const skip = (page - 1) * limit;
 
-  const friends = await Friend.find({
-    status: 'accepted',
-    $or: [{ user_id: currentUserId }, { friend_id: currentUserId }],
-  });
+  const friends = await Friend.find({ status: 'accepted', $or: [{ user_id: currentUserId }, { friend_id: currentUserId }]});
 
   const friendIds = friends.map(f =>
     f.user_id.toString() === currentUserId.toString() ? f.friend_id : f.user_id
   );
 
   if (friendIds.length === 0) {
-    return {
-      contacts: [],
-      pagination: { page, limit, totalCount: 0, totalPages: 0, hasMore: false },
-    };
+    return { contacts: [], pagination: { page, limit, totalCount: 0, totalPages: 0, hasMore: false }};
   }
 
   let query = { _id: { $in: friendIds } };
-
+  
   if (search) {
     const regex = { $regex: search, $options: 'i' };
     query.$or = [{ name: regex }, { email: regex }];
@@ -915,22 +915,28 @@ async function fetchContacts(currentUserId, { search = '', page = 1, limit = 20 
       .map(([id]) => new mongoose.Types.ObjectId(id));
 
     if (visiblePhoneUserIds.length > 0) {
-      query.$or.push({
-        $and: [{ _id: { $in: visiblePhoneUserIds } }, { phone: regex }],
-      });
+      query.$or.push({ $and: [{ _id: { $in: visiblePhoneUserIds } }, { phone: regex }] });
     }
   }
 
   const totalCount = await User.countDocuments(query);
 
-  const contacts = await User.find(query)
-    .select('id name phone avatar email').populate('setting', 'profile_pic').sort({ name: 1 }).skip(skip).limit(limit);
+  const contacts = await User.aggregate([
+    { $match: query },
+    { $sort: { name: 1 } },
+    { $skip: skip },
+    { $limit: limit },
+    { $lookup: { from: 'user_settings', localField: '_id', foreignField: 'user_id', as: 'setting_doc' }},
+    { $unwind: { path: '$setting_doc', preserveNullAndEmptyArrays: true } },
+    { $addFields: { id: { $toString: '$_id' }, setting: { profile_pic: '$setting_doc.profile_pic' }}},
+    { $project: { _id: 0, id: 1, name: 1, phone: 1, avatar: 1, email: 1, setting: 1 }},
+  ]);
 
   const relations = await getUserRelations(currentUserId);
 
   const contactChats = await Promise.all(
     contacts.map(async c => {
-      const conv = { type: 'direct', id: c._id };
+      const conv = { type: 'direct', id: c.id };
       return await resolveChatObject(conv, currentUserId, relations);
     })
   );

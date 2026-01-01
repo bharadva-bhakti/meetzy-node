@@ -687,23 +687,12 @@ exports.deleteChat = async (req, res) => {
       if (!group) return res.status(404).json({ message: 'Group not found.' });
     }
 
-    const existing = await UserDelete.findOne({
-      user_id: userId,
-      target_id: targetId,
-      target_type: targetType,
-    });
-
+    const existing = await UserDelete.findOne({ user_id: userId, target_id: targetId, target_type: targetType });
     if (existing) {
       return res.status(400).json({ message: 'Chat already deleted.' });
     }
 
-    await UserDelete.create({
-      user_id: userId,
-      target_id: targetId,
-      target_type: targetType,
-      delete_type: deleteType,
-    });
-
+    await UserDelete.create({ user_id: userId, target_id: targetId, target_type: targetType, delete_type: deleteType });
     const clearData = { user_id: userId, cleared_at: new Date() };
 
     if (targetType === 'user') {
@@ -712,11 +701,14 @@ exports.deleteChat = async (req, res) => {
       clearData.group_id = targetId;
     }
 
-    await ChatClear.findOneAndUpdate(
-      clearData,
-      clearData,
-      { upsert: true }
-    );
+    const filter = { user_id: userId };
+    if (targetType === 'user') {
+      filter.recipient_id = targetId;
+    } else if (targetType === 'group') {
+      filter.group_id = targetId;
+    }
+
+    await ChatClear.findOneAndUpdate(filter, { $set: { cleared_at: new Date() } }, { upsert: true });
 
     res.status(200).json({ message: `${targetType} Chat Deleted Successfully` });
   } catch (error) {
@@ -729,81 +721,68 @@ exports.deleteAllChats = async (req, res) => {
   const userId = req.user._id;
 
   try {
-    // Get direct chat partners
     const directPartners = await Message.aggregate([
-      {
-        $match: {
-          group_id: null,
-          $or: [{ sender_id: userId }, { recipient_id: userId }],
-        }
-      },
+      { $match: { group_id: null, $or: [{ sender_id: userId }, { recipient_id: userId }] }},
       {
         $project: {
-          partner_id: {
-            $cond: [{ $eq: ['$sender_id', userId] }, '$recipient_id', '$sender_id']
-          }
-        }
+          partner_id: { $cond: [{ $eq: ['$sender_id', userId] }, '$recipient_id', '$sender_id']},
+        },
       },
-      { $group: { _id: '$partner_id' } }
+      { $group: { _id: '$partner_id' } },
+      { $match: { _id: { $ne: null } } },
     ]);
 
-    const directPartnerIds = directPartners.map(p => p._id).filter(Boolean);
+    const directPartnerIds = directPartners.map(p => p._id);
 
-    // Get group memberships
     const groupMembers = await GroupMember.find({ user_id: userId }).select('group_id').lean();
-    const groupIds = groupMembers.map(g => g.group_id);
+    const groupIds = groupMembers.map(g => g.group_id).filter(id => id != null);
 
     const deletePayloads = [
-      ...directPartnerIds.map(id => ({
-        user_id: userId,
-        target_id: id,
-        target_type: 'user',
-        delete_type: 'hide_chat',
-      })),
-      ...groupIds.map(id => ({
-        user_id: userId,
-        target_id: id,
-        target_type: 'group',
-        delete_type: 'hide_chat',
-      })),
+      ...directPartnerIds.map(id => ({ user_id: userId, target_id: id, target_type: 'user', delete_type: 'hide_chat'})),
+      ...groupIds.map(id => ({ user_id: userId, target_id: id, target_type: 'group', delete_type: 'hide_chat', })),
     ];
 
     if (deletePayloads.length > 0) {
-      await UserDelete.insertMany(deletePayloads, { ordered: false }).catch(() => {}); // ignore duplicates
+      await UserDelete.insertMany(deletePayloads, { ordered: false }).catch(() => {});
     }
 
-    const clearPayload = [
-      ...directPartnerIds.map(id => ({
-        user_id: userId,
-        recipient_id: id,
-        cleared_at: new Date(),
-      })),
-      ...groupIds.map(id => ({
-        user_id: userId,
-        group_id: id,
-        cleared_at: new Date(),
-      })),
-    ];
+    const clearPromises = [];
 
-    for (const data of clearPayload) {
-      await ChatClear.findOneAndUpdate(data, data, { upsert: true });
+    for (const recipientId of directPartnerIds) {
+      clearPromises.push(
+        ChatClear.updateOne(
+          { user_id: userId, recipient_id: recipientId }, { $set: { cleared_at: new Date() } }, { upsert: true }
+        )
+      );
+    }
+
+    // Clear group chats
+    for (const groupId of groupIds) {
+      clearPromises.push(
+        ChatClear.updateOne(
+          { user_id: userId, group_id: groupId }, { $set: { cleared_at: new Date() } }, { upsert: true }
+        )
+      );
+    }
+
+    if (clearPromises.length > 0) {
+      await Promise.all(clearPromises);
     }
 
     const io = req.app.get('io');
     if (io) {
       io.to(`user_${userId}`).emit('chats-deleted-all', {
-        userId,
-        deletedCount: deletePayloads.length,
+        userId: userId.toString(), deletedCount: deletePayloads.length,
       });
     }
 
     return res.status(200).json({
       totalDeleted: deletePayloads.length,
-      message: `Deleted ${deletePayloads.length} chats successfully.`,
+      message: `Successfully deleted ${deletePayloads.length} chats.`,
     });
   } catch (error) {
     console.error('Error in deleteAllChats:', error);
-    res.status(500).json({ message: 'Internal Server Error' });
+    return res.status(500).json({ message: 'Internal Server Error' });
   }
 };
 
@@ -821,66 +800,73 @@ exports.exportChat = async (req, res) => {
     let textContent = '';
 
     if (groupId) {
-      const group = await Group.findById(groupId);
+      const groupObjId = new mongoose.Types.ObjectId(groupId);
+      const group = await Group.findById(groupObjId).lean();
       if (!group) return res.status(400).json({ message: 'Group not found.' });
 
-      const member = await GroupMember.findOne({ group_id: groupId, user_id: userId });
-      if (!member) return res.status(403).json({ message: 'You are not member of this group.' });
+      const member = await GroupMember.findOne({ group_id: groupObjId, user_id: userId }).lean();
+      if (!member) return res.status(403).json({ message: 'You are not a member of this group.' });
 
-      const clearEntry = await ChatClear.findOne({ user_id: userId, group_id: groupId });
+      const clearEntry = await ChatClear.findOne({ user_id: userId, group_id: groupObjId }).lean();
 
-      const match = { group_id: groupId, content: { $ne: null } };
-      if (clearEntry) {
-        match.created_at = { $gt: clearEntry.cleared_at };
-      }
+      const pipeline = [
+        { $match: { group_id: groupObjId, content: { $ne: null } } },
+        ...(clearEntry ? [{ $match: { created_at: { $gt: clearEntry.cleared_at } } }] : []),
+        { $sort: { created_at: 1 } },
+        { $lookup: { from: 'users', localField: 'sender_id', foreignField: '_id', as: 'sender_doc' }},
+        { $unwind: { path: '$sender_doc', preserveNullAndEmptyArrays: true } },
+        { $addFields: { sender_name: { $ifNull: ['$sender_doc.name', 'Unknown User'] }}},
+        { $project: { content: 1, created_at: 1, sender_name: 1 }},
+      ];
 
-      messages = await Message.find(match)
-        .populate('sender', 'name')
-        .sort({ created_at: 1 })
-        .lean();
+      messages = await Message.aggregate(pipeline);
 
       textContent += chatHeader(`Group: ${group.name}`);
       filename = `group_${initials(group.name)}_${formatDateForFilename(new Date())}.txt`;
     } else if (recipientId) {
-      const currentUser = await User.findById(userId);
-      const recipient = await User.findById(recipientId);
-      if (!recipient) return res.status(400).json({ message: 'recipient user not found.' });
+      const recipientObjId = new mongoose.Types.ObjectId(recipientId);
+      const currentUser = await User.findById(userId).lean();
+      const recipient = await User.findById(recipientObjId).lean();
+      if (!recipient) return res.status(400).json({ message: 'Recipient user not found.' });
 
-      const isBlocked = await Block.findOne({ blocker_id: userId, blocked_id: recipientId });
-      if (isBlocked) return res.status(403).json({ error: 'Cannot export chat with blocked user' });
+      const isBlocked = await Block.findOne({ blocker_id: userId, blocked_id: recipientObjId }).lean();
+      if (isBlocked) return res.status(403).json({ message: 'Cannot export chat with blocked user' });
 
-      const clearEntry = await ChatClear.findOne({ user_id: userId, recipient_id: recipientId });
+      const clearEntry = await ChatClear.findOne({ user_id: userId, recipient_id: recipientObjId }).lean();
 
-      const match = {
-        $or: [
-          { sender_id: userId, recipient_id: recipientId },
-          { sender_id: recipientId, recipient_id: userId },
-        ],
-        message_type: 'text',
-        content: { $ne: null },
-      };
+      const pipeline = [
+        {
+          $match: {
+            $or: [
+              { sender_id: userId, recipient_id: recipientObjId },
+              { sender_id: recipientObjId, recipient_id: userId },
+            ],
+            message_type: 'text',
+            content: { $ne: null },
+          },
+        },
+        ...(clearEntry ? [{ $match: { created_at: { $gt: clearEntry.cleared_at } } }] : []),
+        { $sort: { created_at: 1 } },
+        { $lookup: { from: 'users', localField: 'sender_id', foreignField: '_id', as: 'sender_doc' }},
+        { $unwind: { path: '$sender_doc', preserveNullAndEmptyArrays: true } },
+        { $addFields: { sender_name: { $ifNull: ['$sender_doc.name', 'Unknown User'] }}},
+        { $project: { content: 1, created_at: 1, sender_name: 1 }},
+      ];
 
-      if (clearEntry) {
-        match.created_at = { $gt: clearEntry.cleared_at };
-      }
-
-      messages = await Message.find(match)
-        .populate('sender', 'name')
-        .sort({ created_at: 1 })
-        .lean();
+      messages = await Message.aggregate(pipeline);
 
       textContent += chatHeader(`Participants: ${currentUser.name} ↔ ${recipient.name}`);
       filename = `chat_${initials(currentUser.name)}_${initials(recipient.name)}_${formatDateForFilename(new Date())}.txt`;
     }
 
     if (messages.length === 0) {
-      textContent += 'No messages are available for this conversation.';
+      textContent += 'No messages are available for this conversation.\n';
     } else {
       messages.forEach((msg) => {
         const msgDate = new Date(msg.created_at);
         const dateStr = formatDate(msgDate);
         const timeStr = formatTime(msgDate);
-        const senderName = msg.sender?.name || 'Unknown';
+        const senderName = msg.sender_name || 'Unknown User';
 
         textContent += `${dateStr}, ${timeStr} - ${senderName}: ${msg.content}\n`;
       });
@@ -888,13 +874,13 @@ exports.exportChat = async (req, res) => {
 
     textContent += `\n================================================\nEnd of conversation\n================================================\n`;
 
-    res.setHeader('Content-Disposition', `attachment; filename='${filename}'`);
-    res.setHeader('Content-Type', 'text/plain');
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
 
     return res.status(200).send(textContent);
   } catch (error) {
     console.error('Error in exportChat:', error);
-    res.status(500).json({ message: 'Internal Server Error' });
+    return res.status(500).json({ message: 'Internal Server Error' });
   }
 };
 
@@ -910,32 +896,34 @@ exports.clearChat = async (req, res) => {
       });
     }
 
-    const data = { 
-      user_id: userId, 
-      cleared_at: new Date() 
-    };
+    const filter = { user_id: userId };
+    const update = { $set: { cleared_at: new Date() } };
 
-    if (recipientId) data.recipient_id = recipientId;
-    if (groupId) data.group_id = groupId;
-    if (broadcastId) data.broadcast_id = broadcastId;
+    if (recipientId) {
+      filter.recipient_id = recipientId;
+    } else if (groupId) {
+      filter.group_id = groupId;
+    } else if (broadcastId) {
+      filter.broadcast_id = broadcastId;
+    }
 
-    await ChatClear.findOneAndUpdate(data, data, { upsert: true });
+    await ChatClear.updateOne(filter, update, { upsert: true });
 
     const io = req.app.get('io');
     if (io) {
       io.to(`user_${userId}`).emit('chat-cleared', {
-        userId,
+        userId: userId.toString(),
         recipientId: recipientId || null,
         groupId: groupId || null,
         broadcastId: broadcastId || null,
-        clearedAt: data.cleared_at,
+        clearedAt: new Date(),
       });
     }
 
     return res.status(200).json({ message: 'Chat cleared successfully.' });
   } catch (error) {
     console.error('Error in clearChat:', error);
-    res.status(500).json({ message: 'Internal Server Error' });
+    return res.status(500).json({ message: 'Internal Server Error' });
   }
 };
 
@@ -943,97 +931,70 @@ exports.clearAllChats = async (req, res) => {
   const userId = req.user._id;
 
   try {
-    // Get direct chat partners
     const directPartners = await Message.aggregate([
-      {
-        $match: {
-          group_id: null,
-          $or: [{ sender_id: userId }, { recipient_id: userId }],
-        }
-      },
+      { $match: { group_id: null, $or: [{ sender_id: userId }, { recipient_id: userId }]}},
       {
         $project: {
-          partner_id: {
-            $cond: [{ $eq: ['$sender_id', userId] }, '$recipient_id', '$sender_id']
-          }
-        }
+          partner_id: { $cond: [{ $eq: ['$sender_id', userId] }, '$recipient_id', '$sender_id']},
+        },
       },
-      { $group: { _id: '$partner_id' } }
+      { $group: { _id: '$partner_id' } },
+      { $match: { _id: { $ne: null } } },
     ]);
 
     const directPartnerIds = directPartners.map(p => p._id);
 
-    // Get group memberships
     const groupMembers = await GroupMember.find({ user_id: userId }).select('group_id').lean();
-    const groupIds = groupMembers.map(g => g.group_id);
+    const groupIds = groupMembers.map(g => g.group_id).filter(id => id != null);
+
+    const deletePayloads = [
+      ...directPartnerIds.map(id => ({ user_id: userId, target_id: id, target_type: 'user', delete_type: 'hide_chat', })),
+      ...groupIds.map(id => ({ user_id: userId, target_id: id, target_type: 'group', delete_type: 'hide_chat' })),
+    ];
+
+    if (deletePayloads.length > 0) {
+      await UserDelete.insertMany(deletePayloads, { ordered: false }).catch(() => {});
+    }
 
     const now = new Date();
-    const clearEntries = [];
+    const clearPromises = [];
 
-    // Check each direct chat
-    for (const partnerId of directPartnerIds) {
-      const existingClear = await ChatClear.findOne({ user_id: userId, recipient_id: partnerId });
-
-      const match = {
-        $or: [
-          { sender_id: userId, recipient_id: partnerId },
-          { sender_id: partnerId, recipient_id: userId },
-        ],
-      };
-
-      if (existingClear?.cleared_at) {
-        match.created_at = { $gt: existingClear.cleared_at };
-      }
-
-      const count = await Message.countDocuments(match);
-      if (count > 0) {
-        clearEntries.push({
-          user_id: userId,
-          recipient_id: partnerId,
-          cleared_at: now,
-        });
-      }
+    for (const recipientId of directPartnerIds) {
+      clearPromises.push(
+        ChatClear.updateOne(
+          { user_id: userId, recipient_id: recipientId }, { $set: { cleared_at: now } }, { upsert: true }
+        )
+      );
     }
 
-    // Check each group
     for (const groupId of groupIds) {
-      const existingClear = await ChatClear.findOne({ user_id: userId, group_id: groupId });
-
-      const match = { group_id: groupId };
-      if (existingClear?.cleared_at) {
-        match.created_at = { $gt: existingClear.cleared_at };
-      }
-
-      const count = await Message.countDocuments(match);
-      if (count > 0) {
-        clearEntries.push({
-          user_id: userId,
-          group_id: groupId,
-          cleared_at: now,
-        });
-      }
+      clearPromises.push(
+        ChatClear.updateOne(
+          { user_id: userId, group_id: groupId }, { $set: { cleared_at: now } }, { upsert: true }
+        )
+      );
     }
 
-    if (clearEntries.length > 0) {
-      await Promise.all(clearEntries.map(entry => ChatClear.findOneAndUpdate(entry, entry, { upsert: true })));
+    if (clearPromises.length > 0) {
+      await Promise.all(clearPromises);
     }
 
     const io = req.app.get('io');
     if (io) {
       io.to(`user_${userId}`).emit('chats-cleared-all', {
-        userId,
-        clearedCount: clearEntries.length,
+        userId: userId.toString(),
+        clearedCount: deletePayloads.length,
       });
     }
 
     return res.status(200).json({
-      message:
-        clearEntries.length > 0
-          ? `${clearEntries.length} chats cleared successfully.`
-          : 'No chats with new messages to clear.',
+      totalCleared: deletePayloads.length,
+      message: deletePayloads.length > 0
+        ? `${deletePayloads.length} chats cleared successfully.`
+        : 'No chats with new messages to clear.',
     });
   } catch (error) {
     console.error('Error in clearAllChats:', error);
-    res.status(500).json({ message: 'Internal Server Error' });
+    return res.status(500).json({ message: 'Internal Server Error' });
   }
 };
