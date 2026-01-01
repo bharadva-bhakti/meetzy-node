@@ -1,150 +1,401 @@
-const { Call, CallParticipant, User, Group, GroupMember, Setting } = require('../models');
-const { Op } = require('sequelize');
+const { db } = require('../models');
+const User = db.User;
+const Call = db.Call;
+const Group = db.Group;
+const GroupMember = db.GroupMember;
+const CallParticipant = db.CallParticipant;
+const Setting = db.Setting;
+const mongoose = require('mongoose');
 const { getCallSectionCounts, groupCallsByDate, createCallMessage, 
     processCallsForHistory, matchesSearchCriteria } = require('../helper/callHelpers');
 
 exports.initiateCall = async (req, res) => {
     const { callType = 'audio', chatType, chatId } = req.body;
-    const initiatorId = req.user.id;
+    const initiatorId = req.user._id;
     const io = req.app.get('io');
-
+    
     try {
-        const setting = await Setting.findOne({ attributes: ['call_timeout_seconds']});
-
         if (!chatType || !['direct', 'group'].includes(chatType)) {
-            return res.status(400).json({ message: 'Invalid chat type (direct | group) required' });
+        return res.status(400).json({ message: 'Invalid chat type (direct | group) required' });
         }
-
+    
         if (!chatId) return res.status(400).json({ message: 'chatId is required' });
+    
+        // Check if initiator is already in an active call
         const initiatorBusy = await CallParticipant.findOne({
-            where: { user_id: initiatorId, status: { [Op.in]: ['joined', 'invited'] }},
-            include: [{ model: Call, as: 'call', where: { status: 'active' } }],
+        user_id: initiatorId,
+        status: { $in: ['joined', 'invited'] },
         });
-
+    
         if (initiatorBusy) {
-            io.to(`user_${initiatorId}`).emit('call-busy', { userId: initiatorId });
+        const activeCall = await Call.findOne({ _id: initiatorBusy.call_id, status: 'active' });
+        if (activeCall) {
+            io.to(`user_${initiatorId}`).emit('call-busy', { userId: initiatorId.toString() });
             return res.status(409).json({ message: 'You are already in another active call.' });
         }
-
+        }
+    
         let targetUserIds = [];
         if (chatType === 'direct') {
-            targetUserIds = [chatId];
+        targetUserIds = [chatId];
         } else {
-            const members = await GroupMember.findAll({ 
-                where: { group_id: chatId }, attributes: ['user_id'] 
-            });
-            targetUserIds = members.map((m) => m.user_id).filter((id) => id !== initiatorId);
+        const members = await GroupMember.find({ group_id: chatId }).select('user_id').lean();
+        targetUserIds = members.map(m => m.user_id.toString()).filter(id => id !== initiatorId.toString());
         }
-
-        const busyUsers = await CallParticipant.findAll({
-        where: { 
-            user_id: { [Op.in]: targetUserIds }, 
-            status: { [Op.in]: ['joined', 'invited'] }
-        },
-        include: [{ model: Call, as: 'call', where: { status: 'active' } }],
+    
+        // Check if any target users are busy (but allow call anyway — just log)
+        const busyUsers = await CallParticipant.find({
+        user_id: { $in: targetUserIds.map(id => new mongoose.Types.ObjectId(id)) },
+        status: { $in: ['joined', 'invited'] },
         });
-
-        if (busyUsers.length > 0) {
-        const busyIds = busyUsers.map(u => u.user_id);
+    
+        const busyCallIds = busyUsers.map(p => p.call_id);
+        const activeBusyCalls = await Call.find({ _id: { $in: busyCallIds }, status: 'active' });
+    
+        if (activeBusyCalls.length > 0) {
+        const busyIds = busyUsers.map(u => u.user_id.toString());
         console.log(`User(s) busy but we are allowing the call anyway:`, busyIds);
         }
-
+    
+        const setting = await Setting.findOne().select('call_timeout_seconds').lean();
+        const UNANSWERED_TIMEOUT = (setting?.call_timeout_seconds || 20) * 1000;
+    
         const call = await Call.create({
-            initiator_id: initiatorId,
-            receiver_id: chatType === 'direct' ? chatId : null,
-            group_id: chatType === 'group' ? chatId : null,
-            call_type: callType,
-            call_mode: chatType,
-            status: 'active',
-            started_at: new Date().toISOString(),
+        initiator_id: initiatorId,
+        receiver_id: chatType === 'direct' ? chatId : null,
+        group_id: chatType === 'group' ? chatId : null,
+        call_type: callType,
+        call_mode: chatType,
+        status: 'active',
+        started_at: new Date(),
         });
-
+    
         let participants = [];
         if (chatType === 'direct') {
-            participants = [
-                { call_id: call.id, user_id: initiatorId, status: 'joined', joined_at: new Date().toISOString() },
-                { call_id: call.id, user_id: chatId, status: 'invited' },
-            ];
+        participants = [
+            { call_id: call._id, user_id: initiatorId, status: 'joined', joined_at: new Date() },
+            { call_id: call._id, user_id: chatId, status: 'invited' },
+        ];
         } else {
-            const members = await GroupMember.findAll({ where: { group_id: chatId }, attributes: ['user_id'] });
-            participants = members.map((m) => ({
-                call_id: call.id,
-                user_id: m.user_id,
-                status: m.user_id === initiatorId ? 'joined' : 'invited',
-                joined_at: m.user_id === initiatorId ? new Date().toISOString() : null,
-            }));
+        const members = await GroupMember.find({ group_id: chatId }).lean();
+        participants = members.map(m => ({
+            call_id: call._id,
+            user_id: m.user_id,
+            status: m.user_id.toString() === initiatorId.toString() ? 'joined' : 'invited',
+            joined_at: m.user_id.toString() === initiatorId.toString() ? new Date() : null,
+        }));
         }
-
-        await CallParticipant.bulkCreate(participants);
-
-        const fullCall = await Call.findByPk(call.id, {
-            include: [
-                { model: User, as: 'initiator', attributes: ['id', 'name', 'avatar'] },
-                { model: User, as: 'receiver', attributes: ['id', 'name', 'avatar'], required: false },
-                { model: Group, as: 'group', required: false, attributes: ['id', 'name'] },
-                {
-                    model: CallParticipant,
-                    as: 'participants',
-                    include: [{ model: User, as: 'user', attributes: ['id', 'name', 'avatar'] }],
-                },
-            ]
-        });
-
-        const callData = fullCall.get({ plain: true });
-
+    
+        await CallParticipant.insertMany(participants);
+    
+        // Use aggregation to populate everything safely
+        const fullCall = await Call.aggregate([
+        { $match: { _id: call._id } },
+        {
+            $lookup: {
+            from: 'users',
+            localField: 'initiator_id',
+            foreignField: '_id',
+            as: 'initiator_doc'
+            }
+        },
+        { $unwind: { path: '$initiator_doc', preserveNullAndEmptyArrays: true } },
+        {
+            $lookup: {
+            from: 'users',
+            localField: 'receiver_id',
+            foreignField: '_id',
+            as: 'receiver_doc'
+            }
+        },
+        { $unwind: { path: '$receiver_doc', preserveNullAndEmptyArrays: true } },
+        {
+            $lookup: {
+            from: 'groups',
+            localField: 'group_id',
+            foreignField: '_id',
+            as: 'group_doc'
+            }
+        },
+        { $unwind: { path: '$group_doc', preserveNullAndEmptyArrays: true } },
+        {
+            $lookup: {
+            from: 'callparticipants',
+            localField: '_id',
+            foreignField: 'call_id',
+            as: 'participants'
+            }
+        },
+        {
+            $lookup: {
+            from: 'users',
+            localField: 'participants.user_id',
+            foreignField: '_id',
+            as: 'participant_users'
+            }
+        },
+        {
+            $addFields: {
+            participants: {
+                $map: {
+                input: '$participants',
+                as: 'p',
+                in: {
+                    $mergeObjects: [
+                    '$$p',
+                    {
+                        user: {
+                        $arrayElemAt: [
+                            {
+                            $filter: {
+                                input: '$participant_users',
+                                cond: { $eq: ['$$this._id', '$$p.user_id'] }
+                            }
+                            },
+                            0
+                        ]
+                        }
+                    }
+                    ]
+                }
+                }
+            }
+            }
+        },
+        {
+            $addFields: {
+            initiator: {
+                id: '$initiator_doc._id',
+                name: '$initiator_doc.name',
+                avatar: '$initiator_doc.avatar'
+            },
+            receiver: {
+                $cond: [
+                { $ifNull: ['$receiver_doc', false] },
+                { id: '$receiver_doc._id', name: '$receiver_doc.name', avatar: '$receiver_doc.avatar' },
+                null
+                ]
+            },
+            group: {
+                $cond: [
+                { $ifNull: ['$group_doc', false] },
+                { id: '$group_doc._id', name: '$group_doc.name' },
+                null
+                ]
+            }
+            }
+        },
+        {
+            $project: {
+            _id: 0,
+            id: '$_id',
+            initiator_id: 1,
+            receiver_id: 1,
+            group_id: 1,
+            call_type: 1,
+            call_mode: 1,
+            status: 1,
+            started_at: 1,
+            accepted_time: 1,
+            ended_at: 1,
+            duration: 1,
+            created_at: 1,
+            updated_at: 1,
+            initiator: 1,
+            receiver: 1,
+            group: 1,
+            participants: {
+                call_id: 1,
+                user_id: 1,
+                status: 1,
+                joined_at: 1,
+                left_at: 1,
+                is_muted: 1,
+                is_video_enabled: 1,
+                user: { id: 1, name: 1, avatar: 1 }
+            }
+            }
+        }
+        ]);
+    
+        const callData = fullCall[0];
+    
+        await createCallMessage(callData, 'initiated', req, null);
+    
         if (chatType === 'direct') {
-            io.to(`user_${chatId}`).emit('incoming-call', callData);
+        io.to(`user_${chatId}`).emit('incoming-call', callData);
         } else {
-            participants.filter((p) => p.user_id !== initiatorId).forEach((p) => {
-                io.to(`user_${p.user_id}`).emit('incoming-call', callData);
-            });
+        participants.filter(p => p.user_id.toString() !== initiatorId.toString()).forEach(p => {
+            io.to(`user_${p.user_id}`).emit('incoming-call', callData);
+        });
         }
-        
-        const UNANSWERED_TIMEOUT = setting.call_timeout_seconds * 1000 || 20000;
-
+    
+        // Unanswered timeout
         setTimeout(async () => {
-            try {
-                const activeCall = await Call.findByPk(call.id, {
-                    include: [{ model: CallParticipant, as: 'participants' }],
-                });
-                if (!activeCall || activeCall.status !== 'active') return;
-
-                const hasAnswer = activeCall.participants.filter((p) => 
-                    p.status === 'joined' && p.user_id !== initiatorId
-                ).length > 0;
-
-                if (!hasAnswer) {
-                    console.log(`Call ${call.id} unanswered — ending now.`);
-
-                    await Call.update({ status: 'ended', ended_at: new Date().toISOString(), duration: 0 }, { where: { id: call.id } });
-                    await CallParticipant.update(
-                        { status: 'missed' }, { where: { call_id: call.id, status: 'invited' }}
-                    );
-
-                    const fullMissedCall = await Call.findByPk(call.id, {
-                        include: [
-                            { model: User, as: 'initiator', attributes: ['id', 'name', 'avatar'] },
-                            { model: User, as: 'receiver', attributes: ['id', 'name', 'avatar'], required: false },
-                            { model: Group, as: 'group', required: false, attributes: ['id', 'name'] },
-                        ],
-                    });
-                    
-                    await createCallMessage(fullMissedCall, 'missed', req);
-
-                    if (chatType === 'direct') {
-                        io.to(`user_${initiatorId}`).emit('call-ended', { callId: call.id, reason: 'no_answer' });
-                        io.to(`user_${chatId}`).emit('call-ended', { callId: call.id, reason: 'no_answer' });
-                    } else {
-                        participants.forEach((p) => {
-                            io.to(`user_${p.user_id}`).emit('call-ended', { callId: call.id, reason: 'no_answer' });
-                        });
+        try {
+            const activeCall = await Call.findById(call._id).lean();
+    
+            if (!activeCall || activeCall.status !== 'active') return;
+    
+            const answeredParticipants = await CallParticipant.find({
+            call_id: call._id,
+            status: 'joined',
+            user_id: { $ne: initiatorId }
+            }).lean();
+    
+            if (answeredParticipants.length === 0) {
+            await Call.findByIdAndUpdate(call._id, {
+                status: 'ended',
+                ended_at: new Date(),
+                duration: 0
+            });
+    
+            await CallParticipant.updateMany(
+                { call_id: call._id, status: 'invited' },
+                { status: 'missed' }
+            );
+    
+            const missedCall = await Call.aggregate([
+                { $match: { _id: call._id } },
+                {
+                    $lookup: {
+                    from: 'users',
+                    localField: 'initiator_id',
+                    foreignField: '_id',
+                    as: 'initiator_doc'
+                    }
+                },
+                { $unwind: { path: '$initiator_doc', preserveNullAndEmptyArrays: true } },
+                {
+                    $lookup: {
+                    from: 'users',
+                    localField: 'receiver_id',
+                    foreignField: '_id',
+                    as: 'receiver_doc'
+                    }
+                },
+                { $unwind: { path: '$receiver_doc', preserveNullAndEmptyArrays: true } },
+                {
+                    $lookup: {
+                    from: 'groups',
+                    localField: 'group_id',
+                    foreignField: '_id',
+                    as: 'group_doc'
+                    }
+                },
+                { $unwind: { path: '$group_doc', preserveNullAndEmptyArrays: true } },
+                {
+                    $lookup: {
+                    from: 'callparticipants',
+                    localField: '_id',
+                    foreignField: 'call_id',
+                    as: 'participants'
+                    }
+                },
+                {
+                    $lookup: {
+                    from: 'users',
+                    localField: 'participants.user_id',
+                    foreignField: '_id',
+                    as: 'participant_users'
+                    }
+                },
+                {
+                    $addFields: {
+                    participants: {
+                        $map: {
+                        input: '$participants',
+                        as: 'p',
+                        in: {
+                            $mergeObjects: [
+                            '$$p',
+                            {
+                                user: {
+                                $arrayElemAt: [
+                                    {
+                                    $filter: {
+                                        input: '$participant_users',
+                                        cond: { $eq: ['$$this._id', '$$p.user_id'] }
+                                    }
+                                    },
+                                    0
+                                ]
+                                }
+                            }
+                            ]
+                        }
+                        }
+                    }
+                    }
+                },
+                {
+                    $addFields: {
+                    initiator: {
+                        id: '$initiator_doc._id',
+                        name: '$initiator_doc.name',
+                        avatar: '$initiator_doc.avatar'
+                    },
+                    receiver: {
+                        $cond: [
+                        { $ifNull: ['$receiver_doc', false] },
+                        { id: '$receiver_doc._id', name: '$receiver_doc.name', avatar: '$receiver_doc.avatar' },
+                        null
+                        ]
+                    },
+                    group: {
+                        $cond: [
+                        { $ifNull: ['$group_doc', false] },
+                        { id: '$group_doc._id', name: '$group_doc.name' },
+                        null
+                        ]
+                    }
+                    }
+                },
+                {
+                    $project: {
+                    _id: 0,
+                    id: '$_id',
+                    initiator_id: 1,
+                    receiver_id: 1,
+                    group_id: 1,
+                    call_type: 1,
+                    call_mode: 1,
+                    status: 1,
+                    started_at: 1,
+                    accepted_time: 1,
+                    ended_at: 1,
+                    duration: 1,
+                    created_at: 1,
+                    updated_at: 1,
+                    initiator: 1,
+                    receiver: 1,
+                    group: 1,
+                    participants: {
+                        call_id: 1,
+                        user_id: 1,
+                        status: 1,
+                        joined_at: 1,
+                        left_at: 1,
+                        is_muted: 1,
+                        is_video_enabled: 1,
+                        user: { id: 1, name: 1, avatar: 1 }
+                    }
                     }
                 }
-            } catch (error) {
-                console.error('Error handling unanswered call timeout:', error);
+            ]);
+    
+            await createCallMessage(missedCall[0], 'missed', req);
+    
+            const participantIds = participants.map(p => p.user_id.toString());
+            participantIds.forEach(uid => {
+                io.to(`user_${uid}`).emit('call-ended', { callId: call._id.toString(), reason: 'no_answer' });
+            });
             }
+        } catch (err) {
+            console.error('Error in unanswered call timeout:', err);
+        }
         }, UNANSWERED_TIMEOUT);
-
+    
         res.status(201).json({ message: 'Call initiated successfully.', call: callData });
     } catch (error) {
         console.error('Error in initiateCall:', error);
@@ -154,589 +405,1077 @@ exports.initiateCall = async (req, res) => {
 
 exports.answerCall = async (req, res) => {
     const { callId } = req.body;
-    const userId = req.user.id;
+    const userId = req.user._id;
     const io = req.app.get('io');
-
+  
     try {
-        if (!callId) return res.status(400).json({ message: 'callId is required' });
-
-        const call = await Call.findByPk(callId, {
-            include: [
-                { model: User, as: 'initiator', attributes: ['id', 'name', 'avatar'] },
-                { model: User, as: 'receiver', attributes: ['id', 'name', 'avatar'], required: false },
-                { model: Group, as: 'group', required: false, attributes: ['id', 'name'] },
-                {
-                    model: CallParticipant,
-                    as: 'participants',
-                    include: [{ model: User, as: 'user', attributes: ['id', 'name', 'avatar'] }],
-                },
-            ]
-        });
-
-        if (!call) return res.status(404).json({ message: 'Call not found.' });
-
-        if (call.status !== 'active') {
-            return res.status(400).json({ message: 'Call has already ended' });
-        }
-
-        const participant = await CallParticipant.findOne({
-            where: { call_id: callId, user_id: parseInt(userId, 10) },
-        });
-        
-        if (!participant) {
-            return res.status(404).json({ message: 'You are not invited to this call.' });
-        }
-
-        if (participant.status === 'joined') {
-            return res.status(400).json({ message: 'You have already joined this call.' });
-        }
-
-        if (participant.status === 'declined') {
-            return res.status(400).json({ message: 'You have already declined this call.' });
-        }
-
-        const userBusy = await CallParticipant.findOne({
-            where: {
-                user_id: userId,
-                status: { [Op.in]: ['joined', 'invited'] },
-                call_id: { [Op.ne]: callId }
-            },
-            include: [{ model: Call, as: 'call', where: { status: 'active' } }],
-        });
-
-        if (userBusy) {
-            io.to(`user_${call.initiator_id}`).emit('call-busy', { userId: parseInt(userId, 10) });
-            return res.status(409).json({ message: 'You are already in another active call.' });
-        }
-
-        const currentJoinedParticipants = await CallParticipant.count({
-            where: { 
-                call_id: callId, 
-                status: 'joined', 
-                user_id: { [Op.ne]: call.initiator_id }
+      if (!callId) return res.status(400).json({ message: 'callId is required' });
+  
+      // Fetch call with full nested data using aggregation
+      const callAggregation = await Call.aggregate([
+        { $match: { _id: new mongoose.Types.ObjectId(callId) } },
+        {
+          $lookup: {
+            from: 'users',
+            localField: 'initiator_id',
+            foreignField: '_id',
+            as: 'initiator_doc'
+          }
+        },
+        { $unwind: { path: '$initiator_doc', preserveNullAndEmptyArrays: true } },
+        {
+          $lookup: {
+            from: 'users',
+            localField: 'receiver_id',
+            foreignField: '_id',
+            as: 'receiver_doc'
+          }
+        },
+        { $unwind: { path: '$receiver_doc', preserveNullAndEmptyArrays: true } },
+        {
+          $lookup: {
+            from: 'groups',
+            localField: 'group_id',
+            foreignField: '_id',
+            as: 'group_doc'
+          }
+        },
+        { $unwind: { path: '$group_doc', preserveNullAndEmptyArrays: true } },
+        {
+          $lookup: {
+            from: 'callparticipants',
+            localField: '_id',
+            foreignField: 'call_id',
+            as: 'participants'
+          }
+        },
+        {
+          $lookup: {
+            from: 'users',
+            localField: 'participants.user_id',
+            foreignField: '_id',
+            as: 'participant_users'
+          }
+        },
+        {
+          $addFields: {
+            participants: {
+              $map: {
+                input: '$participants',
+                as: 'p',
+                in: {
+                  $mergeObjects: [
+                    '$$p',
+                    {
+                      user: {
+                        $arrayElemAt: [
+                          {
+                            $filter: {
+                              input: '$participant_users',
+                              cond: { $eq: ['$$this._id', '$$p.user_id'] }
+                            }
+                          },
+                          0
+                        ]
+                      }
+                    }
+                  ]
+                }
+              }
             }
-        });
-
-        const isFirstAcceptance = currentJoinedParticipants === 0;
-
-        await CallParticipant.update(
-            {
-                status: 'joined',
-                joined_at: new Date().toISOString(),
-                is_muted: false,
-                is_video_enabled: call.call_type === 'video'
+          }
+        },
+        {
+          $addFields: {
+            initiator: {
+              id: '$initiator_doc._id',
+              name: '$initiator_doc.name',
+              avatar: '$initiator_doc.avatar'
             },
-            { where: { call_id: callId, user_id: parseInt(userId, 10) } }
-        );
-
-        if (isFirstAcceptance) {
-            await Call.update(
-                { accepted_time: new Date().toISOString() }, 
-                { where: { id: callId } }
-            );
+            receiver: {
+              $cond: [
+                { $ifNull: ['$receiver_doc', false] },
+                { id: '$receiver_doc._id', name: '$receiver_doc.name', avatar: '$receiver_doc.avatar' },
+                null
+              ]
+            },
+            group: {
+              $cond: [
+                { $ifNull: ['$group_doc', false] },
+                { id: '$group_doc._id', name: '$group_doc.name' },
+                null
+              ]
+            }
+          }
+        },
+        {
+          $project: {
+            _id: 0,
+            id: '$_id',
+            initiator_id: 1,
+            receiver_id: 1,
+            group_id: 1,
+            call_type: 1,
+            call_mode: 1,
+            status: 1,
+            started_at: 1,
+            accepted_time: 1,
+            ended_at: 1,
+            duration: 1,
+            created_at: 1,
+            updated_at: 1,
+            initiator: 1,
+            receiver: 1,
+            group: 1,
+            participants: {
+              call_id: 1,
+              user_id: 1,
+              status: 1,
+              joined_at: 1,
+              left_at: 1,
+              is_muted: 1,
+              is_video_enabled: 1,
+              user: { id: 1, name: 1, avatar: 1 }
+            }
+          }
         }
-
-        const updatedCall = await Call.findByPk(callId, {
-            include: [
-                { model: User, as: 'initiator', attributes: ['id', 'name', 'avatar'] },
-                { model: User, as: 'receiver', attributes: ['id', 'name', 'avatar'], required: false },
-                { model: Group, as: 'group', required: false, attributes: ['id', 'name'] },
-                {
-                    model: CallParticipant,
-                    as: 'participants',
-                    include: [{ model: User, as: 'user', attributes: ['id', 'name', 'avatar'] }],
-                },
-            ]
+      ]);
+  
+      const call = callAggregation[0];
+  
+      if (!call) return res.status(404).json({ message: 'Call not found.' });
+  
+      if (call.status !== 'active') {
+        return res.status(400).json({ message: 'Call has already ended' });
+      }
+  
+      const participant = await CallParticipant.findOne({
+        call_id: call.id,
+        user_id: userId,
+      }).lean();
+  
+      if (!participant) {
+        return res.status(404).json({ message: 'You are not invited to this call.' });
+      }
+  
+      if (participant.status === 'joined') {
+        return res.status(400).json({ message: 'You have already joined this call.' });
+      }
+  
+      // Check if user is busy in another call
+      const userBusy = await CallParticipant.findOne({
+        user_id: userId,
+        status: { $in: ['joined', 'invited'] },
+        call_id: { $ne: call.id }
+      });
+  
+      const busyCall = userBusy ? await Call.findOne({ _id: userBusy.call_id, status: 'active' }) : null;
+  
+      if (busyCall) {
+        io.to(`user_${call.initiator_id}`).emit('call-busy', { userId: userId.toString() });
+        return res.status(409).json({ message: 'You are already in another active call.' });
+      }
+  
+      const currentJoinedCount = await CallParticipant.countDocuments({
+        call_id: call.id,
+        status: 'joined',
+        user_id: { $ne: call.initiator_id }
+      });
+  
+      const isFirstAcceptance = currentJoinedCount === 0;
+  
+      await CallParticipant.findOneAndUpdate(
+        { call_id: call.id, user_id: userId },
+        {
+          status: 'joined',
+          joined_at: new Date(),
+          is_muted: false,
+          is_video_enabled: call.call_type === 'video'
+        }
+      );
+  
+      if (isFirstAcceptance) {
+        await Call.findByIdAndUpdate(call.id, { accepted_time: new Date() });
+        await createCallMessage(call, 'ongoing', req, userId.toString());
+      } else {
+        await createCallMessage(call, 'ongoing', req, userId.toString());
+      }
+  
+      // Fetch updated call again with same aggregation
+      const updatedCallAggregation = await Call.aggregate([
+        
+        { $match: { _id: new mongoose.Types.ObjectId(callId) } },
+        {
+            $lookup: {
+              from: 'users',
+              localField: 'initiator_id',
+              foreignField: '_id',
+              as: 'initiator_doc'
+            }
+          },
+          { $unwind: { path: '$initiator_doc', preserveNullAndEmptyArrays: true } },
+          {
+            $lookup: {
+              from: 'users',
+              localField: 'receiver_id',
+              foreignField: '_id',
+              as: 'receiver_doc'
+            }
+          },
+          { $unwind: { path: '$receiver_doc', preserveNullAndEmptyArrays: true } },
+          {
+            $lookup: {
+              from: 'groups',
+              localField: 'group_id',
+              foreignField: '_id',
+              as: 'group_doc'
+            }
+          },
+          { $unwind: { path: '$group_doc', preserveNullAndEmptyArrays: true } },
+          {
+            $lookup: {
+              from: 'callparticipants',
+              localField: '_id',
+              foreignField: 'call_id',
+              as: 'participants'
+            }
+          },
+          {
+            $lookup: {
+              from: 'users',
+              localField: 'participants.user_id',
+              foreignField: '_id',
+              as: 'participant_users'
+            }
+          },
+          {
+            $addFields: {
+              participants: {
+                $map: {
+                  input: '$participants',
+                  as: 'p',
+                  in: {
+                    $mergeObjects: [
+                      '$$p',
+                      {
+                        user: {
+                          $arrayElemAt: [
+                            {
+                              $filter: {
+                                input: '$participant_users',
+                                cond: { $eq: ['$$this._id', '$$p.user_id'] }
+                              }
+                            },
+                            0
+                          ]
+                        }
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+          },
+          {
+            $addFields: {
+              initiator: {
+                id: '$initiator_doc._id',
+                name: '$initiator_doc.name',
+                avatar: '$initiator_doc.avatar'
+              },
+              receiver: {
+                $cond: [
+                  { $ifNull: ['$receiver_doc', false] },
+                  { id: '$receiver_doc._id', name: '$receiver_doc.name', avatar: '$receiver_doc.avatar' },
+                  null
+                ]
+              },
+              group: {
+                $cond: [
+                  { $ifNull: ['$group_doc', false] },
+                  { id: '$group_doc._id', name: '$group_doc.name' },
+                  null
+                ]
+              }
+            }
+          },
+          {
+            $project: {
+              _id: 0,
+              id: '$_id',
+              initiator_id: 1,
+              receiver_id: 1,
+              group_id: 1,
+              call_type: 1,
+              call_mode: 1,
+              status: 1,
+              started_at: 1,
+              accepted_time: 1,
+              ended_at: 1,
+              duration: 1,
+              created_at: 1,
+              updated_at: 1,
+              initiator: 1,
+              receiver: 1,
+              group: 1,
+              participants: {
+                call_id: 1,
+                user_id: 1,
+                status: 1,
+                joined_at: 1,
+                left_at: 1,
+                is_muted: 1,
+                is_video_enabled: 1,
+                user: { id: 1, name: 1, avatar: 1 }
+              }
+            }
+          }
+      ]);
+  
+      const updatedCall = updatedCallAggregation[0];
+  
+      const userData = {
+        userId: userId.toString(),
+        name: req.user.name,
+        avatar: req.user.avatar,
+        isAudioEnabled: true,
+        isVideoEnabled: call.call_type === 'video',
+        socketId: null
+      };
+  
+      const joinedParticipants = updatedCall.participants.filter(p => 
+        p.status === 'joined' && p.user_id.toString() !== userId.toString()
+      );
+  
+      joinedParticipants.forEach(p => {
+        io.to(`user_${p.user_id}`).emit('call-accepted', {
+          callId: call.id.toString(),
+          userId: userId.toString(),
+          user: userData
         });
-
-        const callData = updatedCall.get({ plain: true });
-
-        const userData = {
-            userId: req.user.id,
-            name: req.user.name,
-            avatar: req.user.avatar,
-            isAudioEnabled: true,
-            isVideoEnabled: call.call_type === 'video',
-            socketId: null
-        };
-
-        const joinedParticipants = callData.participants.filter(p => 
-            p.status === 'joined' && p.user_id !== parseInt(userId, 10)
-        );
-
-        joinedParticipants.forEach(participant => {
-            io.to(`user_${participant.user_id}`).emit('call-accepted', {
-                callId, 
-                userId: parseInt(req.user.id, 10),
-                user: userData
-            });
-        });
-
-        const participantsForSync = callData.participants
-            .filter(p => {
-                if (p.status !== 'joined' || p.user_id === parseInt(userId, 10)) return false;
-                if (parseInt(userId, 10) !== call.initiator_id && p.user_id === call.initiator_id) return false;
-                return true;
-            })
-            .map(participant => ({
-                userId: parseInt(participant.user_id, 10),
-                socketId: null,
-                name: participant.user.name,
-                avatar: participant.user.avatar,
-                joinedAt: participant.joined_at,
-                isAudioEnabled: !participant.is_muted,
-                isVideoEnabled: participant.is_video_enabled,
-                isScreenSharing: participant.is_screen_sharing || false,
-            }));
-
-        io.to(`user_${parseInt(userId, 10)}`).emit('call-participants-sync', {
-            callId, 
-            participants: participantsForSync
-        });
-
-        console.log(`User ${parseInt(userId, 10)} accepted call ${callId} (first acceptance: ${isFirstAcceptance})`);
-
-        res.json({ message: 'Call answered successfully', call: callData });
+      });
+  
+      const participantsForSync = updatedCall.participants
+        .filter(p => p.status === 'joined' && p.user_id.toString() !== userId.toString())
+        .map(p => ({
+          userId: p.user_id.toString(),
+          socketId: null,
+          name: p.user.name,
+          avatar: p.user.avatar,
+          joinedAt: p.joined_at,
+          isAudioEnabled: !p.is_muted,
+          isVideoEnabled: p.is_video_enabled,
+          isScreenSharing: p.is_screen_sharing || false,
+        }));
+  
+      io.to(`user_${userId}`).emit('call-participants-sync', {
+        callId: call.id.toString(),
+        participants: participantsForSync
+      });
+  
+      res.json({ message: 'Call answered successfully', call: updatedCall });
     } catch (error) {
-        console.error('Error in answerCall:', error);
-        res.status(500).json({ message: 'Internal Server Error' });
+      console.error('Error in answerCall:', error);
+      res.status(500).json({ message: 'Internal Server Error' });
     }
 };
 
 exports.declineCall = async (req, res) => {
     const { callId } = req.body;
-    const userId = req.user.id;
+    const userId = req.user._id;
     const io = req.app.get('io');
-
+  
     try {
-        if (!callId) return res.status(400).json({ message: 'callId is required' });
-
-        const call = await Call.findByPk(callId, {
-            include: [
-                { model: User, as: 'initiator', attributes: ['id', 'name', 'avatar']},
-                { model: User, as: 'receiver', attributes: ['id', 'name', 'avatar'], required: false },
-                { model: Group, as: 'group', required: false, attributes: ['id', 'name']},
-                {
-                    model: CallParticipant,
-                    as: 'participants',
-                    include: [{ model: User, as: 'user', attributes: ['id', 'name', 'avatar'] }],
-                },
-            ]
-        });
-
-        if (!call) return res.status(404).json({ message: 'Call not found' });
-
-        if (call.status !== 'active') {
-            return res.status(400).json({ message: 'Call has already ended' });
-        }
-
-        const participant = await CallParticipant.findOne({
-            where: { call_id: callId, user_id: userId },
-        });
-
-        if (!participant){
-            return res.status(404).json({ message: 'You are not invited to this call' });
-        } 
-
-        if (participant.status === 'joined') {
-            return res.status(400).json({ error: 'You have already joined this call' });
-        }
-
-        if (participant.status === 'declined') {
-            return res.status(400).json({ error: 'You have already declined this call' });
-        }
-
-        await CallParticipant.update({ status: 'declined' }, { 
-            where: { call_id: callId, user_id: userId } 
-        });
-
-        await createCallMessage(call, 'declined', req);
-        const callData = call.get({ plain: true });
-
-        if (call.call_mode === 'direct') {
-            
-            await Call.update(
-                { status: 'ended', ended_at: new Date().toISOString(), duration: 0}, { where: { id: callId } }
-            );
-
-            await CallParticipant.update({ status: 'left' }, { 
-                where: { call_id: callId, user_id: call.initiator_id } 
-            });
-
-            io.to(`user_${call.initiator_id}`).emit('call-declined', { callId, userId });
-            io.to(`user_${call.initiator_id}`).emit('call-ended', { callId, reason: 'declined'});
-            io.to(`user_${userId}`).emit('call-ended', { callId, reason: 'declined' });
-
-            console.log(`Direct call ${callId} ended - declined by ${userId}`);
-        } else {
-            io.to(`user_${call.initiator_id}`).emit('call-declined', {callId, userId });
-
-            const remainingParticipants = await CallParticipant.findAll({
-                where: { 
-                    call_id: callId, 
-                    status: { [Op.in]: ['invited', 'joined'] }, 
-                    user_id: { [Op.ne]: userId }
+      if (!callId) return res.status(400).json({ message: 'callId is required' });
+  
+      // Fetch call with aggregation (no populate)
+      const callAggregation = await Call.aggregate([
+        { $match: { _id: new mongoose.Types.ObjectId(callId) } },
+        {
+          $lookup: {
+            from: 'users',
+            localField: 'initiator_id',
+            foreignField: '_id',
+            as: 'initiator_doc'
+          }
+        },
+        { $unwind: { path: '$initiator_doc', preserveNullAndEmptyArrays: true } },
+        {
+          $lookup: {
+            from: 'users',
+            localField: 'receiver_id',
+            foreignField: '_id',
+            as: 'receiver_doc'
+          }
+        },
+        { $unwind: { path: '$receiver_doc', preserveNullAndEmptyArrays: true } },
+        {
+          $lookup: {
+            from: 'groups',
+            localField: 'group_id',
+            foreignField: '_id',
+            as: 'group_doc'
+          }
+        },
+        { $unwind: { path: '$group_doc', preserveNullAndEmptyArrays: true } },
+        {
+          $lookup: {
+            from: 'callparticipants',
+            localField: '_id',
+            foreignField: 'call_id',
+            as: 'participants'
+          }
+        },
+        {
+          $lookup: {
+            from: 'users',
+            localField: 'participants.user_id',
+            foreignField: '_id',
+            as: 'participant_users'
+          }
+        },
+        {
+          $addFields: {
+            participants: {
+              $map: {
+                input: '$participants',
+                as: 'p',
+                in: {
+                  $mergeObjects: [
+                    '$$p',
+                    {
+                      user: {
+                        $arrayElemAt: [
+                          {
+                            $filter: {
+                              input: '$participant_users',
+                              cond: { $eq: ['$$this._id', '$$p.user_id'] }
+                            }
+                          },
+                          0
+                        ]
+                      }
+                    }
+                  ]
                 }
-            });
-
-            const hasActiveParticipants = remainingParticipants.some(p => 
-                p.status === 'joined' && p.user_id !== call.initiator_id
-            );
-
-            const hasInvitedUsers = remainingParticipants.some(p => p.status === 'invited');
-            const shouldEndCall = !hasActiveParticipants && !hasInvitedUsers;
-
-            if(shouldEndCall) {
-                console.log(`All invited users declined call ${callId}, ending call`);
-
-                await Call.update(
-                    { status: 'ended', ended_at: new Date().toISOString(), duration: 0 }, { where: { id: callId } }
-                );
-
-                await CallParticipant.update(
-                    { status: 'left' }, { where: { call_id: callId, status: 'joined' } }
-                );
-
-                await CallParticipant.update(
-                    { status: 'missed' }, { where: { call_id: callId, status: 'invited' } }
-                );
-
-                call.participants.forEach(participant => {
-                    io.to(`user_${participant.user_id}`).emit('call-ended', { 
-                        callId, reason: 'no_participants' 
-                    });
-                });
-            } else {
-                const joinedParticipants = call.participants.filter(p => 
-                    p.status === 'joined' && p.user_id !== userId
-                );
-
-                joinedParticipants.forEach(participant => {
-                    io.to(`user_${participant.user_id}`).emit('participant-declined', {
-                        callId, userId,
-                    });
-                });
+              }
             }
+          }
+        },
+        {
+          $addFields: {
+            initiator: {
+              id: '$initiator_doc._id',
+              name: '$initiator_doc.name',
+              avatar: '$initiator_doc.avatar'
+            },
+            receiver: {
+              $cond: [
+                { $ifNull: ['$receiver_doc', false] },
+                { id: '$receiver_doc._id', name: '$receiver_doc.name', avatar: '$receiver_doc.avatar' },
+                null
+              ]
+            },
+            group: {
+              $cond: [
+                { $ifNull: ['$group_doc', false] },
+                { id: '$group_doc._id', name: '$group_doc.name' },
+                null
+              ]
+            }
+          }
+        },
+        {
+          $project: {
+            _id: 0,
+            id: '$_id',
+            initiator_id: 1,
+            receiver_id: 1,
+            group_id: 1,
+            call_type: 1,
+            call_mode: 1,
+            status: 1,
+            started_at: 1,
+            accepted_time: 1,
+            ended_at: 1,
+            duration: 1,
+            created_at: 1,
+            updated_at: 1,
+            initiator: 1,
+            receiver: 1,
+            group: 1,
+            participants: {
+              call_id: 1,
+              user_id: 1,
+              status: 1,
+              joined_at: 1,
+              left_at: 1,
+              is_muted: 1,
+              is_video_enabled: 1,
+              user: { id: 1, name: 1, avatar: 1 }
+            }
+          }
         }
-
-        res.json({ message: 'Call declined successfully', call: callData });
+      ]);
+  
+      const call = callAggregation[0];
+  
+      if (!call) return res.status(404).json({ message: 'Call not found' });
+  
+      if (call.status !== 'active') {
+        return res.status(400).json({ message: 'Call has already ended' });
+      }
+  
+      const participant = await CallParticipant.findOne({
+        call_id: call.id,
+        user_id: userId
+      }).lean();
+  
+      if (!participant) {
+        return res.status(404).json({ message: 'You are not invited to this call' });
+      }
+  
+      if (participant.status === 'joined') {
+        return res.status(400).json({ message: 'You have already joined this call' });
+      }
+  
+      if (participant.status === 'declined') {
+        return res.status(400).json({ message: 'You have already declined this call' });
+      }
+  
+      await CallParticipant.findOneAndUpdate(
+        { call_id: call.id, user_id: userId },
+        { status: 'declined' }
+      );
+  
+      await createCallMessage(call, 'declined', req);
+  
+      if (call.call_mode === 'direct') {
+        await Call.findByIdAndUpdate(call.id, {
+          status: 'ended',
+          ended_at: new Date(),
+          duration: 0
+        });
+  
+        await CallParticipant.findOneAndUpdate(
+          { call_id: call.id, user_id: call.initiator_id },
+          { status: 'left' }
+        );
+  
+        io.to(`user_${call.initiator_id}`).emit('call-declined', { callId: call.id.toString(), userId: userId.toString() });
+        io.to(`user_${call.initiator_id}`).emit('call-ended', { callId: call.id.toString(), reason: 'declined' });
+        io.to(`user_${userId}`).emit('call-ended', { callId: call.id.toString(), reason: 'declined' });
+      } else {
+        io.to(`user_${call.initiator_id}`).emit('call-declined', { callId: call.id.toString(), userId: userId.toString() });
+  
+        const remaining = await CallParticipant.find({
+          call_id: call.id,
+          status: { $in: ['invited', 'joined'] },
+          user_id: { $ne: userId }
+        }).lean();
+  
+        const hasActive = remaining.some(p => p.status === 'joined' && p.user_id.toString() !== call.initiator_id.toString());
+        const hasInvited = remaining.some(p => p.status === 'invited');
+  
+        if (!hasActive && !hasInvited) {
+          await Call.findByIdAndUpdate(call.id, {
+            status: 'ended',
+            ended_at: new Date(),
+            duration: 0
+          });
+  
+          await CallParticipant.updateMany(
+            { call_id: call.id, status: 'joined' },
+            { status: 'left' }
+          );
+  
+          await CallParticipant.updateMany(
+            { call_id: call.id, status: 'invited' },
+            { status: 'missed' }
+          );
+  
+          call.participants.forEach(p => {
+            io.to(`user_${p.user_id}`).emit('call-ended', { callId: call.id.toString(), reason: 'no_participants' });
+          });
+        } else {
+          const joined = call.participants.filter(p => p.status === 'joined' && p.user_id.toString() !== userId.toString());
+          joined.forEach(p => {
+            io.to(`user_${p.user_id}`).emit('participant-declined', { callId: call.id.toString(), userId: userId.toString() });
+          });
+        }
+      }
+  
+      res.json({ message: 'Call declined successfully', call });
     } catch (error) {
-        console.error('Error in declineCall:', error);
-        res.status(500).json({ message: 'Internal Server Error' });
+      console.error('Error in declineCall:', error);
+      res.status(500).json({ message: 'Internal Server Error' });
     }
 };
 
-exports.endCall = async (req,res) => {
+exports.endCall = async (req, res) => {
     const { callId } = req.body;
-    const userId = req.user.id;
+    const userId = req.user._id;
     const io = req.app.get('io');
-    const attributes = ['id', 'name', 'avatar'];
-
+  
     try {
-        if (!callId) {
-            return res.status(400).json({ message: 'callId is required' });
-        }
-
-        const call = await Call.findByPk(callId, {
-            include: [
-                { model: User, as: 'initiator', attributes },
-                { model: User, as: 'receiver', attributes, required: false },
-                { model: Group, as: 'group', required: false, attributes: ['id', 'name']},
-                {
-                    model: CallParticipant,
-                    as: 'participants',
-                    include: [{ model: User, as: 'user', attributes}],
-                },
-            ]
-        });
-        if(!call) return res.status(404).json({ message: 'Call not found' });
-
-        const userParticipant = await CallParticipant.findOne({
-            where: { call_id: callId, user_id: userId }
-        });
-
-        if (!userParticipant) {
-            return res.status(403).json({ message: 'You are not part of this call' });
-        }
-
-        if (call.status === 'ended') {
-            return res.json({
-                message: 'Call already ended (timeout/no answer).',
-                callEnded: true,
-                duration: call.duration || 0
-            });
-        }
-
-        if (call.status !== 'active') {
-        return res.json({ message: 'Call already ended', callEnded: true });
-        }
-
-        await CallParticipant.update(
-            { status: 'left', left_at: new Date().toISOString() },
-            { where: { call_id: callId, user_id: userId } }
-        );
-
-        const remainingParticipants = await CallParticipant.findAll({
-            where: { call_id: callId, status: 'joined' }
-        });
-
-        const shouldEndCall = remainingParticipants.length < 2;
-        let duration = null;
-
-        if(shouldEndCall){
-            const endTime = new Date();
-           let duration = 0;
-           const realJoiners = remainingParticipants.filter((p) => p.user_id !== call.initiator_id);
-
-           if (realJoiners.length === 0) {
-             duration = 0;
-           } else {
-             const startTime = call.accepted_time || call.started_at;
-             duration = Math.max(1, Math.floor((endTime - new Date(startTime)) / 1000));
-           }
-            
-            await Call.update(
-                { status: 'ended', ended_at: endTime, duration: duration },
-                { where: { id: callId } }
-            );
-
-            await CallParticipant.update(
-                { status: 'left', left_at: endTime },
-                { where: { call_id: callId, status: 'joined' } }
-            );
-
-            await CallParticipant.update(
-                { status: 'missed' },
-                { where: { call_id: callId, status: 'invited' } }
-            );
-
-            const finalCall = await Call.findByPk(callId, {
-                include: [
-                    { model: User, as: 'initiator', attributes },
-                    { model: User, as: 'receiver', attributes, required: false },
-                    { model: Group, as: 'group', required: false, attributes: ['id', 'name'] },
+      if (!callId) return res.status(400).json({ message: 'callId is required' });
+  
+      // Fetch call with aggregation (no populate)
+      const callAggregation = await Call.aggregate([
+        { $match: { _id: new mongoose.Types.ObjectId(callId) } },
+        {
+          $lookup: {
+            from: 'users',
+            localField: 'initiator_id',
+            foreignField: '_id',
+            as: 'initiator_doc'
+          }
+        },
+        { $unwind: { path: '$initiator_doc', preserveNullAndEmptyArrays: true } },
+        {
+          $lookup: {
+            from: 'users',
+            localField: 'receiver_id',
+            foreignField: '_id',
+            as: 'receiver_doc'
+          }
+        },
+        { $unwind: { path: '$receiver_doc', preserveNullAndEmptyArrays: true } },
+        {
+          $lookup: {
+            from: 'groups',
+            localField: 'group_id',
+            foreignField: '_id',
+            as: 'group_doc'
+          }
+        },
+        { $unwind: { path: '$group_doc', preserveNullAndEmptyArrays: true } },
+        {
+          $lookup: {
+            from: 'callparticipants',
+            localField: '_id',
+            foreignField: 'call_id',
+            as: 'participants'
+          }
+        },
+        {
+          $lookup: {
+            from: 'users',
+            localField: 'participants.user_id',
+            foreignField: '_id',
+            as: 'participant_users'
+          }
+        },
+        {
+          $addFields: {
+            participants: {
+              $map: {
+                input: '$participants',
+                as: 'p',
+                in: {
+                  $mergeObjects: [
+                    '$$p',
                     {
-                        model: CallParticipant,
-                        as: 'participants',
-                        where: { status: { [Op.in]: ['joined', 'left'] } },
-                        required: false
-                    },
-                ]
-            });
-
-            await createCallMessage(finalCall, 'ended', req);
-
-            const allParticipants = await CallParticipant.findAll({
-                where: { call_id: callId },
-                include: [{ model: User, as: 'user' }]
-            });
-
-            allParticipants.forEach(participant => {
-                io.to(`user_${participant.user_id}`).emit('call-ended', { 
-                    callId, reason: 'ended', duration: duration
-                });
-            });
-
-            const invitedUsers = await CallParticipant.findAll({
-                where: { call_id: callId, status: 'missed' }
-            });
-
-            invitedUsers.forEach(participant => {
-                io.to(`user_${participant.user_id}`).emit('call-ended', { 
-                    callId, reason: 'ended' 
-                });
-            });
-
-            console.log(`Call ${callId} completely ended by ${userId}`);
-        } else {
-            const leftUser = await User.findByPk(userId, { attributes: ['id', 'name', 'avatar'] });
-
-            remainingParticipants.forEach(participant => {
-                if (participant.user_id !== userId) {
-                    io.to(`user_${participant.user_id}`).emit('participant-left', {
-                        callId,
-                        userId: parseInt(userId, 10),
-                        user: {
-                            userId: parseInt(userId, 10),
-                            name: leftUser?.name || 'Unknown',
-                            avatar: leftUser?.avatar || null,
-                        }
-                    });
+                      user: {
+                        $arrayElemAt: [
+                          {
+                            $filter: {
+                              input: '$participant_users',
+                              cond: { $eq: ['$$this._id', '$$p.user_id'] }
+                            }
+                          },
+                          0
+                        ]
+                      }
+                    }
+                  ]
                 }
-            });
-
-            console.log(`User ${userId} left call ${callId}, ${remainingParticipants.length} still in call`);
+              }
+            }
+          }
+        },
+        {
+          $addFields: {
+            initiator: {
+              id: '$initiator_doc._id',
+              name: '$initiator_doc.name',
+              avatar: '$initiator_doc.avatar'
+            },
+            receiver: {
+              $cond: [
+                { $ifNull: ['$receiver_doc', false] },
+                { id: '$receiver_doc._id', name: '$receiver_doc.name', avatar: '$receiver_doc.avatar' },
+                null
+              ]
+            },
+            group: {
+              $cond: [
+                { $ifNull: ['$group_doc', false] },
+                { id: '$group_doc._id', name: '$group_doc.name' },
+                null
+              ]
+            }
+          }
+        },
+        {
+          $project: {
+            _id: 0,
+            id: '$_id',
+            initiator_id: 1,
+            receiver_id: 1,
+            group_id: 1,
+            call_type: 1,
+            call_mode: 1,
+            status: 1,
+            started_at: 1,
+            accepted_time: 1,
+            ended_at: 1,
+            duration: 1,
+            created_at: 1,
+            updated_at: 1,
+            initiator: 1,
+            receiver: 1,
+            group: 1,
+            participants: {
+              call_id: 1,
+              user_id: 1,
+              status: 1,
+              joined_at: 1,
+              left_at: 1,
+              is_muted: 1,
+              is_video_enabled: 1,
+              user: { id: 1, name: 1, avatar: 1 }
+            }
+          }
         }
-
-        res.json({ 
-            message: shouldEndCall ? 'Call ended successfully' : 'Left call successfully',
-            callEnded: shouldEndCall,
-            duration: shouldEndCall ? duration : null
+      ]);
+  
+      const call = callAggregation[0];
+  
+      if (!call) return res.status(404).json({ message: 'Call not found' });
+  
+      const participant = await CallParticipant.findOne({
+        call_id: call.id,
+        user_id: userId
+      }).lean();
+  
+      if (!participant) {
+        return res.status(403).json({ message: 'You are not part of this call' });
+      }
+  
+      if (call.status === 'ended') {
+        return res.json({ 
+          message: 'Call already ended', 
+          callEnded: true, 
+          duration: call.duration || 0 
         });
+      }
+  
+      await CallParticipant.findOneAndUpdate(
+        { call_id: call.id, user_id: userId },
+        { status: 'left', left_at: new Date() }
+      );
+  
+      const remainingJoined = await CallParticipant.find({
+        call_id: call.id,
+        status: 'joined'
+      }).lean();
+  
+      const shouldEndCall = remainingJoined.length < 2;
+  
+      let duration = null;
+      if (shouldEndCall) {
+        const endTime = new Date();
+        const realJoiners = remainingJoined.filter(p => p.user_id.toString() !== call.initiator_id.toString());
+  
+        let startTime = call.accepted_time || call.started_at;
+        duration = realJoiners.length === 0 ? 0 : Math.max(1, Math.floor((endTime - new Date(startTime)) / 1000));
+  
+        await Call.findByIdAndUpdate(call.id, {
+          status: 'ended',
+          ended_at: endTime,
+          duration
+        });
+  
+        await CallParticipant.updateMany(
+          { call_id: call.id, status: 'joined' },
+          { status: 'left', left_at: endTime }
+        );
+  
+        await CallParticipant.updateMany(
+          { call_id: call.id, status: 'invited' },
+          { status: 'missed' }
+        );
+  
+        // Fetch final call data with aggregation
+        const finalCallAggregation = await Call.aggregate([
+          { $match: { _id: new mongoose.Types.ObjectId(callId) } },
+          // Same full pipeline as above
+          {
+            $lookup: {
+              from: 'users',
+              localField: 'initiator_id',
+              foreignField: '_id',
+              as: 'initiator_doc'
+            }
+          },
+          { $unwind: { path: '$initiator_doc', preserveNullAndEmptyArrays: true } },
+          {
+            $lookup: {
+              from: 'users',
+              localField: 'receiver_id',
+              foreignField: '_id',
+              as: 'receiver_doc'
+            }
+          },
+          { $unwind: { path: '$receiver_doc', preserveNullAndEmptyArrays: true } },
+          {
+            $lookup: {
+              from: 'groups',
+              localField: 'group_id',
+              foreignField: '_id',
+              as: 'group_doc'
+            }
+          },
+          { $unwind: { path: '$group_doc', preserveNullAndEmptyArrays: true } },
+          {
+            $lookup: {
+              from: 'callparticipants',
+              localField: '_id',
+              foreignField: 'call_id',
+              as: 'participants'
+            }
+          },
+          {
+            $lookup: {
+              from: 'users',
+              localField: 'participants.user_id',
+              foreignField: '_id',
+              as: 'participant_users'
+            }
+          },
+          {
+            $addFields: {
+              participants: {
+                $map: {
+                  input: '$participants',
+                  as: 'p',
+                  in: {
+                    $mergeObjects: [
+                      '$$p',
+                      {
+                        user: {
+                          $arrayElemAt: [
+                            {
+                              $filter: {
+                                input: '$participant_users',
+                                cond: { $eq: ['$$this._id', '$$p.user_id'] }
+                              }
+                            },
+                            0
+                          ]
+                        }
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+          },
+          {
+            $addFields: {
+              initiator: {
+                id: '$initiator_doc._id',
+                name: '$initiator_doc.name',
+                avatar: '$initiator_doc.avatar'
+              },
+              receiver: {
+                $cond: [
+                  { $ifNull: ['$receiver_doc', false] },
+                  { id: '$receiver_doc._id', name: '$receiver_doc.name', avatar: '$receiver_doc.avatar' },
+                  null
+                ]
+              },
+              group: {
+                $cond: [
+                  { $ifNull: ['$group_doc', false] },
+                  { id: '$group_doc._id', name: '$group_doc.name' },
+                  null
+                ]
+              }
+            }
+          },
+          {
+            $project: {
+              _id: 0,
+              id: '$_id',
+              initiator_id: 1,
+              receiver_id: 1,
+              group_id: 1,
+              call_type: 1,
+              call_mode: 1,
+              status: 1,
+              started_at: 1,
+              accepted_time: 1,
+              ended_at: 1,
+              duration: 1,
+              created_at: 1,
+              updated_at: 1,
+              initiator: 1,
+              receiver: 1,
+              group: 1,
+              participants: {
+                call_id: 1,
+                user_id: 1,
+                status: 1,
+                joined_at: 1,
+                left_at: 1,
+                is_muted: 1,
+                is_video_enabled: 1,
+                user: { id: 1, name: 1, avatar: 1 }
+              }
+            }
+          }
+        ]);
+  
+        const finalCall = finalCallAggregation[0];
+  
+        await createCallMessage(finalCall, 'ended', req, userId.toString());
+  
+        // Get participant user IDs without populate
+        const participants = await CallParticipant.find({ call_id: call.id }).select('user_id').lean();
+        const participantIds = participants.map(p => p.user_id.toString());
+  
+        participantIds.forEach(uid => {
+          io.to(`user_${uid}`).emit('call-ended', { 
+            callId: call.id.toString(), 
+            reason: 'ended', 
+            duration 
+          });
+        });
+      } else {
+        const leftUser = await User.findById(userId).select('id name avatar').lean();
+  
+        remainingJoined.forEach(p => {
+          if (p.user_id.toString() !== userId.toString()) {
+            io.to(`user_${p.user_id}`).emit('participant-left', {
+              callId: call.id.toString(),
+              userId: userId.toString(),
+              user: {
+                userId: userId.toString(),
+                name: leftUser?.name || 'Unknown',
+                avatar: leftUser?.avatar || null,
+              }
+            });
+          }
+        });
+  
+        await createCallMessage(call, 'ongoing', req, userId.toString());
+      }
+  
+      res.json({
+        message: shouldEndCall ? 'Call ended successfully' : 'Left call successfully',
+        callEnded: shouldEndCall,
+        duration: shouldEndCall ? duration : null
+      });
     } catch (error) {
-        console.error('Error in endCall:', error);
-        res.status(500).json({ message: 'Internal Server Error' });
+      console.error('Error in endCall:', error);
+      res.status(500).json({ message: 'Internal Server Error' });
     }
 };
 
 exports.getCallHistory = async (req, res) => {
-    const userId = req.user.id;
-    const { page = 1, limit = 20, filter = 'all', search='' } = req.query;
-    const offset = (parseInt(page) - 1) * parseInt(limit);
-    const attributes = ['id', 'name', 'avatar', 'email'];
-
+    const userId = req.user._id;
+    const { page = 1, limit = 20, filter = 'all', search = '' } = req.query;
+    const skip = (parseInt(page) - 1) * parseInt(limit);
+  
     try {
-        let callIds = [];
-        
-        const initiatedCalls = await Call.findAll({
-            where: { initiator_id: userId }, attributes: ['id'], raw: true
+      // Get all call IDs user is involved in
+      const [initiated, received, participated] = await Promise.all([
+        Call.find({ initiator_id: userId }).select('_id').lean(),
+        Call.find({ receiver_id: userId }).select('_id').lean(),
+        CallParticipant.find({ user_id: userId }).select('call_id').lean(),
+      ]);
+  
+      const callIds = [
+        ...initiated.map(c => c._id),
+        ...received.map(c => c._id),
+        ...participated.map(p => p.call_id)
+      ];
+  
+      const uniqueCallIds = [...new Set(callIds.map(id => id.toString()))].map(id => new mongoose.Types.ObjectId(id));
+  
+      if (uniqueCallIds.length === 0) {
+        return res.json({
+          calls: {},
+          sectionCounts: { all: 0, incoming: 0, outgoing: 0, missed: 0 },
+          pagination: { currentPage: parseInt(page), totalPages: 0, totalCalls: 0, hasNext: false, hasPrev: false }
         });
-        
-        const receivedCalls = await Call.findAll({
-            where: { receiver_id: userId }, attributes: ['id'], raw: true
+      }
+  
+      // Apply filter
+      let filteredCallIds = uniqueCallIds;
+      if (filter === 'incoming') {
+        const incoming = await Call.find({ _id: { $in: uniqueCallIds }, initiator_id: { $ne: userId } }).select('_id').lean();
+        filteredCallIds = incoming.map(c => c._id);
+      } else if (filter === 'outgoing') {
+        const outgoing = await Call.find({ _id: { $in: uniqueCallIds }, initiator_id: userId }).select('_id').lean();
+        filteredCallIds = outgoing.map(c => c._id);
+      } else if (filter === 'missed') {
+        const missed = await CallParticipant.find({
+          call_id: { $in: uniqueCallIds },
+          user_id: userId,
+          status: 'missed'
+        }).select('call_id').lean();
+        filteredCallIds = missed.map(p => p.call_id);
+      }
+  
+      if (filteredCallIds.length === 0) {
+        return res.json({
+          calls: {},
+          sectionCounts: await getCallSectionCounts(userId),
+          pagination: { currentPage: parseInt(page), totalPages: 0, totalCalls: 0, hasNext: false, hasPrev: false }
         });
-        
-        const participantCalls = await CallParticipant.findAll({
-            where: { user_id: userId }, attributes: ['call_id'], raw: true
-        });
-
-        callIds = [
-            ...initiatedCalls.map(c => c.id),
-            ...receivedCalls.map(c => c.id),
-            ...participantCalls.map(c => c.call_id)
-        ];
-
-        callIds = [...new Set(callIds)];
-
-        if (callIds.length === 0) {
-            return res.json({
-                calls: {},
-                sectionCounts: { all: 0, incoming: 0, outgoing: 0, missed: 0 },
-                pagination: {
-                    currentPage: parseInt(page),
-                    totalPages: 0,
-                    totalCalls: 0,
-                    hasNext: false,
-                    hasPrev: false
-                }
-            });
+      }
+  
+      const calls = await Call.find({ _id: { $in: filteredCallIds } })
+        .populate('initiator', 'id name avatar email')
+        .populate('receiver', 'id name avatar email')
+        .populate('group', 'id name avatar')
+        .populate({
+          path: 'participants',
+          populate: { path: 'user', select: 'id name avatar email' }
+        })
+        .sort({ created_at: -1 })
+        .skip(skip)
+        .limit(parseInt(limit))
+        .lean();
+  
+      const totalCount = await Call.countDocuments({ _id: { $in: filteredCallIds } });
+  
+      const processedCalls = await processCallsForHistory(calls, userId);
+  
+      let finalCalls = processedCalls;
+      if (search.trim()) {
+        finalCalls = processedCalls.filter(call => matchesSearchCriteria(call, search, userId.toString()));
+      }
+  
+      const groupedCalls = groupCallsByDate(finalCalls);
+      const sectionCounts = await getCallSectionCounts(userId);
+  
+      res.json({
+        calls: groupedCalls,
+        sectionCounts,
+        pagination: {
+          currentPage: parseInt(page),
+          totalPages: Math.ceil(totalCount / limit),
+          totalCalls: totalCount,
+          hasNext: skip + calls.length < totalCount,
+          hasPrev: parseInt(page) > 1
         }
-
-        let filteredCallIds = callIds;
-        switch (filter) {
-            case 'incoming':
-                const incomingCalls = await Call.findAll({
-                    where: { id: callIds, initiator_id: { [Op.ne]: userId }},
-                    attributes: ['id'],
-                    raw: true
-                });
-                filteredCallIds = incomingCalls.map(c => c.id);
-                break;
-                
-            case 'outgoing':
-                const outgoingCalls = await Call.findAll({
-                    where: { id: callIds, initiator_id: userId },
-                    attributes: ['id'],
-                    raw: true
-                });
-                filteredCallIds = outgoingCalls.map(c => c.id);
-                break;
-                
-            case 'missed':
-                const missedCalls = await CallParticipant.findAll({
-                    where: { call_id: callIds, user_id: userId, status: 'missed' },
-                    attributes: ['call_id'],
-                    raw: true
-                });
-                filteredCallIds = missedCalls.map(c => c.call_id);
-                break;
-        }
-
-        if (filteredCallIds.length === 0) {
-            return res.json({
-                calls: {},
-                sectionCounts: await getCallSectionCounts(userId),
-                pagination: {
-                    currentPage: parseInt(page),
-                    totalPages: 0,
-                    totalCalls: 0,
-                    hasNext: false,
-                    hasPrev: false
-                }
-            });
-        }
-
-        const { count, rows: calls } = await Call.findAndCountAll({
-            where: { 
-                [Op.and]: [
-                    {id: filteredCallIds },
-                ],
-            },
-            include: [
-                { model: User, as: 'initiator', attributes },
-                { model: User, as: 'receiver', attributes, required: false },
-                { model: Group, as: 'group', attributes: ['id', 'name', 'avatar'], required: false },
-                {
-                    model: CallParticipant,
-                    as: 'participants',
-                    include: [{ model: User, as: 'user', attributes }],
-                    required: false
-                }
-            ],
-            order: [['created_at', 'DESC']],
-            limit: parseInt(limit),
-            offset: offset,
-            distinct: true
-        });
-
-        const processedCalls = await processCallsForHistory(calls, userId);
-
-        let finalProcessedCalls = processedCalls;
-        if (search.trim()) {
-            finalProcessedCalls = processedCalls.filter(call => 
-                matchesSearchCriteria(call, search, userId)
-            );
-        }
-
-        const groupedCalls = groupCallsByDate(finalProcessedCalls);
-        const sectionCounts = await getCallSectionCounts(userId);
-
-        let missedCount = 0;
-
-        if (filter === 'all' || filter === 'outgoing') {
-            const missedOutgoingCalls = await CallParticipant.findAll({
-                where: { call_id: filteredCallIds, status: 'missed', user_id: { [Op.ne]: userId } },
-                attributes: ['call_id'],
-                raw: true
-            });
-
-            missedCount = missedOutgoingCalls.length;
-        }
-
-        if (filter === 'all' || filter === 'incoming') {
-            const missedIncomingCalls = await CallParticipant.findAll({
-                where: { call_id: filteredCallIds, status: 'missed', user_id: userId },
-                attributes: ['call_id'],
-                raw: true
-            });
-            missedCount += missedIncomingCalls.length;
-        }
-
-        sectionCounts.missed = missedCount;
-        
-        res.json({
-            calls: groupedCalls,
-            sectionCounts,
-            pagination: {
-                currentPage: parseInt(page),
-                totalPages: Math.ceil(count / limit),
-                totalCalls: count,
-                hasNext: offset + calls.length < count,
-                hasPrev: parseInt(page) > 1
-            }
-        });
+      });
     } catch (error) {
-        console.error('Error in getCallHistory:', error);
-        res.status(500).json({ message: 'Internal Server Error' });
+      console.error('Error in getCallHistory:', error);
+      res.status(500).json({ message: 'Internal Server Error' });
     }
 };
