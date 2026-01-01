@@ -343,16 +343,16 @@ async function getUserRelations(userId) {
   return { hiddenSet, archivedSet, friendIds, blockedUsers, blockedGroups, pinnedSet, pinnedTimeMap, mutedMap, favoriteSet,};
 }
 
-async function getLatestMessage( conv, currentUserId, pinnedSet, pinnedTimeMap, mutedMap, blockedUsers, blockedGroups, archivedSet, favoriteSet ) {
+async function getLatestMessage(conv, currentUserId, pinnedSet, pinnedTimeMap, mutedMap, blockedUsers, blockedGroups, archivedSet, favoriteSet) {
   const isDM = conv.type === 'direct';
   const isAnnouncement = conv.type === 'announcement';
   const isBroadcast = conv.type === 'broadcast';
   const isGroup = conv.type === 'group';
 
   const currentUserSetting = await UserSetting.findOne({ user_id: currentUserId })
-    .select('chat_lock_enabled locked_chat_ids');
+    .select('chat_lock_enabled locked_chat_ids').lean();
 
-  let isLocked = isLockedChat(currentUserSetting, conv.type, conv.id);
+  const isLocked = isLockedChat(currentUserSetting, conv.type, conv.id);
 
   let chatSetting = null;
   if (!isAnnouncement) {
@@ -366,13 +366,146 @@ async function getLatestMessage( conv, currentUserId, pinnedSet, pinnedTimeMap, 
             group_id: null,
           }
         : { group_id: conv.id, recipient_id: null }
-    );
+    ).lean();
   }
 
   let userSetting = null;
   if (isDM) {
     userSetting = await UserSetting.findOne({ user_id: conv.id })
-      .select('last_seen profile_pic display_bio read_receipts typing_indicator hide_phone');
+      .select('last_seen profile_pic display_bio read_receipts typing_indicator hide_phone')
+      .lean();
+
+    if (userSetting) {
+      userSetting.id = userSetting._id.toString();
+      delete userSetting._id;
+    }
+  }
+
+  if (isBroadcast) {
+    const broadcastData = await Broadcast.aggregate([
+      { $match: { _id: new mongoose.Types.ObjectId(conv.id) } },
+      { $lookup: { from: 'broadcast_members', localField: '_id', foreignField: 'broadcast_id', as: 'recipients_raw' }},
+      { $lookup: { from: 'users', localField: 'recipients_raw.recipient_id', foreignField: '_id', as: 'recipient_docs' }},
+      {
+        $addFields: {
+          recipients: {
+            $map: {
+              input: '$recipients_raw',
+              as: 'rec',
+              in: {
+                $let: {
+                  vars: {
+                    userDoc: {
+                      $arrayElemAt: [{ $filter: { input: '$recipient_docs', cond: { $eq: ['$$this._id', '$$rec.recipient_id']}}}, 0,],
+                    },
+                  },
+                  in: { id: '$$userDoc._id', name: '$$userDoc.name', avatar: '$$userDoc.avatar' },
+                },
+              },
+            },
+          },
+        },
+      },
+      { $project: { name: 1, created_at: 1, recipients: 1 } },
+    ]);
+
+    const broadcast = broadcastData[0];
+    if (!broadcast) return null;
+
+    const clearEntry = await ChatClear.findOne({ user_id: currentUserId, broadcast_id: conv.id }).lean();
+
+    const messageMatch = {
+      sender_id: currentUserId,
+      'metadata.is_broadcast': true,
+      'metadata.broadcast_id': conv.id.toString(),
+    };
+
+    if (clearEntry) {
+      messageMatch.created_at = { $gt: clearEntry.cleared_at };
+    }
+
+    const deletedMessages = await MessageAction.find({
+      user_id: currentUserId,
+      action_type: 'delete',
+      'details.type': 'me',
+      'details.is_broadcast_view': true,
+    }).select('message_id').lean();
+
+    const deletedIds = deletedMessages.map(d => d.message_id);
+    if (deletedIds.length > 0) {
+      messageMatch._id = { $nin: deletedIds };
+    }
+
+    const latestMessages = await Message.aggregate([
+      { $match: messageMatch },
+      { $sort: { created_at: -1 } },
+      { $limit: 1 },
+      { $lookup: { from: 'users', localField: 'sender_id', foreignField: '_id', as: 'sender_doc' } },
+      { $unwind: { path: '$sender_doc', preserveNullAndEmptyArrays: true } },
+      {
+        $addFields: {
+          id: { $toString: '$_id' },
+          sender: { id: { $toString: '$sender_doc._id' }, name: '$sender_doc.name', avatar: '$sender_doc.avatar' },
+        },
+      },
+      {
+        $project: {
+          _id: 0,
+          id: 1,
+          content: 1,
+          message_type: 1,
+          file_url: 1,
+          file_type: 1,
+          metadata: 1,
+          created_at: 1,
+          sender: 1,
+        },
+      },
+    ]);
+
+    const latest = latestMessages[0] || null;
+
+    if (latest) {
+      const deletedForEveryone = await MessageAction.findOne({
+        message_id: latest.id,
+        action_type: 'delete',
+        'details.type': 'everyone',
+      }).lean();
+
+      if (deletedForEveryone) {
+        latest.content = 'This message was deleted';
+      }
+    }
+
+    const recipients = broadcast.recipients.filter(r => r && r.id).map(r => ({
+      id: r.id.toString(),
+      name: r.name,
+      avatar: r.avatar,
+    }));
+
+    const favoriteKey = `broadcast:${conv.id}`;
+    const muteKey = `broadcast:${conv.id}`;
+
+    return {
+      chat_type: 'broadcast',
+      chat_id: conv.id,
+      name: broadcast.name || 'Broadcast',
+      avatar: null,
+      lastMessage: latest,
+      recipient_count: recipients.length,
+      recipients,
+      unreadCount: 0,
+      isArchived: archivedSet.has(`broadcast:${conv.id}`),
+      isFavorite: favoriteSet.has(favoriteKey),
+      isMuted: mutedMap.has(muteKey),
+      isPinned: pinnedSet.has(`broadcast:${conv.id}`),
+      pinned_at: pinnedTimeMap.get(`broadcast:${conv.id}`) || null,
+      isBroadcast: true,
+      isGroup: false,
+      isAnnouncement: false,
+      isLocked,
+      created_at: broadcast.created_at,
+    };
   }
 
   let messageMatch = {};
@@ -387,52 +520,44 @@ async function getLatestMessage( conv, currentUserId, pinnedSet, pinnedTimeMap, 
       message_type: { $ne: 'system' },
     };
   } else if (isAnnouncement) {
-    messageMatch = {
-      recipient_id: null,
-      group_id: null,
-      'metadata.sent_by_admin': '1',
-    };
+    messageMatch = { message_type: 'announcement', recipient_id: null, group_id: null,};
   } else if (isGroup) {
-    messageMatch = { group_id: conv.id };
-  } else if (isBroadcast) {
-    messageMatch = {
-      sender_id: currentUserId,
-      'metadata.is_broadcast': true,
-      'metadata.broadcast_id': conv.id,
-    };
+    messageMatch = { group_id: new mongoose.Types.ObjectId(conv.id), };
   }
 
   const clearEntry = !isAnnouncement
     ? await ChatClear.findOne(
-        isDM
-          ? { user_id: currentUserId, recipient_id: conv.id }
-          : { user_id: currentUserId, group_id: conv.id }
-      )
+        isDM ? { user_id: currentUserId, recipient_id: conv.id } : { user_id: currentUserId, group_id: conv.id }
+      ).lean()
     : null;
 
   if (clearEntry) {
     messageMatch.created_at = { $gt: clearEntry.cleared_at };
   }
 
-  // Handle group leave
+  let leftAt = null;
   if (isGroup) {
-    const member = await GroupMember.findOne({ group_id: conv.id, user_id: currentUserId });
+    const member = await GroupMember.findOne({ group_id: conv.id, user_id: currentUserId }).lean();
     if (!member) {
       const leaveMessage = await Message.findOne({
         group_id: conv.id,
         message_type: 'system',
         'metadata.system_action': 'member_left',
         'metadata.user_id': currentUserId,
-      })
-        .sort({ created_at: -1 })
-        ;
+      }).sort({ created_at: -1 }).lean();
 
       if (leaveMessage) {
-        messageMatch.created_at = { $lte: leaveMessage.created_at };
+        leftAt = leaveMessage.created_at;
       } else {
         return null;
       }
     }
+  }
+
+  if (leftAt) {
+    messageMatch.created_at = messageMatch.created_at
+      ? { $and: [messageMatch.created_at, { $lte: leftAt }] }
+      : { $lte: leftAt };
   }
 
   const deletedMessages = await MessageAction.find({
@@ -440,42 +565,98 @@ async function getLatestMessage( conv, currentUserId, pinnedSet, pinnedTimeMap, 
     action_type: 'delete',
     'details.type': 'me',
     'details.is_broadcast_view': false,
-  }).select('message_id');
+  }).select('message_id').lean();
 
   const deletedIds = deletedMessages.map(d => d.message_id);
   if (deletedIds.length > 0) {
     messageMatch._id = { $nin: deletedIds };
   }
+  const latestMessages = await Message.aggregate([
+    { $match: messageMatch },
+    
+    { $sort: { created_at: -1 } },
+    { $limit: 1 },
+    { $lookup: { from: 'users', localField: 'sender_id', foreignField: '_id', as: 'sender_doc' } },
+    { $unwind: { path: '$sender_doc', preserveNullAndEmptyArrays: true } },
+    { $lookup: { from: 'users', localField: 'recipient_id', foreignField: '_id', as: 'recipient_doc' } },
+    { $unwind: { path: '$recipient_doc', preserveNullAndEmptyArrays: true } },
+    { $lookup: { from: 'groups', localField: 'group_id', foreignField: '_id', as: 'group_doc' } },
+    { $unwind: { path: '$group_doc', preserveNullAndEmptyArrays: true } },
+    {
+      $addFields: {
+        id: { $toString: '$_id' },
+        sender: {
+          id: { $toString: '$sender_doc._id' },
+          name: '$sender_doc.name',
+          avatar: '$sender_doc.avatar',
+          phone: '$sender_doc.phone',
+        },
+        recipient: {
+          id: { $toString: '$recipient_doc._id' },
+          name: '$recipient_doc.name',
+          avatar: '$recipient_doc.avatar',
+          phone: '$recipient_doc.phone',
+        },
+        group: {
+          id: { $toString: '$group_doc._id' },
+          name: '$group_doc.name',
+          avatar: '$group_doc.avatar',
+        },
+      },
+    },
+    {
+      $project: {
+        _id: 0,
+        id: 1,
+        sender_id: 1,
+        recipient_id: 1,
+        group_id: 1,
+        content: 1,
+        message_type: 1,
+        file_url: 1,
+        file_type: 1,
+        mentions: 1,
+        has_unread_mentions: 1,
+        metadata: 1,
+        is_encrypted: 1,
+        created_at: 1,
+        updated_at: 1,
+        deleted_at: 1,
+        sender: 1,
+        recipient: 1,
+        group: 1,
+      },
+    },
+  ]);
 
-  const latest = await Message.findOne(messageMatch)
-    .sort({ created_at: -1 })
-    .populate('sender', 'id name avatar phone')
-    .populate('recipient', 'id name avatar phone')
-    .populate('group', 'id name avatar');
-
+  const latest = latestMessages[0] || null;
+  
   let groupMentionMap = new Map();
 
   if (isGroup) {
-    const groupMemberShip = await GroupMember.find({ user_id: currentUserId })
-      .populate('group', 'id name avatar description created_by created_at');
+    const groupMemberShip = await GroupMember.aggregate([
+      { $match: { user_id: currentUserId } },
+      { $lookup: { from: 'groups', localField: 'group_id', foreignField: '_id', as: 'group_doc' } },
+      { $unwind: { path: '$group_doc', preserveNullAndEmptyArrays: true } },
+    ]);
 
-    const groupIds = groupMemberShip.map(gm => gm.group_id);
+    const groupIds = groupMemberShip.map(gm => gm.group_id.toString());
 
     const groupMentions = await Promise.all(
       groupIds.map(async groupId => {
         const unreadCount = await Message.countDocuments({
-          group_id: groupId,
+          group_id: new mongoose.Types.ObjectId(groupId),
           sender_id: { $ne: currentUserId },
           has_unread_mentions: true,
-        }).hint({ group_id: 1, has_unread_mentions: 1 });
+        });
 
         const hasSeen = await MessageStatus.countDocuments({
-          'message.group_id': groupId,
+          'message.group_id': new mongoose.Types.ObjectId(groupId),
           user_id: currentUserId,
           status: 'seen',
         });
 
-        return { groupId: groupId.toString(), hasUnreadMentions: unreadCount > hasSeen };
+        return { groupId, hasUnreadMentions: unreadCount > hasSeen };
       })
     );
 
@@ -484,17 +665,17 @@ async function getLatestMessage( conv, currentUserId, pinnedSet, pinnedTimeMap, 
     });
   }
 
-  const systemSettings = await Setting.findOne().select('app_name');
+  const systemSettings = await Setting.findOne().select('app_name').lean();
+
+  const info = isDM || isAnnouncement
+    ? await User.findById(conv.id).select('id name email bio avatar phone is_verified').lean()
+    : await Group.findById(conv.id).select('id name avatar').lean();
 
   if (!latest && clearEntry && !isAnnouncement) {
-    const info = isDM || isAnnouncement
-      ? await User.findById(conv.id).select('id name email bio avatar phone is_verified')
-      : await Group.findById(conv.id).select('id name avatar');
-
     return {
       chat_type: isAnnouncement ? 'direct' : conv.type,
       chat_id: conv.id,
-      name: isAnnouncement ? systemSettings.app_name : info?.name,
+      name: isAnnouncement ? systemSettings?.app_name || 'Announcements' : info?.name,
       phone: info?.phone || null,
       email: info?.email || null,
       bio: info?.bio || null,
@@ -510,42 +691,30 @@ async function getLatestMessage( conv, currentUserId, pinnedSet, pinnedTimeMap, 
       isAnnouncement: conv.type === 'announcement',
       isBroadcast: false,
       isLocked,
-      disappearing: {
-        enabled: false,
-        duration: null,
-        expire_after_seconds: null,
-      },
+      disappearing: { enabled: false, duration: null, expire_after_seconds: null },
     };
   }
 
   if (!latest) return null;
 
   const deletedForEveryone = await MessageAction.findOne({
-    message_id: latest._id,
+    message_id: latest.id,
     action_type: 'delete',
     'details.type': 'everyone',
-  });
+  }).lean();
 
   if (deletedForEveryone) {
     latest.content = 'This message was deleted';
   } else if (latest.message_type === 'system') {
     let metadata = latest.metadata || {};
     if (typeof metadata === 'string') {
-      try {
-        metadata = JSON.parse(metadata);
-      } catch (e) {
-        metadata = {};
-      }
+      try { metadata = JSON.parse(metadata); } catch (e) { metadata = {}; }
     }
 
-    if (metadata.system_action) {
-      if (metadata.system_action === 'member_left' && metadata.user_id?.toString() === currentUserId?.toString()) {
-        latest.content = 'You left the group';
-      } else if (metadata.system_action === 'group_created' && metadata.creator_user_id?.toString() === currentUserId?.toString()) {
-        latest.content = 'You created this group.';
-      } else {
-        latest.content = latest.content || 'System message';
-      }
+    if (metadata.system_action === 'member_left' && metadata.user_id?.toString() === currentUserId.toString()) {
+      latest.content = 'You left the group';
+    } else if (metadata.system_action === 'group_created' && metadata.creator_user_id?.toString() === currentUserId.toString()) {
+      latest.content = 'You created this group.';
     }
   }
 
@@ -553,13 +722,13 @@ async function getLatestMessage( conv, currentUserId, pinnedSet, pinnedTimeMap, 
     ? await MessageStatus.countDocuments({
         user_id: currentUserId,
         status: { $ne: 'seen' },
-        message_id: latest._id,
+        message_id: latest.id,
       })
     : 0;
 
   const avatar = isAnnouncement
     ? latest.sender?.avatar
-    : (userSetting && userSetting.profile_pic === false ? null : latest.sender?.avatar || null);
+    : (userSetting?.profile_pic === false ? null : latest.sender?.avatar || null);
 
   const favoriteKey = isDM ? `user:${conv.id}` : `${conv.type}:${conv.id}`;
   const muteKey = isDM ? `user:${conv.id}` : `${conv.type}:${conv.id}`;
@@ -575,13 +744,13 @@ async function getLatestMessage( conv, currentUserId, pinnedSet, pinnedTimeMap, 
   const result = {
     chat_type: isAnnouncement ? 'direct' : conv.type,
     chat_id: conv.id,
-    name: isAnnouncement ? systemSettings.app_name : latest.sender?.name || latest.group?.name,
-    email: latest.sender?.email || null,
-    bio: latest.sender?.bio || null,
-    phone: latest.sender?.phone || null,
+    name: isAnnouncement ? systemSettings?.app_name || 'Announcements' : info?.name,
+    email: info?.email || null,
+    bio: info?.bio || null,
+    phone: info?.phone || null,
     avatar,
-    status: latest.sender?.status || null,
-    is_verified: latest.sender?.is_verified || false,
+    status: info?.status || null,
+    is_verified: info?.is_verified || false,
     lastMessage: latest,
     userSetting,
     unreadCount,
@@ -612,27 +781,13 @@ async function getLatestMessage( conv, currentUserId, pinnedSet, pinnedTimeMap, 
 
 async function fetchRecentChat(currentUserId, page = 1, limit = 20, options = {}) {
   const relations = await getUserRelations(currentUserId);
-  const { hiddenSet, archivedSet, friendIds, blockedUsers, blockedGroups, pinnedSet, pinnedTimeMap, mutedMap, favoriteSet,} = relations;
+  const { hiddenSet, archivedSet, blockedUsers, blockedGroups, pinnedSet, pinnedTimeMap, mutedMap, favoriteSet } = relations;
 
   const directConvos = await Message.aggregate([
-    {
-      $match: {
-        group_id: null,
-        $or: [
-          { sender_id: currentUserId, recipient_id: { $in: Array.from(friendIds) } },
-          { recipient_id: currentUserId, sender_id: { $in: Array.from(friendIds) } },
-        ],
-      },
-    },
+    { $match: { group_id: null, $or: [{ sender_id: currentUserId }, { recipient_id: currentUserId }]}},
     {
       $group: {
-        _id: {
-          $cond: [
-            { $eq: ['$sender_id', currentUserId] },
-            '$recipient_id',
-            '$sender_id',
-          ],
-        },
+        _id: { $cond: [{ $eq: ['$sender_id', currentUserId] }, '$recipient_id', '$sender_id'] },
         last_activity: { $max: '$created_at' },
       },
     },
@@ -645,109 +800,71 @@ async function fetchRecentChat(currentUserId, page = 1, limit = 20, options = {}
     return !hiddenSet.has(hiddenKey) && !archivedSet.has(archivedKey);
   });
 
-  // Groups
-  const membershipGroupIds = await GroupMember.find({ user_id: currentUserId })
-    .distinct('group_id')
-    ;
+  const membershipGroupIds = await GroupMember.find({ user_id: currentUserId }).distinct('group_id');
+  const messageGroupIds = await Message.distinct('group_id', { sender_id: currentUserId, group_id: { $ne: null } });
+  const statusGroupIds = await MessageStatus.distinct('message.group_id', { user_id: currentUserId });
 
-  const groupMessageIds = await Message.distinct('group_id', { sender_id: currentUserId, group_id: { $ne: null } });
-  const groupStatusIds = await MessageStatus.distinct('message.group_id', { user_id: currentUserId });
-
-  const allGroupIds = [...new Set([...membershipGroupIds, ...groupMessageIds, ...groupStatusIds])];
+  const allGroupIds = [...new Set([...membershipGroupIds, ...messageGroupIds, ...statusGroupIds])].map(id => id?.toString()).filter(Boolean);
 
   const groupExcludeIds = [
     ...Array.from(hiddenSet).filter(x => x.startsWith('group_')).map(x => x.replace('group_', '')),
     ...Array.from(archivedSet).filter(x => x.startsWith('group:')).map(x => x.replace('group:', '')),
   ];
 
-  const groupIdsFiltered = allGroupIds.filter(id => !groupExcludeIds.includes(id.toString()));
+  const groupIdsFiltered = allGroupIds.filter(id => !groupExcludeIds.includes(id));
 
-  const groupConvos = groupIdsFiltered.length
+  const groupConvos = groupIdsFiltered.length > 0
     ? await Message.aggregate([
-        { $match: { group_id: { $in: groupIdsFiltered } } },
-        {
-          $group: {
-            _id: '$group_id',
-            last_activity: { $max: '$created_at' },
-          },
-        },
+        { $match: { group_id: { $in: groupIdsFiltered.map(id => new mongoose.Types.ObjectId(id)) } } },
+        { $group: { _id: '$group_id', last_activity: { $max: '$created_at' } } },
         { $sort: { last_activity: -1 } },
       ])
     : [];
 
-  // Broadcasts
-  const userBroadcasts = await Broadcast.find({ creator_id: currentUserId });
-  const broadcastIds = userBroadcasts.map(b => b._id);
+  const userBroadcasts = await Broadcast.find({ creator_id: currentUserId }).lean();
+  const broadcastIds = userBroadcasts.map(b => b._id.toString());
 
-  const broadcastConvos = broadcastIds.length
+  const broadcastExcludeIds = Array.from(hiddenSet).filter(x => x.startsWith('broadcast_')).map(x => x.replace('broadcast_', ''));
+  const filteredBroadcastIds = broadcastIds.filter(id => !broadcastExcludeIds.includes(id));
+
+  const broadcastConvos = filteredBroadcastIds.length > 0
     ? await Message.aggregate([
-        {
-          $match: {
-            sender_id: currentUserId,
-            'metadata.system_action': 'broadcast_created',
-            'metadata.broadcast_id': { $in: broadcastIds.map(id => id.toString()) },
-          },
-        },
-        {
-          $group: {
-            _id: '$metadata.broadcast_id',
-            last_activity: { $max: '$created_at' },
-          },
-        },
+        { $match: { 'metadata.broadcast_id': { $in: filteredBroadcastIds } } },
+        { $group: { _id: '$metadata.broadcast_id', last_activity: { $max: '$created_at' } } },
       ])
     : [];
 
-  // Announcements
+  const adminUser = await User.findOne({role: 'super_admin'});
+  const adminObjectId = new mongoose.Types.ObjectId(adminUser._id);
+
   const announcementData = await Message.aggregate([
-    {
-      $match: {
-        recipient_id: null,
-        group_id: null,
-        'metadata.sent_by_admin': '1',
-      },
-    },
-    {
-      $group: {
-        _id: '$sender_id',
-        last_activity: { $max: '$created_at' },
-        announcement_count: { $sum: 1 },
-      },
-    },
+    { $match: { recipient_id: null, group_id: null, 'metadata.sent_by_admin': adminObjectId } },
+    { $group: { _id: '$sender_id', last_activity: { $max: '$created_at' }, announcement_count: { $sum: 1 } } },
   ]);
 
   const allConvos = [
     ...directList.map(dc => ({ type: 'direct', id: dc._id })),
-    ...groupConvos.map(gc => ({ type: 'group', id: gc._id })),
+    ...groupConvos.map(gc => ({ type: 'group', id: gc._id.toString() })),
     ...broadcastConvos.map(bc => ({ type: 'broadcast', id: bc._id })),
   ];
 
   announcementData.forEach(row => {
     const hiddenKey = `user${row._id}`;
     if (!hiddenSet.has(hiddenKey)) {
-      allConvos.push({
-        type: 'announcement',
-        id: row._id,
-        last_activity: row.last_activity,
-        announcement_count: row.announcement_count,
-      });
+      allConvos.push({ type: 'announcement', id: row._id.toString() });
     }
   });
 
-  const messages = (
-    await Promise.all(
-      allConvos.map(conv =>
-        getLatestMessage(conv, currentUserId, pinnedSet, pinnedTimeMap, mutedMap, blockedUsers, blockedGroups, archivedSet, favoriteSet)
-      )
-    )
-  ).filter(Boolean);
+  const messages = (await Promise.all(
+    allConvos.map(
+      conv => getLatestMessage(conv, currentUserId, pinnedSet, pinnedTimeMap, mutedMap, blockedUsers, blockedGroups, archivedSet, favoriteSet)
+    )  
+  )).filter(Boolean);
 
   messages.sort((a, b) => {
-    if (a.isPinned && b.isPinned) {
-      return (b.pinned_at || 0) - (a.pinned_at || 0);
-    }
+    if (a.isPinned && b.isPinned) return (b.pinned_at || 0) - (a.pinned_at || 0);
     if (a.isPinned) return -1;
     if (b.isPinned) return 1;
-
     const aTime = a.lastMessage ? new Date(a.lastMessage.created_at).getTime() : 0;
     const bTime = b.lastMessage ? new Date(b.lastMessage.created_at).getTime() : 0;
     return bTime - aTime;
@@ -760,13 +877,7 @@ async function fetchRecentChat(currentUserId, page = 1, limit = 20, options = {}
 
   return {
     messages: paginated,
-    pagination: {
-      page,
-      limit,
-      totalCount,
-      totalPages,
-      hasMore: page < totalPages,
-    },
+    pagination: { page, limit, totalCount, totalPages, hasMore: page < totalPages },
   };
 }
 
