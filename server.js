@@ -8,13 +8,13 @@ const PORT = process.env.PORT || 3000;
 
 const createDefaultAdmin = require('./utils/createDefaultAdmin');
 // Cron jobs
-// const scheduler = require('./cron/backupScheduler');
-// const statusExpiryScheduler = require('./cron/deleteExpiredStatus');
-// const expiredMuteChat = require('./cron/expiredMuteChat');
-// const { deleteClearedMessages } = require('./cron/deleteClearMessage');
-// const deleteExpiredOtp = require('./cron/deleteExpiredOtps');
-// const deleteExpiredMessage = require('./cron/deleteExpiredMessage');
-// const expiredPinnedMessages = require('./cron/expiredPinnedMessage');
+const scheduler = require('./cron/backupScheduler');
+const statusExpiryScheduler = require('./cron/deleteExpiredStatus');
+const expiredMuteChat = require('./cron/expiredMuteChat');
+const { deleteClearedMessages } = require('./cron/deleteClearMessage');
+const deleteExpiredOtp = require('./cron/deleteExpiredOtps');
+const deleteExpiredMessage = require('./cron/deleteExpiredMessage');
+const expiredPinnedMessages = require('./cron/expiredPinnedMessage');
 
 const server = http.createServer(app);
 const { Server } = require('socket.io');
@@ -40,13 +40,13 @@ connectDB()
 
     await createDefaultAdmin();
 
-    // scheduler.start();
-    // statusExpiryScheduler.start();
-    // expiredMuteChat(io);
-    // expiredPinnedMessages(io);
-    // deleteClearedMessages();
-    // deleteExpiredOtp.start();
-    // deleteExpiredMessage.start(io);
+    scheduler.start();
+    statusExpiryScheduler.start();
+    expiredMuteChat(io);
+    expiredPinnedMessages(io);
+    deleteClearedMessages();
+    deleteExpiredOtp.start();
+    deleteExpiredMessage.start(io);
 
     app.set('io', io);
 

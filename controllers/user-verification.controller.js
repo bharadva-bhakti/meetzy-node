@@ -1,12 +1,12 @@
 const mongoose = require('mongoose');
 const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
 const paypal = require('@paypal/checkout-server-sdk');
-
-const VerificationRequest = require('../models/VerificationRequest');
-const User = require('../models/User');
-const Payment = require('../models/Payment');
-const Plan = require('../models/Plan');
-const Subscription = require('../models/Subscription');
+const { db } = require('../models');
+const VerificationRequest = db.VerificationRequest;
+const User = db.User;
+const Payment = db.Payment;
+const Plan = db.Plan;
+const Subscription = db.Subscription;
 
 const {
     initiateGatewayPayment, 

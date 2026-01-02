@@ -1,35 +1,34 @@
 const cron = require('node-cron');
-const { Message, MessageDisappearing, MessageAction } = require('../models');
-const { Op } = require('sequelize');
 const fs = require('fs');
+const { db } = require('../models');
+const MessageDisappearing = db.MessageDisappearing;
+const Message = db.Message;
+const MessageAction = db.MessageAction;
 const { getConversationData, getTargetUsers, createSocketPayload } = require('../helper/messageHelpers');
 
 module.exports.start = (io) => {
-  cron.schedule('0 * * * *', async () => {
+  cron.schedule('* * * * *', async () => {
     try {
       const now = new Date();
-      
-      const expiredMessages = await MessageDisappearing.findAll({
-        where: { expire_at: {[Op.lte]: now }},
-        raw: true
-      });
 
-      if (!expiredMessages.length) {
+      const expiredMessages = await MessageDisappearing.find({
+        expire_at: { $lte: now }
+      }).lean();
+
+      if (expiredMessages.length === 0) {
         console.log('No expired messages found.');
         return;
       }
 
       const messageIds = expiredMessages.map(m => m.message_id);
 
-      const messages = await Message.findAll({
-        where: { id: messageIds },
-        order: [['created_at', 'DESC']]
-      });
-  
-      if (!messages.length) return;
-      
-      const { newPrevMessagesMap } =
-      await getConversationData(messages, messageIds);
+      const messages = await Message.find({ _id: { $in: messageIds } })
+        .sort({ created_at: -1 })
+        .lean();
+
+      if (messages.length === 0) return;
+
+      const { newPrevMessagesMap } = await getConversationData(messages, messageIds);
 
       const deleteActions = [];
       const socketEvents = [];
@@ -39,7 +38,7 @@ module.exports.start = (io) => {
 
         for (const targetUserId of targetUsers) {
           deleteActions.push({
-            message_id: message.id,
+            message_id: message._id,
             user_id: targetUserId,
             action_type: 'delete',
             details: {
@@ -54,7 +53,7 @@ module.exports.start = (io) => {
             targetUserId,
             newPrevMessagesMap,
             'delete-for-me',
-            false 
+            false
           );
 
           payload.deletedBySystem = true;
@@ -70,13 +69,15 @@ module.exports.start = (io) => {
         }
       }
 
-      await MessageAction.bulkCreate(deleteActions, { ignoreDuplicates: true });
-  
+      if (deleteActions.length > 0) {
+        await MessageAction.insertMany(deleteActions);
+      }
+
       socketEvents.forEach(e => {
         io.to(e.room).emit('message-deleted', e.payload);
       });
-      
-      await Message.destroy({ where: { id: messageIds }, force: true });
+
+      await Message.deleteMany({ _id: { $in: messageIds } });
       console.log(`Deleted ${messageIds.length} expired messages successfully ✔`);
     } catch (error) {
       console.error('Error deleting expired messages:', error);
