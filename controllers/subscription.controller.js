@@ -1,6 +1,8 @@
 const mongoose = require('mongoose');
 const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
 const paypal = require('@paypal/checkout-server-sdk');
+const fetch = require('node-fetch');
+
 const { getEffectiveLimits } = require('../utils/userLimits');
 const { db } = require('../models');
 const VerificationRequest = db.VerificationRequest;
@@ -150,7 +152,6 @@ exports.getSubscriptionDetails = async (req, res) => {
   const userId = req.user._id;
 
   try {
-    // Validate both IDs
     if (!mongoose.Types.ObjectId.isValid(id)) {
       return res.status(400).json({ message: 'Invalid subscription ID' });
     }
@@ -181,6 +182,7 @@ exports.getSubscriptionDetails = async (req, res) => {
             {
               $project: {
                 id: '$_id',
+                _id: 0,
                 name: 1,
                 slug: 1,
                 description: 1,
@@ -216,6 +218,7 @@ exports.getSubscriptionDetails = async (req, res) => {
             {
               $project: {
                 id: '$_id',
+                _id: 0,
                 amount: 1,
                 status: 1,
                 payment_gateway: 1,
@@ -284,12 +287,8 @@ exports.cancelSubscription = async (req, res) => {
   const { subscription_id } = req.body;
   const userId = req.user._id;
 
-  const session = await mongoose.startSession();
-  session.startTransaction();
-
   try {
     if (!mongoose.Types.ObjectId.isValid(subscription_id)) {
-      await session.abortTransaction();
       return res.status(400).json({ success: false, message: 'Invalid subscription ID' });
     }
 
@@ -297,42 +296,72 @@ exports.cancelSubscription = async (req, res) => {
       _id: subscription_id,
       user_id: userId,
       status: { $in: ['active', 'past_due', 'trialing'] },
-    }).session(session);
+    }).lean();
 
     if (!subscription) {
-      await session.abortTransaction();
       return res.status(404).json({
         success: false,
         message: 'Active subscription not found',
       });
     }
 
+    // Stripe cancellation
     if (subscription.payment_gateway === 'stripe' && subscription.stripe_subscription_id) {
-      await stripe.subscriptions.update(subscription.stripe_subscription_id, {
-        cancel_at_period_end: true,
-      });
-    } else if (subscription.payment_gateway === 'paypal' && subscription.paypal_subscription_id) {
-      const request = new paypal.subscriptions.SubscriptionsCancelRequest(
-        subscription.paypal_subscription_id
-      );
-      request.requestBody({ reason: 'Cancelled by user' });
-
       try {
-        await paypalClient.execute(request);
-      } catch (paypalError) {
-        console.error('PayPal cancellation error:', paypalError);
-        // Continue — PayPal might already be cancelled
+        await stripe.subscriptions.update(subscription.stripe_subscription_id, {
+          cancel_at_period_end: true,
+        });
+        console.log('Stripe subscription scheduled for cancellation');
+      } catch (stripeError) {
+        console.error('Stripe cancellation error:', stripeError);
       }
     }
 
-    subscription.cancel_at_period_end = true;
-    await subscription.save({ session });
+    // PayPal cancellation — using fetch (most reliable)
+    if (subscription.payment_gateway === 'paypal' && subscription.paypal_subscription_id) {
+      try {
+        // Get access token using the client
+        const tokenResponse = await paypalClient.execute(new paypal.core.GenerateAccessTokenRequest());
+        const accessToken = tokenResponse.result.access_token;
 
-    await session.commitTransaction();
+        const baseUrl = process.env.PAYPAL_MODE === 'live'
+          ? 'https://api-m.paypal.com'
+          : 'https://api-m.sandbox.paypal.com';
+
+        const url = `${baseUrl}/v1/billing/subscriptions/${subscription.paypal_subscription_id}/cancel`;
+
+        const response = await fetch(url, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${accessToken}`,
+          },
+          body: JSON.stringify({
+            reason: 'User requested cancellation',
+          }),
+        });
+
+        if (response.status === 204) {
+          console.log('PayPal subscription cancelled successfully');
+        } else {
+          const errorData = await response.json().catch(() => ({}));
+          console.error('PayPal cancellation failed:', response.status, errorData);
+        }
+      } catch (paypalError) {
+        console.error('PayPal cancellation error:', paypalError);
+        // Continue — user intent fulfilled
+      }
+    }
+
+    // Update DB
+    await Subscription.updateOne(
+      { _id: subscription._id },
+      { cancel_at_period_end: true }
+    );
 
     return res.json({
       success: true,
-      message: 'Subscription will be cancelled at the end of billing period',
+      message: 'Subscription will be cancelled at the end of the billing period',
       data: {
         subscription_id: subscription._id.toString(),
         cancel_at_period_end: true,
@@ -341,15 +370,12 @@ exports.cancelSubscription = async (req, res) => {
       },
     });
   } catch (error) {
-    await session.abortTransaction();
     console.error('Error cancelling subscription:', error);
     return res.status(500).json({
       success: false,
       message: 'Failed to cancel subscription',
-      error: error.message,
+      error: error.message || 'Unknown error',
     });
-  } finally {
-    session.endSession();
   }
 };
 

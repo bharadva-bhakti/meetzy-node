@@ -28,6 +28,7 @@
     "mongoose": "^9.0.2",
     "multer": "^2.0.2",
     "node-cron": "^4.2.1",
+    "node-fetch": "^3.3.2",
     "nodemailer": "^7.0.9",
     "razorpay": "^2.9.6",
     "sanitize-html": "^2.17.0",
