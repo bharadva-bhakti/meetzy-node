@@ -275,9 +275,9 @@ async function processCallsForHistory(calls, userId) {
         const duration = formatCallDuration(call.duration);
         const participantNames = getParticipantNames(call, userId.toString());
         const isGroupCall = call.call_mode === 'group';
-
+        
         return {
-        id: call._id.toString(),
+        id: call.id.toString(),
         callType: call.call_type,
         callMode: call.call_mode,
         duration: duration,
@@ -338,17 +338,22 @@ function formatCallDuration(duration) {
 }
   
 function getParticipantNames(call, userId) {
-    if (call.call_mode === 'direct') {
-      return call.initiator_id?.toString() === userId 
-        ? [call.receiver?.name || 'Unknown User'] 
-        : [call.initiator?.name || 'Unknown User'];
-    } else {
-      const otherParticipants = (call.participants || [])
-        .filter(p => p.user_id?.toString() !== userId && p.user)
-        .map(p => p.user.name);
-  
-      return otherParticipants.length > 0 ? otherParticipants : ['Group Call'];
-    }
+  if (call.call_mode === 'direct') {
+    const other = call.initiator_id?.toString() === userId 
+      ? call.receiver 
+      : call.initiator;
+    return other ? [other.name || 'Unknown User'] : ['Unknown User'];
+  }
+
+  const names = (call.participants || [])
+    .filter(p => {
+      const pid = p.user_id?.toString();
+      return pid && pid !== userId && p.user && p.user.name;
+    })
+    .map(p => p.user.name)
+    .filter(Boolean);
+
+  return names.length > 0 ? names : ['Group Call'];
 }
   
 function groupCallsByDate(calls) {
@@ -383,59 +388,113 @@ function groupCallsByDate(calls) {
 }
   
 async function getCallSectionCounts(userId, search = '') {
-    try {
-      const [initiated, received, participated] = await Promise.all([
-        Call.find({ initiator_id: userId }).select('_id').lean(),
-        Call.find({ receiver_id: userId }).select('_id').lean(),
-        CallParticipant.find({ user_id: userId }).select('call_id').lean(),
-      ]);
-  
-      let callIds = [
-        ...initiated.map(c => c._id),
-        ...received.map(c => c._id),
-        ...participated.map(p => p.call_id)
-      ];
-  
-      callIds = [...new Set(callIds.map(id => id.toString()))];
-  
-      if (callIds.length === 0) {
-        return { all: 0, incoming: 0, outgoing: 0, missed: 0 };
-      }
-  
-      const allCalls = await Call.find({ _id: { $in: callIds.map(id => new mongoose.Types.ObjectId(id)) } })
-        .populate('initiator', 'id name email')
-        .populate('receiver', 'id name email')
-        .populate('group', 'id name')
-        .populate({
-          path: 'participants',
-          populate: { path: 'user', select: 'id name email' }
-        })
-        .lean();
-  
-      const processedCalls = await processCallsForHistory(allCalls, userId.toString());
-  
-      let filteredCalls = processedCalls;
-      if (search.trim()) {
-        filteredCalls = processedCalls.filter(call => 
-          matchesSearchCriteria(call, search, userId.toString())
-        );
-      }
-  
-      const allCount = filteredCalls.length;
-      const outgoingCount = filteredCalls.filter(call => call.direction === 'outgoing').length;
-      const incomingCount = filteredCalls.filter(call => call.direction === 'incoming').length;
-      const missedCount = filteredCalls.filter(call => call.status === 'missed').length;
-  
-      return {
-        all: allCount,
-        incoming: incomingCount,
-        outgoing: outgoingCount,
-        missed: missedCount
-      };
-    } catch (error) {
-      console.error('Error getting call section counts:', error);
+  try {
+    const [initiated, received, participated] = await Promise.all([
+      Call.find({ initiator_id: userId }).select('_id').lean(),
+      Call.find({ receiver_id: userId }).select('_id').lean(),
+      CallParticipant.find({ user_id: userId }).select('call_id').lean(),
+    ]);
+
+    const callIds = [
+      ...initiated.map(c => c._id),
+      ...received.map(c => c._id),
+      ...participated.map(p => p.call_id),
+    ];
+
+    const uniqueCallIds = [...new Set(callIds.map(id => id.toString()))]
+      .map(id => new mongoose.Types.ObjectId(id));
+
+    if (uniqueCallIds.length === 0) {
       return { all: 0, incoming: 0, outgoing: 0, missed: 0 };
     }
+
+    const allCalls = await Call.aggregate([
+      { $match: { _id: { $in: uniqueCallIds } } },
+      { $lookup: { from: 'users', localField: 'initiator_id', foreignField: '_id', as: 'initiator_doc' } },
+      { $unwind: { path: '$initiator_doc', preserveNullAndEmptyArrays: true } },
+      { $lookup: { from: 'users', localField: 'receiver_id', foreignField: '_id', as: 'receiver_doc' } },
+      { $unwind: { path: '$receiver_doc', preserveNullAndEmptyArrays: true } },
+      { $lookup: { from: 'groups', localField: 'group_id', foreignField: '_id', as: 'group_doc' } },
+      { $unwind: { path: '$group_doc', preserveNullAndEmptyArrays: true } },
+      { $lookup: { from: 'callparticipants', localField: '_id', foreignField: 'call_id', as: 'participants' } },
+      { $lookup: { from: 'users', localField: 'participants.user_id', foreignField: '_id', as: 'participant_users' } },
+      {
+        $addFields: {
+          participants: {
+            $map: {
+              input: '$participants',
+              as: 'p',
+              in: {
+                $mergeObjects: [
+                  '$$p',
+                  {
+                    user: {
+                      $arrayElemAt: [ { $filter: { input: '$participant_users', cond: { $eq: ['$$this._id', '$$p.user_id']}}}, 0 ]
+                    }
+                  }
+                ]
+              }
+            }
+          }
+        }
+      },
+      {
+        $addFields: {
+          initiator: { id: '$initiator_doc._id', name: '$initiator_doc.name', email: '$initiator_doc.email' },
+          receiver: {
+            $cond: [
+              { $ifNull: ['$receiver_doc', false] },
+              { id: '$receiver_doc._id', name: '$receiver_doc.name', email: '$receiver_doc.email' },
+              null
+            ]
+          },
+          group: {$cond: [ { $ifNull: ['$group_doc', false] }, { id: '$group_doc._id', name: '$group_doc.name' }, null ]}
+        }
+      },
+      {
+        $project: {
+          _id: 0,
+          id: { $toString: '$_id' },
+          initiator_id: 1,
+          receiver_id: 1,
+          group_id: 1,
+          call_type: 1,
+          call_mode: 1,
+          status: 1,
+          duration: 1,
+          created_at: 1,
+          initiator: 1,
+          receiver: 1,
+          group: 1,
+          participants: { user_id: 1, status: 1, user: { name: 1, email: 1 }}
+        }
+      }
+    ]);
+
+    const processedCalls = await processCallsForHistory(allCalls, userId.toString());
+
+    let filteredCalls = processedCalls;
+    if (search.trim()) {
+      filteredCalls = processedCalls.filter(call =>
+        matchesSearchCriteria(call, search, userId.toString())
+      );
+    }
+
+    const allCount = filteredCalls.length;
+    const outgoingCount = filteredCalls.filter(call => call.direction === 'outgoing').length;
+    const incomingCount = filteredCalls.filter(call => call.direction === 'incoming').length;
+    const missedCount = filteredCalls.filter(call => call.status === 'missed').length;
+
+    return {
+      all: allCount,
+      incoming: incomingCount,
+      outgoing: outgoingCount,
+      missed: missedCount
+    };
+  } catch (error) {
+    console.error('Error getting call section counts:', error);
+    return { all: 0, incoming: 0, outgoing: 0, missed: 0 };
+  }
 }
   
 module.exports = {
