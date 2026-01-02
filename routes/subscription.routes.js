@@ -4,6 +4,7 @@ const { authenticate, authorizeRoles } = require('../middlewares/auth');
 const subscriptionController = require('../controllers/subscription.controller');
 
 router.get('/my', authenticate, subscriptionController.getMySubscription);
+router.get('/limits', authenticate, subscriptionController.getUserLimits);
 router.get('/:id', authenticate, subscriptionController.getSubscriptionDetails); 
 router.post('/cancel', authenticate, subscriptionController.cancelSubscription); 
 router.get('/payments/:subscription_id', authenticate, subscriptionController.getSubscriptionPayments); 

@@ -14,6 +14,7 @@ async function getEffectiveLimits(userId, userRole = 'user') {
     status_limit_per_day: globalSettings?.status_limit || 3,
     max_storage_per_user_mb: 5000,
     allow_media_send: globalSettings?.allow_media_send ?? true,
+    video_calls_enabled: globalSettings?.video_calls_enabled ?? true,
   };
 
   if (userRole === 'super_admin') {
@@ -25,6 +26,7 @@ async function getEffectiveLimits(userId, userRole = 'user') {
       status_limit_per_day: Infinity,
       max_storage_per_user_mb: Infinity,
       allow_media_send: true,
+      video_calls_enabled: true
     };
   }
 
@@ -48,6 +50,7 @@ async function getEffectiveLimits(userId, userRole = 'user') {
     status_limit_per_day: plan.max_status ?? defaults.status_limit_per_day,
     max_storage_per_user_mb: plan.max_storage_per_user_mb ?? defaults.max_storage_per_user_mb,
     allow_media_send: plan.allows_file_sharing ?? defaults.allow_media_send,
+    video_calls_enabled: plan.video_calls_enabled ?? defaults.video_calls_enabled
   };
 }
 
