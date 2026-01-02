@@ -2,7 +2,7 @@ const cron = require('node-cron');
 const { db } = require('../models');
 const OTPLog = db.OTPLog;
 
-const deleteExpiredOtp = cron.schedule('* * * * *', async () => {
+const deleteExpiredOtp = cron.schedule('0 * * * *', async () => {
   try {
     console.log('Running Cron: Delete expired OTPs...');
 

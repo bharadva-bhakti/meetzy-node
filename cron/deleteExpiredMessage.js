@@ -7,7 +7,7 @@ const MessageAction = db.MessageAction;
 const { getConversationData, getTargetUsers, createSocketPayload } = require('../helper/messageHelpers');
 
 module.exports.start = (io) => {
-  cron.schedule('* * * * *', async () => {
+  cron.schedule('0 * * * *', async () => {
     try {
       const now = new Date();
 

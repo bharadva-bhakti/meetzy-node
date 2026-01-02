@@ -5,7 +5,7 @@ const MessageAction = db.MessageAction;
 const ChatClear = db.ChatClear;
 
 exports.deleteClearedMessages = () => {
-  cron.schedule('* * * * *', async () => {
+  cron.schedule('0 * * * *', async () => {
     console.log('Running auto cleanup...');
 
     try {

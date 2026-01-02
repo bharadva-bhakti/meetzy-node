@@ -7,7 +7,7 @@ const { createBackupZip } = require('../services/backupService');
 const { uploadFileToDrive } = require('../services/driveService');
 
 function start() {
-  cron.schedule('* * * * *', async () => {
+  cron.schedule('0 2 * * *', async () => {
     try {
       const tokens = await GoogleToken.find().select('user_id').lean();
 

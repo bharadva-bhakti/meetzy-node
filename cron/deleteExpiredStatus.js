@@ -5,7 +5,7 @@ const { db } = require('../models');
 const Status = db.Status;
 
 function start() {
-  cron.schedule('* * * * *', async () => {
+  cron.schedule('0 * * * *', async () => {
     const now = new Date();
 
     try {
