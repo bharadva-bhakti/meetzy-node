@@ -60,7 +60,7 @@ app.get('/api/demo', (req, res) => {
   return res.json({ demo: process.env.DEMO === 'true' });
 });
 
-// app.get('/auth/google/callback', authController.saveToken);
+app.get('/auth/google/callback', authController.saveToken);
 app.post('/api/send-test-email', authController.sendTestMail);
 app.use('/api/auth', authRoutes);
 app.use('/api/account', accountRoutes);

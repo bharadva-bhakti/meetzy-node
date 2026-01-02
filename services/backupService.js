@@ -31,11 +31,7 @@ async function createBackupZip(userId) {
         {
           $and: [
             { $or: [{ sender_id: userId }, { recipient_id: userId }] },
-            {
-              recipient_id: {
-                $nin: clearedUserIds.length ? clearedUserIds : [null]
-              }
-            }
+            { recipient_id: { $nin: clearedUserIds.length ? clearedUserIds : [null] }}
           ]
         },
         {
@@ -45,12 +41,10 @@ async function createBackupZip(userId) {
           }
         }
       ]
-    })
-      .sort({ created_at: 1 })
-      .populate('sender', 'id name email')
-      .populate('recipient', 'id name email')
-      .populate('group', 'id name')
-      .lean();
+    }).sort({ created_at: 1 })
+    .populate({ path: 'sender_id', select: 'id name email' })
+    .populate({ path: 'recipient_id', select: 'id name email' })
+    .populate({ path: 'group_id', select: 'id name' }).lean();
 
     const docMessages = includeDocs ? allMessages.filter(m => m.message_type === 'document' && m.file_url) : [];
     const videoMessages = includeVideo ? allMessages.filter(m => m.message_type === 'video' && m.file_url) : [];

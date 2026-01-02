@@ -9,7 +9,6 @@ const Payment = db.Payment;
 const Plan = db.Plan;
 const Subscription = db.Subscription;
 
-// PayPal setup
 const paypalEnvironment = process.env.PAYPAL_MODE === 'live'
   ? new paypal.core.LiveEnvironment(
       process.env.PAYPAL_CLIENT_ID,
@@ -25,29 +24,109 @@ exports.getMySubscription = async (req, res) => {
   const userId = req.user._id;
 
   try {
-    const subscription = await Subscription.findOne({
-      user_id: userId,
-      status: { $in: ['active', 'past_due', 'trialing'] },
-    })
-      .populate({
-        path: 'plan',
-        select: 'id name slug description max_members_per_group max_groups max_broadcasts_list max_members_per_broadcasts_list max_status allows_file_sharing price_per_user_per_month price_per_user_per_year billing_cycle status is_default trial_period_days features video_calls_enabled',
-      })
-      .populate({
-        path: 'verificationRequest',
-        select: 'request_id status category',
-      })
-      .populate({
-        path: 'payments',
-        select: 'id amount status completed_at subscription_payment_sequence',
-        options: { sort: { completed_at: -1 }, limit: 5 },
-      })
-      .sort({ created_at: -1 })
-      .lean();
+    const subscriptions = await Subscription.aggregate([
+      {
+        $match: {
+          user_id: new mongoose.Types.ObjectId(userId),
+          status: { $in: ['active', 'past_due', 'trialing'] },
+        },
+      },
+      { $sort: { created_at: -1 } },
+      { $limit: 1 },
+      {
+        $lookup: {
+          from: 'plans',
+          localField: 'plan_id',
+          foreignField: '_id',
+          as: 'plan',
+          pipeline: [
+            {
+              $project: {
+                id: '$_id',
+                _id: 0,
+                name: 1,
+                slug: 1,
+                description: 1,
+                max_members_per_group: 1,
+                max_groups: 1,
+                max_broadcasts_list: 1,
+                max_members_per_broadcasts_list: 1,
+                max_status: 1,
+                allows_file_sharing: 1,
+                price_per_user_per_month: 1,
+                price_per_user_per_year: 1,
+                billing_cycle: 1,
+                status: 1,
+                is_default: 1,
+                trial_period_days: 1,
+                features: 1,
+                video_calls_enabled: 1,
+              },
+            },
+          ],
+        },
+      },
+      { $unwind: { path: '$plan', preserveNullAndEmptyArrays: true } },
+      {
+        $lookup: {
+          from: 'verification_requests',
+          localField: 'verification_request_id',
+          foreignField: '_id',
+          as: 'verificationRequest',
+          pipeline: [{ $project: { id: '$_id', _id: 0,request_id: 1, status: 1, category: 1 } }],
+        },
+      },
+      { $unwind: { path: '$verificationRequest', preserveNullAndEmptyArrays: true } },
+      {
+        $lookup: {
+          from: 'payments',
+          localField: '_id',
+          foreignField: 'subscription_id',
+          as: 'payments',
+          pipeline: [
+            { $match: { status: 'completed' }},
+            { $project: { id: '$_id', _id: 0, amount: 1, status: 1, completed_at: 1, subscription_payment_sequence: 1 }},
+            { $sort: { completed_at: -1 } },
+            { $limit: 5 },
+          ],
+        },
+      },
+    ]);
 
-    const user = await User.findById(userId)
-      .select('id is_verified verified_at stripe_customer_id')
-      .lean();
+    const subscription = subscriptions[0] || null;
+
+    const user = await User.findById(userId).select('id is_verified verified_at stripe_customer_id').lean();
+
+    if (!subscription) {
+      return res.json({
+        success: true,
+        data: {
+          user: {
+            is_verified: user?.is_verified || false,
+            verified_at: user?.verified_at || null,
+            stripe_customer_id: user?.stripe_customer_id || null,
+          },
+          subscription: null,
+        },
+      });
+    }
+
+    const transformedSubscription = {
+      id: subscription._id.toString(),
+      status: subscription.status,
+      billing_cycle: subscription.billing_cycle,
+      amount: subscription.amount,
+      currency: subscription.currency,
+      current_period_start: subscription.current_period_start,
+      current_period_end: subscription.current_period_end,
+      cancel_at_period_end: subscription.cancel_at_period_end,
+      payment_gateway: subscription.payment_gateway,
+      stripe_subscription_id: subscription.stripe_subscription_id,
+      paypal_subscription_id: subscription.paypal_subscription_id,
+      plan: subscription.plan || null,
+      verification_request: subscription.verificationRequest || null,
+      recent_payments: subscription.payments || [],
+    };
 
     return res.json({
       success: true,
@@ -57,24 +136,7 @@ exports.getMySubscription = async (req, res) => {
           verified_at: user?.verified_at || null,
           stripe_customer_id: user?.stripe_customer_id || null,
         },
-        subscription: subscription
-          ? {
-              id: subscription._id.toString(),
-              status: subscription.status,
-              billing_cycle: subscription.billing_cycle,
-              amount: subscription.amount,
-              currency: subscription.currency,
-              current_period_start: subscription.current_period_start,
-              current_period_end: subscription.current_period_end,
-              cancel_at_period_end: subscription.cancel_at_period_end,
-              payment_gateway: subscription.payment_gateway,
-              stripe_subscription_id: subscription.stripe_subscription_id,
-              paypal_subscription_id: subscription.paypal_subscription_id,
-              plan: subscription.plan,
-              verification_request: subscription.verificationRequest,
-              recent_payments: subscription.payments || [],
-            }
-          : null,
+        subscription: transformedSubscription,
       },
     });
   } catch (error) {
@@ -88,40 +150,127 @@ exports.getSubscriptionDetails = async (req, res) => {
   const userId = req.user._id;
 
   try {
+    // Validate both IDs
     if (!mongoose.Types.ObjectId.isValid(id)) {
       return res.status(400).json({ message: 'Invalid subscription ID' });
     }
 
-    const subscription = await Subscription.findOne({
-      _id: id,
-      user_id: userId,
-    })
-      .populate({
-        path: 'plan',
-        select: 'id name slug description',
-      })
-      .populate({
-        path: 'verificationRequest',
-        select: 'request_id status category',
-      })
-      .populate({
-        path: 'payments',
-        select: 'id amount status payment_gateway gateway_payment_id completed_at failure_reason subscription_payment_sequence gateway_response',
-        options: { sort: { created_at: -1 } },
-      })
-      .lean();
-
-    if (!subscription) {
-      return res.status(404).json({ message: 'Subscription not found' });
+    if (!mongoose.Types.ObjectId.isValid(userId)) {
+      return res.status(400).json({ message: 'Invalid user ID' });
     }
 
-    // Transform _id to id
+    const subscriptionId = new mongoose.Types.ObjectId(id);
+    const userObjectId = new mongoose.Types.ObjectId(userId);
+
+    const subscriptions = await Subscription.aggregate([
+      {
+        $match: {
+          _id: subscriptionId,
+          user_id: userObjectId,
+        },
+      },
+
+      // Lookup Plan
+      {
+        $lookup: {
+          from: 'plans',
+          localField: 'plan_id',
+          foreignField: '_id',
+          as: 'plan',
+          pipeline: [
+            {
+              $project: {
+                id: '$_id',
+                name: 1,
+                slug: 1,
+                description: 1,
+              },
+            },
+          ],
+        },
+      },
+      { $unwind: { path: '$plan', preserveNullAndEmptyArrays: true } },
+
+      // Lookup Verification Request
+      {
+        $lookup: {
+          from: 'verificationrequests',
+          localField: 'verification_request_id',
+          foreignField: '_id',
+          as: 'verificationRequest',
+          pipeline: [
+            { $project: { request_id: 1, status: 1, category: 1 } },
+          ],
+        },
+      },
+      { $unwind: { path: '$verificationRequest', preserveNullAndEmptyArrays: true } },
+
+      // Lookup Payments
+      {
+        $lookup: {
+          from: 'payments',
+          localField: '_id',
+          foreignField: 'subscription_id',
+          as: 'payments',
+          pipeline: [
+            {
+              $project: {
+                id: '$_id',
+                amount: 1,
+                status: 1,
+                payment_gateway: 1,
+                gateway_payment_id: 1,
+                completed_at: 1,
+                failure_reason: 1,
+                subscription_payment_sequence: 1,
+                gateway_response: 1,
+                created_at: 1,
+              },
+            },
+            { $sort: { created_at: -1 } },
+          ],
+        },
+      },
+    ]);
+
+    const subscription = subscriptions[0];
+
+    if (!subscription) {
+      return res.status(404).json({ message: 'Subscription not found or does not belong to you' });
+    }
+
     const result = {
-      ...subscription,
       id: subscription._id.toString(),
-      _id: undefined,
-      plan: subscription.plan ? { ...subscription.plan, id: subscription.plan._id.toString(), _id: undefined } : null,
-      payments: subscription.payments?.map(p => ({ ...p, id: p._id.toString(), _id: undefined })) || [],
+      user_id: subscription.user_id.toString(),
+      plan_id: subscription.plan_id?.toString() || null,
+      payment_gateway: subscription.payment_gateway,
+      billing_cycle: subscription.billing_cycle,
+      amount: subscription.amount,
+      currency: subscription.currency,
+      status: subscription.status,
+      current_period_start: subscription.current_period_start,
+      current_period_end: subscription.current_period_end,
+      cancel_at_period_end: subscription.cancel_at_period_end,
+      stripe_subscription_id: subscription.stripe_subscription_id,
+      paypal_subscription_id: subscription.paypal_subscription_id,
+      verification_request_id: subscription.verification_request_id?.toString() || null,
+      created_at: subscription.created_at,
+      updated_at: subscription.updated_at,
+
+      plan: subscription.plan || null,
+      verification_request: subscription.verificationRequest || null,
+      payments: subscription.payments.map(p => ({
+        id: p.id.toString(),
+        amount: p.amount,
+        status: p.status,
+        payment_gateway: p.payment_gateway,
+        gateway_payment_id: p.gateway_payment_id,
+        completed_at: p.completed_at,
+        failure_reason: p.failure_reason,
+        subscription_payment_sequence: p.subscription_payment_sequence,
+        gateway_response: p.gateway_response,
+        created_at: p.created_at,
+      })),
     };
 
     return res.json({ data: result });

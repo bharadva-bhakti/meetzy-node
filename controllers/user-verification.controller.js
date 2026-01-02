@@ -8,24 +8,8 @@ const Payment = db.Payment;
 const Plan = db.Plan;
 const Subscription = db.Subscription;
 
-const {
-    initiateGatewayPayment, 
-    verifyGatewayPayment, 
-    handleStripePaymentSuccess, 
-    handleStripePaymentFailure,
-    handleStripePaymentCanceled, 
-    handlePayPalPaymentSuccess, 
-    handlePayPalPaymentFailure, 
-    createStripeSubscription, 
-    createPayPalSubscription,
-    handleStripeInvoicePaymentSucceeded,
-    handleStripeInvoicePaymentFailed,
-    handleStripeSubscriptionUpdated,
-    handleStripeSubscriptionDeleted,
-    handlePayPalSubscriptionPayment,
-    handlePayPalSubscriptionActivated,
-    handlePayPalSubscriptionCancelled,
-    calculateNextBillingDate
+const { 
+  initiateGatewayPayment, verifyGatewayPayment, createStripeSubscription, createPayPalSubscription,calculateNextBillingDate
 } = require('../helper/paymentHelpers');
 
 exports.initiateVerification = async (req, res) => {
@@ -33,47 +17,33 @@ exports.initiateVerification = async (req, res) => {
   const { full_name, category, currency = 'USD', payment_gateway, plan_slug, billing_cycle = 'monthly' } = req.body;
   let amount = req.body.amount;
 
-  const session = await mongoose.startSession();
-  session.startTransaction();
-
   try {
     if (!full_name || !category || !payment_gateway) {
-      await session.abortTransaction();
       return res.status(400).json({ message: 'full_name, category, and payment_gateway are required' });
     }
 
     const validGateways = ['stripe', 'paypal'];
     if (!validGateways.includes(payment_gateway.toLowerCase())) {
-      await session.abortTransaction();
       return res.status(400).json({ message: 'Invalid payment gateway. Must be stripe or paypal' });
     }
 
-    const user = await User.findById(userId).session(session);
+    const user = await User.findById(userId);
     if (!user) {
-      await session.abortTransaction();
       return res.status(404).json({ message: 'User not found.' });
     }
 
     if (user.is_verified && !plan_slug) {
-      await session.abortTransaction();
       return res.status(400).json({ message: 'User is already verified. To subscribe to a plan, please select a plan.' });
     }
 
     if (!user.is_verified) {
-      const existingRequest = await VerificationRequest.findOne({
-        user_id: userId,
-        status: { $in: ['pending', 'approved'] },
-      }).session(session);
-
-      if (existingRequest) {
-        if (existingRequest.status === 'approved') {
-          await session.abortTransaction();
-          return res.status(400).json({ message: 'User is already verified' });
-        }
-        if (existingRequest.status === 'pending') {
-          await session.abortTransaction();
-          return res.status(400).json({ message: 'Verification request already submitted.' });
-        }
+      const existingRequest = await VerificationRequest.findOne({ user_id: userId, status: { $in: ['pending', 'approved'] }});
+      if (existingRequest?.status === 'approved') {
+        return res.status(400).json({ message: 'User is already verified' });
+      }
+      
+      if (existingRequest?.status === 'pending') {
+        return res.status(400).json({ message: 'Verification request already submitted.' });
       }
     }
 
@@ -82,36 +52,25 @@ exports.initiateVerification = async (req, res) => {
     let verificationSource = 'user_paid';
 
     if (plan_slug) {
-      plan = await Plan.findOne({
-        slug: plan_slug,
-        status: 'active',
-      }).session(session);
-
+      plan = await Plan.findOne({ slug: plan_slug, status: 'active' });
       if (!plan) {
-        await session.abortTransaction();
         return res.status(404).json({ message: 'Plan not found or inactive' });
       }
 
       const existingSubscription = await Subscription.findOne({
         user_id: userId,
         status: { $in: ['active', 'past_due', 'trialing'] },
-      }).session(session);
+      });
 
       if (existingSubscription) {
-        await session.abortTransaction();
         return res.status(400).json({
           message: 'You already have an active subscription. Please cancel your current subscription before subscribing to a new plan.',
         });
       }
 
-      let calculatedAmount;
-      if (billing_cycle === 'yearly') {
-        calculatedAmount = plan.getYearlyPrice();
-      } else {
-        calculatedAmount = plan.price_per_user_per_month;
-      }
+      const calculatedAmount = billing_cycle === 'yearly' ? plan.getYearlyPrice() : plan.price_per_user_per_month;
 
-      subscription = await Subscription.create([{
+      subscription = await Subscription.create({
         user_id: userId,
         plan_id: plan._id,
         payment_gateway: payment_gateway.toLowerCase(),
@@ -119,13 +78,13 @@ exports.initiateVerification = async (req, res) => {
         amount: calculatedAmount,
         currency,
         status: 'incomplete',
-      }], { session })[0];
+      });
 
       verificationSource = 'subscription';
       amount = calculatedAmount;
     }
 
-    const payment = await Payment.create([{
+    const payment = await Payment.create({
       user_id: userId,
       amount,
       currency,
@@ -136,153 +95,67 @@ exports.initiateVerification = async (req, res) => {
       subscription_id: subscription?._id || null,
       is_recurring: !!subscription,
       subscription_payment_sequence: subscription ? 1 : null,
-    }], { session })[0];
+    });
 
     let verification = null;
     if (!user.is_verified) {
-      verification = await VerificationRequest.create([{
+      verification = await VerificationRequest.create({
         user_id: userId,
         full_name,
         category,
-        document_type: null,
-        document_front: null,
-        document_back: null,
-        selfie: null,
         status: 'pending',
         payment_id: payment._id,
         verification_source: verificationSource,
         subscription_id: subscription?._id || null,
-      }], { session })[0];
+      });
 
-      await Payment.updateOne(
-        { _id: payment._id },
-        { reference_id: verification._id },
-        { session }
-      );
+      await Payment.updateOne({ _id: payment._id }, { reference_id: verification._id });
 
       if (subscription) {
-        await Subscription.updateOne(
-          { _id: subscription._id },
-          { verification_request_id: verification._id },
-          { session }
-        );
+        await Subscription.updateOne({ _id: subscription._id }, { verification_request_id: verification._id });
       }
     } else if (subscription) {
-      await Subscription.updateOne(
-        { _id: subscription._id },
-        { verification_request_id: null },
-        { session }
-      );
+      await Subscription.updateOne({ _id: subscription._id },{ verification_request_id: null });
     }
-
-    await session.commitTransaction();
 
     let paymentData;
     try {
       if (subscription) {
         if (payment_gateway.toLowerCase() === 'stripe') {
           paymentData = await createStripeSubscription(subscription, payment, user, plan);
+          await Payment.updateOne(
+            { _id: payment._id },
+            { gateway_order_id: paymentData.gateway_order_id || paymentData.checkout_session_id }
+          );
 
-          const updateSession = await mongoose.startSession();
-          updateSession.startTransaction();
-          try {
-            await Payment.updateOne(
-              { _id: payment._id },
-              { gateway_order_id: paymentData.gateway_order_id || paymentData.checkout_session_id },
-              { session: updateSession }
-            );
-            await updateSession.commitTransaction();
-          } catch (updateError) {
-            await updateSession.abortTransaction();
-            console.error('Error updating Stripe IDs:', updateError);
-          } finally {
-            updateSession.endSession();
-          }
         } else if (payment_gateway.toLowerCase() === 'paypal') {
           paymentData = await createPayPalSubscription(subscription, payment, user, plan);
-
-          const updateSession = await mongoose.startSession();
-          updateSession.startTransaction();
-          try {
-            await Subscription.updateOne(
-              { _id: subscription._id },
-              { paypal_subscription_id: paymentData.subscriptionId },
-              { session: updateSession }
-            );
-            await Payment.updateOne(
-              { _id: payment._id },
-              { gateway_order_id: paymentData.gateway_order_id },
-              { session: updateSession }
-            );
-            await updateSession.commitTransaction();
-          } catch (updateError) {
-            await updateSession.abortTransaction();
-            console.error('Error updating PayPal IDs:', updateError);
-          } finally {
-            updateSession.endSession();
-          }
+          await Subscription.updateOne({ _id: subscription._id }, { paypal_subscription_id: paymentData.subscriptionId });
+          await Payment.updateOne({ _id: payment._id },{ gateway_order_id: paymentData.gateway_order_id });
         }
       } else {
         paymentData = await initiateGatewayPayment(payment, parseFloat(amount), user);
-
-        const updateSession = await mongoose.startSession();
-        updateSession.startTransaction();
-        try {
-          await Payment.updateOne(
-            { _id: payment._id },
-            { gateway_order_id: paymentData.gateway_order_id },
-            { session: updateSession }
-          );
-          await updateSession.commitTransaction();
-        } catch (updateError) {
-          await updateSession.abortTransaction();
-          console.error('Error updating payment gateway order ID:', updateError);
-        } finally {
-          updateSession.endSession();
-        }
+        await Payment.updateOne({ _id: payment._id },{ gateway_order_id: paymentData.gateway_order_id });
       }
     } catch (error) {
-      const errorSession = await mongoose.startSession();
-      errorSession.startTransaction();
-      try {
-        await Payment.updateOne(
-          { _id: payment._id },
-          { status: 'failed', failure_reason: error.message },
-          { session: errorSession }
-        );
+      await Payment.updateOne({ _id: payment._id }, { status: 'failed', failure_reason: error.message });
 
-        if (verification) {
-          await VerificationRequest.updateOne(
-            { _id: verification._id },
-            { status: 'payment_failed' },
-            { session: errorSession }
-          );
-        }
-
-        if (subscription) {
-          await Subscription.updateOne(
-            { _id: subscription._id },
-            { status: 'incomplete_expired' },
-            { session: errorSession }
-          );
-        }
-
-        await errorSession.commitTransaction();
-      } catch (dbError) {
-        await errorSession.abortTransaction();
-        console.error('Error updating failed status:', dbError);
-      } finally {
-        errorSession.endSession();
+      if (verification) {
+        await VerificationRequest.updateOne({ _id: verification._id }, { status: 'payment_failed' });
       }
 
-      throw new Error(`Payment initiation failed: ${error.message}`);
+      if (subscription) {
+        await Subscription.updateOne({ _id: subscription._id }, { status: 'incomplete_expired' });
+      }
+
+      throw error;
     }
 
     return res.status(201).json({
       message: subscription ? 'Subscription payment initiated successfully.' : 'Payment initiated successfully.',
       data: {
-        request_id: verification?._id || null,
-        subscription_id: subscription?._id.toString() || null,
+        request_id: verification?._id?.toString() || null,
+        subscription_id: subscription?._id?.toString() || null,
         verification_status: verification ? verification.status : (user.is_verified ? 'approved' : null),
         payment_id: payment._id.toString(),
         payment_status: payment.status,
@@ -294,98 +167,101 @@ exports.initiateVerification = async (req, res) => {
       },
     });
   } catch (error) {
-    if (session.inTransaction()) {
-      await session.abortTransaction();
-    }
     console.error('Error in initiateVerification:', error);
     return res.status(500).json({ message: 'Internal Server Error' });
-  } finally {
-    session.endSession();
   }
 };
 
 exports.confirmPayment = async (req, res) => {
   const { payment_id, gateway_response } = req.body;
-  const session = await mongoose.startSession();
-  session.startTransaction();
 
   try {
     if (!payment_id || !mongoose.Types.ObjectId.isValid(payment_id)) {
-      await session.abortTransaction();
       return res.status(400).json({ message: 'Valid Payment ID is required' });
     }
 
     const payment = await Payment.findById(payment_id)
-      .populate('verificationRequest')
-      .populate('subscription')
-      .session(session);
+      .select('subscription_id status payment_gateway amount currency is_recurring billing_cycle verificationRequest')
+      .lean();
 
     if (!payment) {
-      await session.abortTransaction();
       return res.status(404).json({ message: 'Payment not found' });
     }
 
     if (payment.status !== 'pending') {
-      await session.abortTransaction();
       return res.status(400).json({ message: `Payment already processed with status: ${payment.status}` });
     }
 
     console.log(`Starting payment verification for payment ${payment._id}`, {
-      payment_id: payment._id,
-      gateway: payment.payment_gateway,
-      gateway_response,
+      payment_id: payment._id, gateway: payment.payment_gateway, gateway_response,
     });
 
     let verificationResult;
     try {
       verificationResult = await verifyGatewayPayment(payment, gateway_response);
-
       if (!verificationResult?.transaction_id) {
         throw new Error('Payment verification did not return a valid transaction ID');
       }
+
     } catch (verificationError) {
       console.error(`Payment verification failed for payment ${payment._id}:`, verificationError);
 
-      await payment.updateOne({
-        status: 'failed',
-        failure_reason: verificationError.message,
-        gateway_response: {
-          ...(gateway_response || {}),
-          error: verificationError.message,
-          error_at: new Date(),
-        },
-      });
+      await Payment.updateOne(
+        { _id: payment._id },
+        {
+          status: 'failed',
+          failure_reason: verificationError.message,
+          gateway_response: {
+            ...(gateway_response || {}),
+            error: verificationError.message,
+            error_at: new Date(),
+          },
+        }
+      );
 
-      await payment.verificationRequest?.updateOne({ status: 'payment_failed' });
-
-      if (payment.subscription) {
-        await payment.subscription.updateOne({ status: 'incomplete_expired' });
+      if (payment.verificationRequest) {
+        await VerificationRequest.updateOne({ _id: payment.verificationRequest },{ status: 'payment_failed' });
       }
 
-      await session.commitTransaction();
+      if (payment.subscription_id) {
+        await Subscription.updateOne({ _id: payment.subscription_id }, { status: 'incomplete_expired' });
+      }
+
       return res.status(400).json({ message: `Payment verification failed: ${verificationError.message}` });
     }
 
-    await payment.updateOne({
-      status: 'completed',
-      gateway_payment_id: verificationResult.transaction_id,
-      gateway_response: {
-        ...gateway_response,
-        verification_result: verificationResult,
-        verified_at: new Date(),
-      },
-      completed_at: new Date(),
-    });
+    await Payment.updateOne(
+      { _id: payment._id },
+      {
+        status: 'completed',
+        gateway_payment_id: verificationResult.transaction_id,
+        gateway_response: {
+          ...gateway_response,
+          verification_result: verificationResult,
+          verified_at: new Date(),
+        },
+        completed_at: new Date(),
+      }
+    );
 
-    if (payment.subscription) {
-      await payment.subscription.updateOne({
-        status: 'active',
-        current_period_start: new Date(),
-        current_period_end: calculateNextBillingDate(payment.subscription.billing_cycle),
-      });
+    if (payment.subscription_id) {
+      await Subscription.updateOne(
+        { _id: payment.subscription_id },
+        {
+          status: 'active',
+          current_period_start: new Date(),
+          current_period_end: calculateNextBillingDate(payment.billing_cycle || 'monthly'),
+        }
+      );
     }
 
-    await session.commitTransaction();
+    const verification = payment.verificationRequest
+      ? await VerificationRequest.findById(payment.verificationRequest).select('_id status').lean()
+      : null;
+
+    const subscription = payment.subscription_id
+      ? await Subscription.findById(payment.subscription_id).select('status').lean()
+      : null;
 
     return res.status(200).json({
       message: payment.is_recurring
@@ -393,21 +269,18 @@ exports.confirmPayment = async (req, res) => {
         : 'Payment completed successfully. Please upload your documents.',
       data: {
         payment_id: payment._id.toString(),
-        request_id: payment.verificationRequest?._id || null,
+        request_id: verification?._id?.toString() || null,
         payment_status: 'completed',
-        verification_status: 'pending',
+        verification_status: verification?.status || 'pending',
         amount: payment.amount,
         currency: payment.currency,
-        subscription_id: payment.subscription?._id.toString() || null,
-        subscription_status: payment.subscription?.status || null,
+        subscription_id: payment.subscription_id?.toString() || null,
+        subscription_status: subscription?.status || null,
       },
     });
   } catch (error) {
-    if (session.inTransaction()) await session.abortTransaction();
     console.error('Error in confirmPayment:', error);
     return res.status(500).json({ message: 'Internal server error' });
-  } finally {
-    session.endSession();
   }
 };
 
@@ -419,96 +292,87 @@ exports.syncStripeSubscription = async (req, res) => {
     return res.status(400).json({ message: 'Session ID is required' });
   }
 
-  const session = await mongoose.startSession();
-  session.startTransaction();
-
   try {
-    const sessionData = await stripe.checkout.sessions.retrieve(session_id, {
-      expand: ['subscription'],
-    });
-
+    const sessionData = await stripe.checkout.sessions.retrieve(session_id, { expand: ['subscription'], });
     if (!sessionData) {
-      await session.abortTransaction();
       return res.status(404).json({ message: 'Checkout session not found' });
     }
 
     const subscriptionId = sessionData.metadata?.subscription_id;
     const paymentId = sessionData.metadata?.payment_id;
-    const stripeSubscriptionId = typeof sessionData.subscription === 'string'
-      ? sessionData.subscription
-      : sessionData.subscription?.id || null;
+    const stripeSubscriptionId =
+      typeof sessionData.subscription === 'string' ? sessionData.subscription : sessionData.subscription?.id || null;
 
     if (!subscriptionId || !paymentId) {
-      await session.abortTransaction();
       return res.status(400).json({ message: 'Invalid session metadata' });
     }
 
-    const subscription = await Subscription.findOne({
-      _id: subscriptionId,
-      user_id: userId,
-    }).populate('payments').session(session);
-
-    const payment = await Payment.findById(paymentId).session(session);
-
+    const subscription = await Subscription.findOne({ _id: subscriptionId, user_id: userId });
+    const payment = await Payment.findById(paymentId);
     if (!subscription || !payment) {
-      await session.abortTransaction();
       return res.status(404).json({ message: 'Subscription or payment not found' });
     }
 
+    let currentPeriodStart = new Date();
+    let currentPeriodEnd = calculateNextBillingDate(subscription.billing_cycle);
+
     if (stripeSubscriptionId) {
-      let stripeSub;
+      let stripeSub = null;
       try {
-        stripeSub = typeof sessionData.subscription === 'object'
-          ? sessionData.subscription
-          : await stripe.subscriptions.retrieve(stripeSubscriptionId);
+        stripeSub = typeof sessionData.subscription === 'object' 
+          ? sessionData.subscription : await stripe.subscriptions.retrieve(stripeSubscriptionId);
+
       } catch (stripeError) {
-        console.error('Error retrieving Stripe subscription:', stripeError);
+        console.error('Error retrieving Stripe subscription details:', stripeError);
       }
 
-      await subscription.updateOne({
-        stripe_subscription_id: stripeSubscriptionId,
-        status: 'active',
-        current_period_start: stripeSub ? new Date(stripeSub.current_period_start * 1000) : new Date(),
-        current_period_end: stripeSub ? new Date(stripeSub.current_period_end * 1000) : calculateNextBillingDate(subscription.billing_cycle),
-      });
-    } else {
-      await subscription.updateOne({
-        status: 'active',
-        current_period_start: new Date(),
-        current_period_end: calculateNextBillingDate(subscription.billing_cycle),
-      });
+      if (stripeSub && stripeSub.current_period_start && stripeSub.current_period_end) {
+        currentPeriodStart = new Date(stripeSub.current_period_start * 1000);
+        currentPeriodEnd = new Date(stripeSub.current_period_end * 1000);
+      }
     }
+
+    await Subscription.updateOne(
+      { _id: subscription._id },
+      {
+        stripe_subscription_id: stripeSubscriptionId || undefined,
+        status: 'active',
+        current_period_start: currentPeriodStart,
+        current_period_end: currentPeriodEnd,
+      }
+    );
 
     if (payment.status === 'pending') {
-      await payment.updateOne({
-        status: 'completed',
-        gateway_payment_id: sessionData.payment_intent || sessionData.id,
-        gateway_response: sessionData,
-        completed_at: new Date(),
-      });
+      await Payment.updateOne(
+        { _id: payment._id },
+        {
+          status: 'completed',
+          gateway_payment_id: sessionData.payment_intent || sessionData.id,
+          gateway_response: sessionData,
+          completed_at: new Date(),
+        }
+      );
     }
-
-    await session.commitTransaction();
 
     return res.json({
       success: true,
       message: 'Subscription synced successfully',
       data: {
         subscription_id: subscription._id.toString(),
-        stripe_subscription_id: subscription.stripe_subscription_id,
-        status: subscription.status,
-        payment_status: payment.status,
+        stripe_subscription_id: stripeSubscriptionId || null,
+        status: 'active',
+        payment_status: 'completed',
+        current_period_start: currentPeriodStart.toISOString(),
+        current_period_end: currentPeriodEnd.toISOString(),
       },
     });
   } catch (error) {
-    if (session.inTransaction()) await session.abortTransaction();
     console.error('Error syncing Stripe subscription:', error);
     return res.status(500).json({
+      success: false,
       message: 'Failed to sync subscription',
-      error: error.message,
+      error: error.message || 'Unknown error',
     });
-  } finally {
-    session.endSession();
   }
 };
 
@@ -521,10 +385,7 @@ exports.completeSubscriptionPayment = async (req, res) => {
     }
 
     const subscription = await Subscription.findById(subscription_id)
-      .populate({
-        path: 'payments',
-        match: { status: 'pending' },
-      });
+      .populate({ path: 'payments', match: { status: 'pending' }});
 
     if (!subscription || !subscription.stripe_subscription_id) {
       return res.status(404).json({ message: 'Stripe subscription not found' });
@@ -541,19 +402,12 @@ exports.completeSubscriptionPayment = async (req, res) => {
         collection_method: 'charge_automatically',
         auto_advance: true,
       });
-      stripeSub = await stripe.subscriptions.retrieve(subscription.stripe_subscription_id, {
-        expand: ['latest_invoice'],
-      });
+      stripeSub = await stripe.subscriptions.retrieve(subscription.stripe_subscription_id, { expand: ['latest_invoice'] });
     }
 
     const paymentMethod = await stripe.paymentMethods.create({
       type: 'card',
-      card: {
-        number: '4242424242424242',
-        exp_month: 12,
-        exp_year: 34,
-        cvc: '123',
-      },
+      card: { number: '4242424242424242', exp_month: 12, exp_year: 34, cvc: '123' },
     });
 
     await stripe.paymentMethods.attach(paymentMethod.id, { customer: stripeSub.customer });
@@ -622,107 +476,20 @@ exports.completeSubscriptionPayment = async (req, res) => {
   }
 };
 
-exports.stripeWebhook = async (req, res) => {
-  const sig = req.headers['stripe-signature'];
-  let event;
-
-  try {
-    event = stripe.webhooks.constructEvent(req.body, sig, process.env.STRIPE_WEBHOOK_SECRET);
-  } catch (err) {
-    return res.status(400).send(`Webhook Error: ${err.message}`);
-  }
-
-  try {
-    switch (event.type) {
-      case 'checkout.session.completed':
-        await require('../helper/paymentHelpers').handleStripeCheckoutSessionCompleted?.(event.data.object);
-        break;
-      case 'customer.subscription.created':
-        await require('../helper/paymentHelpers').handleStripeSubscriptionCreated?.(event.data.object);
-        break;
-      case 'payment_intent.succeeded':
-        await handleStripePaymentSuccess(event.data.object);
-        break;
-      case 'payment_intent.payment_failed':
-        await handleStripePaymentFailure(event.data.object);
-        break;
-      case 'payment_intent.canceled':
-        await handleStripePaymentCanceled(event.data.object);
-        break;
-      case 'invoice.payment_succeeded':
-        await handleStripeInvoicePaymentSucceeded(event.data.object);
-        break;
-      case 'invoice.payment_failed':
-        await handleStripeInvoicePaymentFailed(event.data.object);
-        break;
-      case 'customer.subscription.updated':
-        await handleStripeSubscriptionUpdated(event.data.object);
-        break;
-      case 'customer.subscription.deleted':
-        await handleStripeSubscriptionDeleted(event.data.object);
-        break;
-      default:
-        console.log(`Unhandled Stripe event type: ${event.type}`);
-    }
-
-    res.json({ received: true });
-  } catch (error) {
-    console.error(`Error processing Stripe webhook ${event.type}:`, error);
-    res.status(500).json({ received: true, error: error.message });
-  }
-};
-
-exports.paypalWebhook = async (req, res) => {
-  try {
-    const event = req.body;
-    console.log(`PayPal webhook received: ${event.event_type}`);
-
-    switch (event.event_type) {
-      case 'PAYMENT.CAPTURE.COMPLETED':
-        await handlePayPalPaymentSuccess(event);
-        break;
-      case 'PAYMENT.CAPTURE.DENIED':
-        await handlePayPalPaymentFailure(event);
-        break;
-      case 'PAYMENT.SALE.COMPLETED':
-        await handlePayPalSubscriptionPayment(event);
-        break;
-      case 'BILLING.SUBSCRIPTION.ACTIVATED':
-        await handlePayPalSubscriptionActivated(event);
-        break;
-      case 'BILLING.SUBSCRIPTION.CANCELLED':
-        await handlePayPalSubscriptionCancelled(event);
-        break;
-      default:
-        console.log(`Unhandled PayPal event type: ${event.event_type}`);
-    }
-
-    res.json({ received: true });
-  } catch (error) {
-    console.error('PayPal webhook error:', error);
-    res.status(500).json({ error: error.message });
-  }
-};
-
 exports.uploadDocuments = async (req, res) => {
   const { request_id, subscription_id, document_type, full_name, category } = req.body;
   const userId = req.user._id;
-  const session = await mongoose.startSession();
-  session.startTransaction();
 
   try {
     if (!document_type) {
-      await session.abortTransaction();
       return res.status(400).json({ message: 'Document type is required.' });
     }
 
     if (!req.files?.front || !req.files?.selfie) {
-      await session.abortTransaction();
       return res.status(400).json({ message: 'Document front and selfie are required.' });
     }
 
     if (!request_id && !subscription_id) {
-      await session.abortTransaction();
       return res.status(400).json({ message: 'Either request_id or subscription_id is required.' });
     }
 
@@ -730,64 +497,42 @@ exports.uploadDocuments = async (req, res) => {
 
     if (request_id) {
       if (!mongoose.Types.ObjectId.isValid(request_id)) {
-        await session.abortTransaction();
         return res.status(400).json({ message: 'Invalid request_id' });
       }
 
-      verification = await VerificationRequest.findOne({
-        _id: request_id,
-        user_id: userId,
-      })
-        .populate('payment')
-        .session(session);
-
+      verification = await VerificationRequest.findOne({ _id: request_id, user_id: userId, }).lean();
       if (!verification) {
-        await session.abortTransaction();
         return res.status(404).json({ message: 'Verification request not found' });
       }
 
-      if (verification.payment?.status !== 'completed') {
-        await session.abortTransaction();
-        return res.status(400).json({ message: 'Please complete payment before uploading documents.' });
+      if (verification.payment_id) {
+        const payment = await Payment.findById(verification.payment_id).lean();
+        if (payment?.status !== 'completed') {
+          return res.status(400).json({ message: 'Please complete payment before uploading documents.' });
+        }
       }
     } else if (subscription_id) {
       if (!mongoose.Types.ObjectId.isValid(subscription_id)) {
-        await session.abortTransaction();
         return res.status(400).json({ message: 'Invalid subscription_id' });
       }
 
-      const subscription = await Subscription.findOne({
-        _id: subscription_id,
-        user_id: userId,
-      }).session(session);
-
+      const subscription = await Subscription.findOne({ _id: subscription_id, user_id: userId }).lean();
       if (!subscription) {
-        await session.abortTransaction();
         return res.status(404).json({ message: 'Subscription not found' });
       }
 
       if (subscription.status !== 'active') {
-        await session.abortTransaction();
         return res.status(400).json({ message: 'Subscription must be active to upload documents.' });
       }
 
-      verification = await VerificationRequest.findOne({
-        subscription_id: subscription_id,
-        user_id: userId,
-      })
-        .populate('payment')
-        .session(session);
-
+      verification = await VerificationRequest.findOne({ subscription_id: subscription_id, user_id: userId }).lean();
       if (!verification) {
         if (!full_name || !category) {
-          await session.abortTransaction();
           return res.status(400).json({ message: 'full_name and category are required when creating a new verification request.' });
         }
 
-        const user = await User.findById(userId).select('is_verified').session(session);
-
-        if (user.is_verified) {
-          await session.abortTransaction();
+        const user = await User.findById(userId).select('is_verified').lean();
+        if (user?.is_verified) {
           return res.status(400).json({ message: 'User is already verified.' });
         }
 
@@ -795,11 +540,9 @@ exports.uploadDocuments = async (req, res) => {
           subscription_id: subscription_id,
           user_id: userId,
           status: 'completed',
-        })
-          .sort({ completed_at: -1 })
-          .session(session);
+        }).sort({ completed_at: -1 }).lean();
 
-        verification = await VerificationRequest.create([{
+        verification = await VerificationRequest.create({
           user_id: userId,
           full_name,
           category: category.toLowerCase(),
@@ -811,39 +554,30 @@ exports.uploadDocuments = async (req, res) => {
           payment_id: completedPayment?._id || null,
           verification_source: 'subscription',
           subscription_id: subscription._id,
-        }], { session })[0];
+        });
 
         if (completedPayment) {
-          await Payment.updateOne(
-            { _id: completedPayment._id },
-            { reference_id: verification._id },
-            { session }
-          );
+          await Payment.updateOne({ _id: completedPayment._id }, { reference_id: verification._id });
         }
-
-        await Subscription.updateOne(
-          { _id: subscription._id },
-          { verification_request_id: verification._id },
-          { session }
-        );
+        await Subscription.updateOne({ _id: subscription._id }, { verification_request_id: verification._id });
       }
     }
 
     if (verification.document_front && verification.selfie) {
-      await session.abortTransaction();
       return res.status(400).json({ message: 'Documents already uploaded.' });
     }
 
-    await verification.updateOne({
-      document_type: document_type.toLowerCase(),
-      document_front: req.files.front[0].path,
-      document_back: req.files.back?.[0]?.path || null,
-      selfie: req.files.selfie[0].path,
-      status: 'pending',
-      updated_at: new Date(),
-    });
-
-    await session.commitTransaction();
+    await VerificationRequest.updateOne(
+      { _id: verification._id },
+      {
+        document_type: document_type.toLowerCase(),
+        document_front: req.files.front[0].path,
+        document_back: req.files.back?.[0]?.path || null,
+        selfie: req.files.selfie[0].path,
+        status: 'pending',
+        updated_at: new Date(),
+      }
+    );
 
     return res.status(200).json({
       message: 'Documents uploaded successfully. Your verification is now under review.',
@@ -854,135 +588,110 @@ exports.uploadDocuments = async (req, res) => {
       },
     });
   } catch (error) {
-    if (session.inTransaction()) await session.abortTransaction();
     console.error('Error in uploadDocuments:', error);
     return res.status(500).json({ message: 'Internal Server Error' });
-  } finally {
-    session.endSession();
   }
-};
-
-exports.getVerificationStatus = async (req, res) => {
-    const { request_id } = req.params;
-  
-    try {
-      const verification = await VerificationRequest.findOne({ request_id })
-        .populate({
-          path: 'payment',
-          select: 'id status failure_reason completed_at gateway_response',
-        })
-        .lean();
-  
-      if (!verification) {
-        return res.status(404).json({ message: 'Verification request not found' });
-      }
-  
-      return res.json({
-        data: {
-          request_id: verification.request_id,
-          verification_status: verification.status,
-          payment_status: verification.payment?.status || 'unknown',
-          verification_source: verification.verification_source || 'user_paid',
-          last_updated: verification.updated_at,
-        },
-      });
-    } catch (error) {
-      console.error('Error in getVerificationStatus:', error);
-      return res.status(500).json({ message: 'Internal Server Error' });
-    }
 };
   
 exports.getMyVerificationStatus = async (req, res) => {
-const userId = req.user._id;
+  const userId = req.user._id;
 
-try {
-    const verification = await VerificationRequest.findOne({ user_id: userId })
-    .populate({
-        path: 'payment',
-        select: 'id status amount currency payment_gateway completed_at',
-    })
-    .sort({ created_at: -1 })
-    .select([
-        'id', 'user_id', 'request_id', 'full_name', 'category', 'document_type',
+  try {
+    const verification = await VerificationRequest.findOne({ user_id: userId }).sort({ created_at: -1 })
+      .select([
+        '_id', 'user_id', 'request_id', 'full_name', 'category', 'document_type',
         'document_front', 'document_back', 'selfie', 'status', 'payment_id',
         'verification_source', 'subscription_id', 'rejection_reason', 'reviewed_by',
         'reviewed_at', 'admin_notes', 'created_at', 'updated_at',
-    ])
-    .lean();
+    ]).lean();
 
-    const user = await User.findById(userId)
-    .select('id is_verified verified_at')
-    .lean();
-
+    const user = await User.findById(userId).select('id is_verified verified_at').lean();
     if (!user) {
-    return res.status(404).json({ message: 'User not found' });
+      return res.status(404).json({ message: 'User not found' });
     }
 
-    // Transform to match original response
+    let payment = null;
+    if (verification?.payment_id) {
+      payment = await Payment.findById(verification.payment_id).select('id amount status currency payment_gateway completed_at').lean();
+    }
+
     const responseData = {
-    id: user._id.toString(),
-    is_verified: user.is_verified,
-    verified_at: user.verified_at,
-    has_pending_request: !!verification,
-    current_request: verification
+      id: user._id.toString(),
+      is_verified: user.is_verified || false,
+      verified_at: user.verified_at || null,
+      has_pending_request: !!verification,
+      current_request: verification
         ? {
-            ...verification,
             id: verification._id.toString(),
-            _id: undefined,
-            payment: verification.payment
-            ? { ...verification.payment, id: verification.payment._id.toString(), _id: undefined }
-            : null,
-        }
+            user_id: verification.user_id?.toString(),
+            request_id: verification.request_id,
+            full_name: verification.full_name,
+            category: verification.category,
+            document_type: verification.document_type,
+            document_front: verification.document_front,
+            document_back: verification.document_back,
+            selfie: verification.selfie,
+            status: verification.status,
+            payment_id: verification.payment_id?.toString() || null,
+            verification_source: verification.verification_source,
+            subscription_id: verification.subscription_id?.toString() || null,
+            rejection_reason: verification.rejection_reason,
+            reviewed_by: verification.reviewed_by?.toString() || null,
+            reviewed_at: verification.reviewed_at,
+            admin_notes: verification.admin_notes,
+            created_at: verification.created_at,
+            updated_at: verification.updated_at,
+            payment: payment
+              ? {
+                  id: payment._id.toString(),
+                  amount: payment.amount,
+                  status: payment.status,
+                  currency: payment.currency,
+                  payment_gateway: payment.payment_gateway,
+                  completed_at: payment.completed_at,
+                }
+              : null,
+          }
         : null,
     };
 
-    return res.status(200).json({
-    data: responseData,
-    });
-} catch (error) {
+    return res.status(200).json({ data: responseData });
+  } catch (error) {
     console.error('Error in getMyVerificationStatus:', error);
     return res.status(500).json({ message: 'Internal Server Error' });
-}
+  }
 };
 
 exports.approveVerificationByAdmin = async (req, res) => {
   const { user_id, category, admin_notes = '', full_name } = req.body;
   const adminId = req.user._id;
 
-  const session = await mongoose.startSession();
-  session.startTransaction();
-
   try {
     if (req.user.role !== 'super_admin') {
-      await session.abortTransaction();
       return res.status(400).json({ message: 'Only super administrators can grant verification directly.' });
     }
 
     if (!user_id || !category) {
-      await session.abortTransaction();
       return res.status(400).json({ message: 'user_id and category are required' });
     }
 
     if (!mongoose.Types.ObjectId.isValid(user_id)) {
-      await session.abortTransaction();
       return res.status(400).json({ message: 'Invalid user_id' });
     }
 
-    const user = await User.findById(user_id).session(session);
+    const user = await User.findById(user_id).select('name avatar email is_verified').lean();
     if (!user) {
-      await session.abortTransaction();
       return res.status(404).json({ message: 'User not found' });
     }
 
     if (user.is_verified) {
-      await session.abortTransaction();
       return res.status(400).json({ message: 'User is already verified' });
     }
 
     const requestId = `VRQ-${Date.now()}-${Math.random().toString(36).substring(2, 9).toUpperCase()}`;
 
-    const verification = await VerificationRequest.create([{
-      user_id: user_id,
+    const verification = await VerificationRequest.create({
+      user_id,
       request_id: requestId,
       full_name: full_name || user.name,
       category,
@@ -996,15 +705,9 @@ exports.approveVerificationByAdmin = async (req, res) => {
       reviewed_at: new Date(),
       admin_notes: admin_notes.trim() || `Manually granted by admin ${adminId}`,
       verification_source: 'admin_granted',
-    }], { session })[0];
+    });
 
-    await User.updateOne(
-      { _id: user_id },
-      { is_verified: true, verified_at: new Date() },
-      { session }
-    );
-
-    await session.commitTransaction();
+    await User.updateOne({ _id: user_id }, { is_verified: true, verified_at: new Date() });
 
     return res.status(201).json({
       success: true,
@@ -1026,11 +729,8 @@ exports.approveVerificationByAdmin = async (req, res) => {
       },
     });
   } catch (error) {
-    if (session.inTransaction()) await session.abortTransaction();
     console.error('Error in approveVerificationByAdmin:', error);
     return res.status(500).json({ message: 'Internal Server Error' });
-  } finally {
-    session.endSession();
   }
 };
 
@@ -1038,90 +738,70 @@ exports.approveVerification = async (req, res) => {
   const { request_id, admin_notes = '' } = req.body;
   const adminId = req.user._id;
 
-  const session = await mongoose.startSession();
-  session.startTransaction();
-
   try {
     if (req.user.role !== 'super_admin') {
-      await session.abortTransaction();
       return res.status(400).json({ message: 'Only administrators can approve verification requests' });
     }
 
     if (!request_id) {
-      await session.abortTransaction();
       return res.status(400).json({ message: 'request_id is required' });
     }
 
-    const verification = await VerificationRequest.findOne({
-      request_id,
-      status: 'pending',
-    })
-      .populate('user')
-      .populate('payment')
-      .populate('subscription')
-      .session(session);
+    const verification = await VerificationRequest.findOne({ request_id, status: 'pending', })
+      .select('user_id category verification_source subscription_id payment_id').lean();
 
     if (!verification) {
-      await session.abortTransaction();
-      return res.status(404).json({
-        message: 'Verification request not found or already processed.',
-      });
+      return res.status(404).json({ message: 'Verification request not found or already processed.' });
     }
 
-    if (verification.payment && verification.payment.status !== 'completed') {
-      await session.abortTransaction();
-      return res.status(400).json({
-        message: 'Cannot approve. Payment not completed.',
-        data: {
-          payment_id: verification.payment?._id?.toString() || null,
-          payment_status: verification.payment?.status || null,
-        },
-      });
+    if (verification.payment_id) {
+      const payment = await Payment.findById(verification.payment_id).select('status').lean();
+      if (payment?.status !== 'completed') {
+        return res.status(400).json({
+          message: 'Cannot approve. Payment not completed.',
+          data: {
+            payment_id: verification.payment_id.toString(),
+            payment_status: payment?.status || null,
+          },
+        });
+      }
     }
 
-    await verification.updateOne({
-      status: 'approved',
-      reviewed_by: adminId,
-      reviewed_at: new Date(),
-      admin_notes: admin_notes.trim() || null,
-      updated_at: new Date(),
-    });
-
-    await User.updateOne(
-      { _id: verification.user_id },
-      { is_verified: true, verified_at: new Date() },
-      { session }
+    await VerificationRequest.updateOne(
+      { _id: verification._id },
+      {
+        status: 'approved',
+        reviewed_by: adminId,
+        reviewed_at: new Date(),
+        admin_notes: admin_notes.trim() || null,
+        updated_at: new Date(),
+      }
     );
 
-    if (verification.subscription && verification.verification_source === 'subscription') {
-      await Subscription.updateOne(
-        { _id: verification.subscription._id },
-        { status: 'active' },
-        { session }
-      );
+    await User.updateOne({ _id: verification.user_id }, { is_verified: true, verified_at: new Date() });
+
+    if (verification.subscription_id && verification.verification_source === 'subscription') {
+      await Subscription.updateOne({ _id: verification.subscription_id }, { status: 'active' });
     }
 
-    await session.commitTransaction();
+    const user = await User.findById(verification.user_id).select('name').lean();
 
     return res.status(200).json({
       message: 'Verification approved successfully',
       data: {
         request_id: verification.request_id,
         user_id: verification.user_id.toString(),
-        user_name: verification.user?.name || null,
+        user_name: user?.name || null,
         verification_type: verification.category,
         verification_source: verification.verification_source,
-        subscription_id: verification.subscription?._id?.toString() || null,
+        subscription_id: verification.subscription_id?.toString() || null,
         approved_at: new Date(),
         reviewed_by: adminId.toString(),
       },
     });
   } catch (error) {
-    if (session.inTransaction()) await session.abortTransaction();
     console.error('Error in approveVerification:', error);
     return res.status(500).json({ message: 'Internal Server Error' });
-  } finally {
-    session.endSession();
   }
 };
 
@@ -1129,43 +809,37 @@ exports.rejectVerification = async (req, res) => {
   const { request_id, rejection_reason, admin_notes = '' } = req.body;
   const adminId = req.user._id;
 
-  const session = await mongoose.startSession();
-  session.startTransaction();
-
   try {
     if (!rejection_reason) {
-      await session.abortTransaction();
       return res.status(400).json({ message: 'Rejection reason is required.' });
     }
 
     if (req.user.role !== 'super_admin') {
-      await session.abortTransaction();
       return res.status(400).json({ message: 'Only admin can reject verification request.' });
     }
 
-    const verification = await VerificationRequest.findOne({
-      request_id,
-      status: 'pending',
-    })
-      .populate('user')
-      .populate('payment')
-      .session(session);
+    if (!request_id) {
+      return res.status(400).json({ message: 'request_id is required' });
+    }
+
+    const verification = await VerificationRequest.findOne({ request_id, status: 'pending', })
+      .select('user_id verification_source request_id').lean();
 
     if (!verification) {
-      await session.abortTransaction();
       return res.status(404).json({ message: 'Verification request not found or already processed.' });
     }
 
-    await verification.updateOne({
-      status: 'rejected',
-      rejection_reason: rejection_reason.trim(),
-      reviewed_by: adminId,
-      reviewed_at: new Date(),
-      admin_notes: admin_notes.trim() || null,
-      updated_at: new Date(),
-    });
-
-    await session.commitTransaction();
+    await VerificationRequest.updateOne(
+      { _id: verification._id },
+      {
+        status: 'rejected',
+        rejection_reason: rejection_reason.trim(),
+        reviewed_by: adminId,
+        reviewed_at: new Date(),
+        admin_notes: admin_notes.trim() || null,
+        updated_at: new Date(),
+      }
+    );
 
     return res.status(200).json({
       message: 'Verification rejected successfully.',
@@ -1174,169 +848,30 @@ exports.rejectVerification = async (req, res) => {
         user_id: verification.user_id.toString(),
         verification_source: verification.verification_source || 'user_paid',
         rejected_at: new Date(),
-        rejection_reason: rejection_reason,
+        rejection_reason: rejection_reason.trim(),
         reviewed_by: adminId.toString(),
       },
     });
   } catch (error) {
-    if (session.inTransaction()) await session.abortTransaction();
     console.error('Error in rejectVerification:', error);
-    return res.status(500).json({ message: 'Internal Server Error' });
-  } finally {
-    session.endSession();
-  }
-};
-
-exports.fetchPendingRequests = async (req, res) => {
-  let { page = 1, limit = 20, search = '' } = req.query;
-  page = parseInt(page);
-  limit = parseInt(limit);
-  const skip = (page - 1) * limit;
-
-  try {
-    const searchText = search.trim();
-    const matchStage = { status: 'pending' };
-
-    if (searchText) {
-      const regex = new RegExp(searchText, 'i');
-      matchStage.$or = [
-        { full_name: regex },
-        { document_type: regex },
-        { category: regex },
-        { request_id: regex },
-      ];
-    }
-
-    const pipeline = [
-      { $match: matchStage },
-      {
-        $lookup: {
-          from: 'users',
-          localField: 'user_id',
-          foreignField: '_id',
-          as: 'user',
-        },
-      },
-      { $unwind: { path: '$user', preserveNullAndEmptyArrays: true } },
-      {
-        $lookup: {
-          from: 'payments',
-          localField: 'payment_id',
-          foreignField: '_id',
-          as: 'payment',
-        },
-      },
-      { $unwind: { path: '$payment', preserveNullAndEmptyArrays: false } },
-    ];
-
-    if (searchText) {
-      const userRegex = new RegExp(searchText, 'i');
-      pipeline.push({
-        $match: {
-          $or: [
-            { 'user.name': userRegex },
-            { 'user.email': userRegex },
-          ],
-        },
-      });
-    }
-
-    const totalPipeline = [...pipeline, { $count: 'total' }];
-    const [totalResult] = await VerificationRequest.aggregate(totalPipeline);
-    const total = totalResult ? totalResult.total : 0;
-
-    const requests = await VerificationRequest.aggregate([
-      ...pipeline,
-      { $sort: { created_at: -1 } },
-      { $skip: skip },
-      { $limit: limit },
-      {
-        $project: {
-          verification_id: '$_id',
-          request_id: 1,
-          full_name: 1,
-          category: 1,
-          document_type: 1,
-          document_front_url: '$document_front',
-          document_back_url: '$document_back',
-          selfie_url: '$selfie',
-          verification_status: '$status',
-          submitted_at: '$created_at',
-          user: {
-            id: '$user._id',
-            name: '$user.name',
-            email: '$user.email',
-            avatar: '$user.avatar',
-            is_verified: '$user.is_verified',
-            verified_at: '$user.verified_at',
-            country: '$user.country',
-            phone: '$user.phone',
-            created_at: '$user.created_at',
-          },
-          payment: {
-            id: '$payment._id',
-            amount: '$payment.amount',
-            currency: '$payment.currency',
-            payment_gateway: '$payment.payment_gateway',
-            payment_method: '$payment.payment_method',
-            gateway_order_id: '$payment.gateway_order_id',
-            gateway_payment_id: '$payment.gateway_payment_id',
-            status: '$payment.status',
-            failure_reason: '$payment.failure_reason',
-            completed_at: '$payment.completed_at',
-            created_at: '$payment.created_at',
-            updated_at: '$payment.updated_at',
-          },
-          can_approve: { $eq: ['$payment.status', 'completed'] },
-        },
-      },
-    ]);
-
-    const summary = {
-      pending_count: total,
-      with_payment_completed: requests.filter(r => r.payment?.status === 'completed').length,
-      with_payment_failed: requests.filter(r => r.payment?.status === 'failed').length,
-      with_payment_pending: requests.filter(r => r.payment?.status === 'pending').length,
-    };
-
-    return res.status(200).json({
-      message: 'Pending verification requests fetched successfully',
-      data: requests.map(r => ({
-        ...r,
-        verification_id: r.verification_id.toString(),
-        user: r.user ? { ...r.user, id: r.user.id.toString() } : null,
-        payment: r.payment ? { ...r.payment, id: r.payment.id.toString() } : null,
-      })),
-      pagination: {
-        total,
-        page,
-        limit,
-        total_pages: Math.ceil(total / limit),
-      },
-      summary,
-    });
-  } catch (error) {
-    console.error('Error in fetchPendingRequests:', error);
     return res.status(500).json({ message: 'Internal Server Error' });
   }
 };
 
 exports.fetchAllVerificationRequests = async (req, res) => {
   let { page = 1, limit = 20, search = '', status = '', filter = '' } = req.query;
-
   page = parseInt(page);
   limit = Math.min(parseInt(limit), 100);
   const skip = (page - 1) * limit;
 
   try {
     const searchText = search.trim();
-    const categoryFilter = status.trim();
+    const statusFilter = status.trim();
     const sourceFilter = filter ? filter.split(',').map(f => f.trim()) : [];
-
     const matchStage = {};
 
-    if (categoryFilter && ['pending', 'approved', 'rejected', 'payment_failed'].includes(categoryFilter)) {
-      matchStage.status = categoryFilter;
+    if (statusFilter && ['pending', 'approved', 'rejected', 'payment_failed'].includes(statusFilter)) {
+      matchStage.status = statusFilter;
     }
 
     if (sourceFilter.length > 0) {
@@ -1352,14 +887,7 @@ exports.fetchAllVerificationRequests = async (req, res) => {
     if (searchText) {
       const regex = new RegExp(searchText, 'i');
       pipeline.push({
-        $match: {
-          $or: [
-            { full_name: regex },
-            { document_type: regex },
-            { category: regex },
-            { request_id: regex },
-          ],
-        },
+        $match: {$or: [{ full_name: regex }, { document_type: regex }, { category: regex }, { request_id: regex }]},
       });
     }
 
@@ -1369,39 +897,18 @@ exports.fetchAllVerificationRequests = async (req, res) => {
 
     const requests = await VerificationRequest.aggregate([
       ...pipeline,
-      {
-        $lookup: {
-          from: 'users',
-          localField: 'user_id',
-          foreignField: '_id',
-          as: 'user',
-        },
-      },
+      { $lookup: { from: 'users', localField: 'user_id', foreignField: '_id', as: 'user' }},
       { $unwind: { path: '$user', preserveNullAndEmptyArrays: true } },
-      {
-        $lookup: {
-          from: 'payments',
-          localField: 'payment_id',
-          foreignField: '_id',
-          as: 'payment',
-        },
-      },
+      { $lookup: { from: 'payments', localField: 'payment_id', foreignField: '_id', as: 'payment' }},
       { $unwind: { path: '$payment', preserveNullAndEmptyArrays: true } },
-      {
-        $lookup: {
-          from: 'subscriptions',
-          localField: 'subscription_id',
-          foreignField: '_id',
-          as: 'subscription',
-        },
-      },
+      { $lookup: { from: 'subscriptions', localField: 'subscription_id', foreignField: '_id', as: 'subscription' }},
       { $unwind: { path: '$subscription', preserveNullAndEmptyArrays: true } },
       { $sort: { created_at: -1 } },
       { $skip: skip },
       { $limit: limit },
       {
         $project: {
-          id: '$_id',
+          _id: 1,
           request_id: 1,
           full_name: 1,
           category: 1,
@@ -1409,12 +916,7 @@ exports.fetchAllVerificationRequests = async (req, res) => {
           document_front_url: '$document_front',
           document_back_url: '$document_back',
           selfie_url: '$selfie',
-          has_documents: {
-            $and: [
-              { $ne: ['$document_front', null] },
-              { $ne: ['$selfie', null] },
-            ],
-          },
+          has_documents: { $and: [{ $ne: ['$document_front', null] },{ $ne: ['$selfie', null] }]},
           verification_status: '$status',
           verification_source: 1,
           submitted_at: '$created_at',
@@ -1478,15 +980,59 @@ exports.fetchAllVerificationRequests = async (req, res) => {
       user_paid_count: requests.filter(r => r.verification_source === 'user_paid').length,
     };
 
+    const transformedRequests = requests.map(r => ({
+      id: r._id?.toString() || null,
+      request_id: r.request_id,
+      full_name: r.full_name,
+      category: r.category,
+      document_type: r.document_type,
+      document_front_url: r.document_front_url,
+      document_back_url: r.document_back_url,
+      selfie_url: r.selfie_url,
+      has_documents: r.has_documents,
+      verification_status: r.verification_status,
+      verification_source: r.verification_source,
+      submitted_at: r.submitted_at,
+      updated_at: r.updated_at,
+      user: r.user ? {
+        id: r.user.id?.toString() || null,
+        name: r.user.name,
+        email: r.user.email,
+        avatar: r.user.avatar,
+        is_verified: r.user.is_verified,
+        verified_at: r.user.verified_at,
+        country: r.user.country,
+        phone: r.user.phone,
+        created_at: r.user.created_at,
+      } : null,
+      payment: r.payment ? {
+        id: r.payment.id?.toString() || null,
+        amount: r.payment.amount,
+        currency: r.payment.currency,
+        payment_gateway: r.payment.payment_gateway,
+        payment_method: r.payment.payment_method,
+        gateway_order_id: r.payment.gateway_order_id,
+        gateway_payment_id: r.payment.gateway_payment_id,
+        status: r.payment.status,
+        failure_reason: r.payment.failure_reason,
+        completed_at: r.payment.completed_at,
+        created_at: r.payment.created_at,
+        updated_at: r.payment.updated_at,
+      } : null,
+      subscription: r.subscription ? {
+        id: r.subscription.id?.toString() || null,
+        status: r.subscription.status,
+        plan_id: r.subscription.plan_id?.toString() || null,
+        billing_cycle: r.subscription.billing_cycle,
+        amount: r.subscription.amount,
+        currency: r.subscription.currency,
+      } : null,
+      can_approve: r.can_approve,
+    }));
+
     return res.status(200).json({
       message: 'Verification requests fetched successfully',
-      data: requests.map(r => ({
-        ...r,
-        id: r.id.toString(),
-        user: r.user ? { ...r.user, id: r.user.id.toString() } : null,
-        payment: r.payment ? { ...r.payment, id: r.payment.id.toString() } : null,
-        subscription: r.subscription ? { ...r.subscription, id: r.subscription.id.toString() } : null,
-      })),
+      data: transformedRequests,
       pagination: {
         total,
         page,
@@ -1497,127 +1043,6 @@ exports.fetchAllVerificationRequests = async (req, res) => {
     });
   } catch (error) {
     console.error('Error in fetchAllVerificationRequests:', error);
-    return res.status(500).json({ message: 'Internal Server Error' });
-  }
-};
-
-exports.fetchVerifiedUsers = async (req, res) => {
-  let { page = 1, limit = 20, search = '', sort_by = 'verified_at', sort_order = 'DESC', category = '' } = req.query;
-  page = parseInt(page);
-  limit = Math.min(parseInt(limit), 100);
-  const skip = (page - 1) * limit;
-
-  try {
-    const searchText = search.trim();
-    const categoryFilter = category.trim().toLowerCase();
-
-    const matchStage = {
-      is_verified: true,
-      status: 'active',
-    };
-
-    if (searchText) {
-      const regex = new RegExp(searchText, 'i');
-      matchStage.$or = [
-        { name: regex },
-        { email: regex },
-        { bio: regex },
-        { country: regex },
-      ];
-    }
-
-    const pipeline = [
-      { $match: matchStage },
-      {
-        $lookup: {
-          from: 'verificationrequests',
-          localField: '_id',
-          foreignField: 'user_id',
-          as: 'verificationRequests',
-        },
-      },
-      {
-        $addFields: {
-          verificationRequests: {
-            $filter: {
-              input: '$verificationRequests',
-              cond: { $eq: ['$$this.status', 'approved'] },
-            },
-          },
-        },
-      },
-      {
-        $addFields: {
-          latestVerification: { $arrayElemAt: ['$verificationRequests', -1] },
-        },
-      },
-    ];
-
-    if (categoryFilter && ['individual', 'business', 'creator'].includes(categoryFilter)) {
-      pipeline.push({
-        $match: { 'latestVerification.category': categoryFilter },
-      });
-    }
-
-    const sortStage = {};
-    const allowedSort = ['verified_at', 'name', 'created_at', 'last_seen'];
-    if (allowedSort.includes(sort_by)) {
-      sortStage[sort_by] = sort_order.toUpperCase() === 'ASC' ? 1 : -1;
-    } else {
-      sortStage.verified_at = -1;
-    }
-
-    const totalPipeline = [...pipeline, { $count: 'total' }];
-    const [totalResult] = await User.aggregate(totalPipeline);
-    const total = totalResult ? totalResult.total : 0;
-
-    const users = await User.aggregate([
-      ...pipeline,
-      { $sort: sortStage },
-      { $skip: skip },
-      { $limit: limit },
-      {
-        $project: {
-          id: '$_id',
-          name: 1,
-          avatar: 1,
-          bio: 1,
-          email: 1,
-          country: 1,
-          country_code: 1,
-          is_verified: 1,
-          verification_type: '$latestVerification.category',
-          verified_at: 1,
-          last_seen: 1,
-          is_online: 1,
-          account_created: '$created_at',
-          phone: 1,
-          role: 1,
-          verification_request: {
-            request_id: '$latestVerification.request_id',
-            category: '$latestVerification.category',
-            document_type: '$latestVerification.document_type',
-            created_at: '$latestVerification.created_at',
-          },
-        },
-      },
-    ]);
-
-    return res.status(200).json({
-      message: 'Verified users fetched successfully',
-      data: users.map(u => ({
-        ...u,
-        id: u.id.toString(),
-      })),
-      pagination: {
-        total,
-        page,
-        limit,
-        total_pages: Math.ceil(total / limit),
-      },
-    });
-  } catch (error) {
-    console.error('Error in fetchVerifiedUsers:', error);
     return res.status(500).json({ message: 'Internal Server Error' });
   }
 };

@@ -16,7 +16,8 @@ const PaymentSchema = new Schema(
     },
     currency: { 
       type: String, 
-      default: 'USD', 
+      default: 'USD',
+      uppercase: true,
       maxlength: 3 
     },
     payment_gateway: {
@@ -41,7 +42,11 @@ const PaymentSchema = new Schema(
       enum: ['blue_tick'],
       required: true,
     },
-    reference_id: { type: Number, default: null },
+    reference_id: { 
+      type: Schema.Types.ObjectId,
+      ref: 'VerificationRequest',
+      default: null 
+    },
     status: {
       type: String,
       enum: ['pending', 'completed', 'failed', 'refunded'],
@@ -69,7 +74,7 @@ const PaymentSchema = new Schema(
       default: null,
     },
     is_recurring: { 
-      type: Boolean,
+      type: Boolean, 
       default: false 
     },
     invoice_id: { 
