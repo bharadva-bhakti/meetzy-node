@@ -20,6 +20,7 @@ const Broadcast = db.Broadcast;
 const UserDelete = db.UserDelete;
 const BroadcastMember = db.BroadcastMember;
 const ChatSetting = db.ChatSetting;
+const Call = db.Call;
 const fs = require('fs');
 const bcrypt = require('bcryptjs');
 const mongoose = require('mongoose')
@@ -642,24 +643,20 @@ exports.getMessages = async (req, res) => {
 
     if (groupId) {
       isChatLocked = checkLockedChat('group', groupId);
-
+    
       const group = await Group.findById(groupId).lean({ virtuals: true });
       if (!group) return res.status(404).json({ message: 'Group not found' });
-
+    
       const groupObjId = new mongoose.Types.ObjectId(groupId);
-
+    
       if (isChatLocked) {
         const pin = req.query.pin;
         if (!pin) return res.status(400).json({ message: 'PIN_REQUIRED' });
-    
-        if (!userSetting.pin_hash){
-          return res.status(400).json({ message: 'Set Your Pin first.' });
-        } 
-    
+        if (!userSetting.pin_hash) return res.status(400).json({ message: 'Set Your Pin first.' });
         const match = await bcrypt.compare(pin, userSetting.pin_hash);
         if (!match) return res.status(400).json({ message: 'INVALID_PIN' });
       }
-      
+    
       const pipeline = [
         { $match: { group_id: groupObjId } },
         ...(clearFilter ? [{ $match: clearFilter }] : []),
@@ -681,15 +678,103 @@ exports.getMessages = async (req, res) => {
         ...addStatusesAndReactions,
         { $project: { ...commonProject, recipient: { id: null, name: null, avatar: null }, group: 1 } },
       ];
-
-      messages = await Message.aggregate(pipeline);
-
+    
+      let messages = await Message.aggregate(pipeline);
+    
+      const callMessageIds = messages
+        .filter(m => m.message_type === 'call' && m.metadata?.call_id)
+        .map(m => m.metadata.call_id);
+    
+      let callDataMap = {};
+    
+      if (callMessageIds.length > 0) {
+        const calls = await Call.aggregate([
+          { $match: { _id: { $in: callMessageIds.map(id => new mongoose.Types.ObjectId(id)) } } },
+          { $lookup: { from: 'call_participants', localField: '_id', foreignField: 'call_id', as: 'participants', }, },
+          { $lookup: { from: 'users', localField: 'participants.user_id', foreignField: '_id', as: 'participant_users' }},
+          {
+            $addFields: {
+              participants: {
+                $map: {
+                  input: '$participants',
+                  as: 'p',
+                  in: {
+                    user_id: '$$p.user_id',
+                    status: '$$p.status',
+                    user: {
+                      $arrayElemAt: [{ $filter: { input: '$participant_users', as: 'u', cond: { $eq: ['$$u._id', '$$p.user_id']}}}, 0 ]
+                    }
+                  }
+                }
+              }
+            }
+          },
+          {
+            $project: {
+              _id: 1,
+              duration: 1,
+              participants: { user_id: 1, status: 1, 'user.id': 1, 'user.name': 1, 'user.avatar': 1 }
+            }
+          }
+        ]);
+    
+        callDataMap = Object.fromEntries(
+          calls.map(call => [
+            call._id.toString(),
+            {
+              ...call,
+              participants: call.participants.map(p => ({
+                user_id: p.user_id,
+                status: p.status,
+                user: p.user ? { id: p.user.id, name: p.user.name, avatar: p.user.avatar } : null
+              }))
+            }
+          ])
+        );
+      }
+    
+      messages = messages.map(msg => {
+        if (msg.message_type !== 'call' || !msg.metadata?.call_id) return msg;
+    
+        const callIdStr = msg.metadata.call_id.toString();
+        const call = callDataMap[callIdStr];
+    
+        if (!call) return msg;
+    
+        const participant = call.participants.find(p => p.user_id.toString() === userId.toString());
+        const userStatus = participant?.status || 'missed';
+    
+        let displayText = '📞 Group call';
+    
+        if (call.duration === 0) {
+          displayText = '📞 Missed call';
+        }
+    
+        if (userStatus === 'declined') {
+          displayText = '❌ You declined the call';
+        } else if (userStatus === 'missed') {
+          displayText = '📞 Missed group call';
+        } else if (userStatus === 'joined' || userStatus === 'left') {
+          displayText = `✅ Call ended ${call.duration ? `(${call.duration}s)` : ''}`;
+        }
+    
+        msg.content = displayText;
+        msg.metadata.call_summary = {
+          totalParticipants: call.participants.length,
+          joined: call.participants.filter(p => p.status === 'joined').map(p => p.user?.name).filter(Boolean),
+          declined: call.participants.filter(p => p.status === 'declined').map(p => p.user?.name).filter(Boolean),
+          missed: call.participants.filter(p => p.status === 'missed').map(p => p.user?.name).filter(Boolean),
+        };
+    
+        return msg;
+      });
+    
       const groupedMessages = await groupMessagesBySender(messages, userId);
       const dateGroupedMessages = groupMessagesByDate(groupedMessages);
-
+    
       const commonMeta = await getCommonChatMeta('group', groupId);
       const groupBlockEntry = await Block.findOne({ blocker_id: userId, group_id: groupId, block_type: 'group' });
-
+    
       chatTarget = {
         id: group._id.toString(),
         name: group.name,
@@ -699,7 +784,7 @@ exports.getMessages = async (req, res) => {
         ...commonMeta,
         isBlocked: !!groupBlockEntry,
       };
-
+    
       return res.json({
         messages: dateGroupedMessages,
         chatTarget,
