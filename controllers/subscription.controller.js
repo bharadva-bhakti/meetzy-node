@@ -2,7 +2,6 @@ const mongoose = require('mongoose');
 const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
 const paypal = require('@paypal/checkout-server-sdk');
 const fetch = require('node-fetch');
-
 const { getEffectiveLimits } = require('../utils/userLimits');
 const { db } = require('../models');
 const VerificationRequest = db.VerificationRequest;
@@ -27,12 +26,7 @@ exports.getMySubscription = async (req, res) => {
 
   try {
     const subscriptions = await Subscription.aggregate([
-      {
-        $match: {
-          user_id: new mongoose.Types.ObjectId(userId),
-          status: { $in: ['active', 'past_due', 'trialing'] },
-        },
-      },
+      { $match: { user_id: new mongoose.Types.ObjectId(userId), status: { $in: ['active', 'past_due', 'trialing'] }}},
       { $sort: { created_at: -1 } },
       { $limit: 1 },
       {
@@ -101,7 +95,6 @@ exports.getMySubscription = async (req, res) => {
 
     if (!subscription) {
       return res.json({
-        success: true,
         data: {
           user: {
             is_verified: user?.is_verified || false,
@@ -131,7 +124,6 @@ exports.getMySubscription = async (req, res) => {
     };
 
     return res.json({
-      success: true,
       data: {
         user: {
           is_verified: user?.is_verified || false,
@@ -164,50 +156,27 @@ exports.getSubscriptionDetails = async (req, res) => {
     const userObjectId = new mongoose.Types.ObjectId(userId);
 
     const subscriptions = await Subscription.aggregate([
-      {
-        $match: {
-          _id: subscriptionId,
-          user_id: userObjectId,
-        },
-      },
-
-      // Lookup Plan
+      { $match: { _id: subscriptionId, user_id: userObjectId }},
       {
         $lookup: {
           from: 'plans',
           localField: 'plan_id',
           foreignField: '_id',
           as: 'plan',
-          pipeline: [
-            {
-              $project: {
-                id: '$_id',
-                _id: 0,
-                name: 1,
-                slug: 1,
-                description: 1,
-              },
-            },
-          ],
+          pipeline: [{ $project: { id: '$_id', _id: 0, name: 1, slug: 1, description: 1 }}],
         },
       },
       { $unwind: { path: '$plan', preserveNullAndEmptyArrays: true } },
-
-      // Lookup Verification Request
       {
         $lookup: {
-          from: 'verificationrequests',
+          from: 'verification_requests',
           localField: 'verification_request_id',
           foreignField: '_id',
           as: 'verificationRequest',
-          pipeline: [
-            { $project: { request_id: 1, status: 1, category: 1 } },
-          ],
+          pipeline: [{ $project: { request_id: 1, status: 1, category: 1 }}],
         },
       },
       { $unwind: { path: '$verificationRequest', preserveNullAndEmptyArrays: true } },
-
-      // Lookup Payments
       {
         $lookup: {
           from: 'payments',
@@ -237,7 +206,6 @@ exports.getSubscriptionDetails = async (req, res) => {
     ]);
 
     const subscription = subscriptions[0];
-
     if (!subscription) {
       return res.status(404).json({ message: 'Subscription not found or does not belong to you' });
     }
@@ -259,7 +227,6 @@ exports.getSubscriptionDetails = async (req, res) => {
       verification_request_id: subscription.verification_request_id?.toString() || null,
       created_at: subscription.created_at,
       updated_at: subscription.updated_at,
-
       plan: subscription.plan || null,
       verification_request: subscription.verificationRequest || null,
       payments: subscription.payments.map(p => ({
@@ -289,23 +256,24 @@ exports.cancelSubscription = async (req, res) => {
 
   try {
     if (!mongoose.Types.ObjectId.isValid(subscription_id)) {
-      return res.status(400).json({ success: false, message: 'Invalid subscription ID' });
+      return res.status(400).json({ message: 'Invalid subscription ID' });
     }
 
-    const subscription = await Subscription.findOne({
-      _id: subscription_id,
-      user_id: userId,
-      status: { $in: ['active', 'past_due', 'trialing'] },
-    }).lean();
+    const subscription = await Subscription.findOneAndUpdate(
+      {
+        _id: subscription_id,
+        user_id: userId,
+        status: { $in: ['active', 'past_due', 'trialing'] },
+        cancel_at_period_end: { $ne: true }
+      },
+      { $set: { cancel_at_period_end: true } },
+      {  new: true, lean: true  }
+    );
 
     if (!subscription) {
-      return res.status(404).json({
-        success: false,
-        message: 'Active subscription not found',
-      });
+      return res.status(404).json({ message: 'Active subscription not found or already cancelled' });
     }
 
-    // Stripe cancellation
     if (subscription.payment_gateway === 'stripe' && subscription.stripe_subscription_id) {
       try {
         await stripe.subscriptions.update(subscription.stripe_subscription_id, {
@@ -317,50 +285,60 @@ exports.cancelSubscription = async (req, res) => {
       }
     }
 
-    // PayPal cancellation — using fetch (most reliable)
     if (subscription.payment_gateway === 'paypal' && subscription.paypal_subscription_id) {
       try {
-        // Get access token using the client
-        const tokenResponse = await paypalClient.execute(new paypal.core.GenerateAccessTokenRequest());
-        const accessToken = tokenResponse.result.access_token;
+        const clientId = process.env.PAYPAL_CLIENT_ID;
+        const clientSecret = process.env.PAYPAL_CLIENT_SECRET;
+
+        if (!clientId || !clientSecret) {
+          throw new Error('PayPal credentials not configured');
+        }
 
         const baseUrl = process.env.PAYPAL_MODE === 'live'
           ? 'https://api-m.paypal.com'
           : 'https://api-m.sandbox.paypal.com';
 
-        const url = `${baseUrl}/v1/billing/subscriptions/${subscription.paypal_subscription_id}/cancel`;
+        const auth = Buffer.from(`${clientId}:${clientSecret}`).toString('base64');
 
-        const response = await fetch(url, {
+        const tokenResponse = await fetch(`${baseUrl}/v1/oauth2/token`, {
+          method: 'POST',
+          headers: {
+            'Authorization': `Basic ${auth}`,
+            'Content-Type': 'application/x-www-form-urlencoded',
+          },
+          body: 'grant_type=client_credentials',
+        });
+
+        if (!tokenResponse.ok) {
+          const errorText = await tokenResponse.text();
+          throw new Error(`Token fetch failed: ${tokenResponse.status} ${errorText}`);
+        }
+
+        const tokenData = await tokenResponse.json();
+        const accessToken = tokenData.access_token;
+
+        const cancelUrl = `${baseUrl}/v1/billing/subscriptions/${subscription.paypal_subscription_id}/cancel`;
+
+        const cancelResponse = await fetch(cancelUrl, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
             'Authorization': `Bearer ${accessToken}`,
           },
-          body: JSON.stringify({
-            reason: 'User requested cancellation',
-          }),
+          body: JSON.stringify({ reason: 'Cancelled by user' }),
         });
 
-        if (response.status === 204) {
+        if (cancelResponse.status === 204) {
           console.log('PayPal subscription cancelled successfully');
         } else {
-          const errorData = await response.json().catch(() => ({}));
-          console.error('PayPal cancellation failed:', response.status, errorData);
+          const errorData = await cancelResponse.json().catch(() => ({}));
+          console.error('PayPal cancellation failed:', cancelResponse.status, errorData);
         }
       } catch (paypalError) {
         console.error('PayPal cancellation error:', paypalError);
-        // Continue — user intent fulfilled
       }
     }
-
-    // Update DB
-    await Subscription.updateOne(
-      { _id: subscription._id },
-      { cancel_at_period_end: true }
-    );
-
     return res.json({
-      success: true,
       message: 'Subscription will be cancelled at the end of the billing period',
       data: {
         subscription_id: subscription._id.toString(),
@@ -371,11 +349,7 @@ exports.cancelSubscription = async (req, res) => {
     });
   } catch (error) {
     console.error('Error cancelling subscription:', error);
-    return res.status(500).json({
-      success: false,
-      message: 'Failed to cancel subscription',
-      error: error.message || 'Unknown error',
-    });
+    return res.status(500).json({ message: 'Internal Server Error' });
   }
 };
 
@@ -393,11 +367,7 @@ exports.getSubscriptionPayments = async (req, res) => {
       return res.status(400).json({ message: 'Invalid subscription ID' });
     }
 
-    const subscription = await Subscription.findOne({
-      _id: subscription_id,
-      user_id: userId,
-    });
-
+    const subscription = await Subscription.findOne({ _id: subscription_id, user_id: userId, });
     if (!subscription) {
       return res.status(404).json({ message: 'Subscription not found' });
     }
@@ -405,43 +375,26 @@ exports.getSubscriptionPayments = async (req, res) => {
     const total = await Payment.countDocuments({ subscription_id });
 
     const payments = await Payment.find({ subscription_id })
-      .select('id amount currency status payment_gateway gateway_payment_id completed_at failure_reason subscription_payment_sequence created_at updated_at')
-      .sort({ created_at: -1 })
-      .skip(skip)
-      .limit(limit)
-      .lean();
+      .select(
+        'id amount currency status payment_gateway gateway_payment_id completed_at failure_reason subscription_payment_sequence created_at updated_at'
+      ).sort({ created_at: -1 }).skip(skip).limit(limit).lean();
 
-    // Transform _id to id
-    const transformedPayments = payments.map(p => ({
-      ...p,
-      id: p._id.toString(),
-      _id: undefined,
-    }));
+    const transformedPayments = payments.map(p => ({ ...p, id: p._id.toString(), _id: undefined, }));
 
     return res.json({
-      success: true,
       data: {
         payments: transformedPayments,
-        pagination: {
-          total,
-          page,
-          limit,
-          total_pages: Math.ceil(total / limit),
-        },
+        pagination: { total, page, limit, total_pages: Math.ceil(total / limit) },
       },
     });
   } catch (error) {
     console.error('Error getting subscription payments:', error);
-    return res.status(500).json({
-      success: false,
-      message: 'Internal Server Error',
-    });
+    return res.status(500).json({ message: 'Internal Server Error', });
   }
 };
 
 exports.getAllSubscriptions = async (req, res) => {
   let { page = 1, limit = 20, status = '', search = '' } = req.query;
-
   page = parseInt(page);
   limit = Math.min(parseInt(limit), 50);
   const skip = (page - 1) * limit;
@@ -456,69 +409,30 @@ exports.getAllSubscriptions = async (req, res) => {
 
     if (search) {
       const regex = new RegExp(search.trim(), 'i');
-      userQuery.$or = [
-        { name: regex },
-        { email: regex },
-      ];
+      userQuery.$or = [{ name: regex }, { email: regex }];
     }
 
     const total = await Subscription.countDocuments({
-      ...query,
-      ...(Object.keys(userQuery).length > 0 && { 'user': userQuery }),
+      ...query, ...(Object.keys(userQuery).length > 0 && { 'user': userQuery }),
     });
 
     const subscriptions = await Subscription.aggregate([
       { $match: query },
-      {
-        $lookup: {
-          from: 'users',
-          localField: 'user_id',
-          foreignField: '_id',
-          as: 'user_doc',
-        },
-      },
+      { $lookup: { from: 'users', localField: 'user_id', foreignField: '_id', as: 'user_doc' }},
       { $unwind: { path: '$user_doc', preserveNullAndEmptyArrays: true } },
       { $match: Object.keys(userQuery).length > 0 ? { 'user_doc': userQuery } : {} },
-      {
-        $lookup: {
-          from: 'plans',
-          localField: 'plan_id',
-          foreignField: '_id',
-          as: 'plan_doc',
-        },
-      },
+      { $lookup: { from: 'plans', localField: 'plan_id', foreignField: '_id', as: 'plan_doc' }},
       { $unwind: { path: '$plan_doc', preserveNullAndEmptyArrays: true } },
-      {
-        $lookup: {
-          from: 'verificationrequests',
-          localField: '_id',
-          foreignField: 'subscription_id',
-          as: 'verificationRequest',
-        },
-      },
+      { $lookup: { from: 'verification_requests', localField: '_id', foreignField: 'subscription_id', as: 'verificationRequest' }},
       { $unwind: { path: '$verificationRequest', preserveNullAndEmptyArrays: true } },
       {
         $addFields: {
-          user: {
-            id: '$user_doc._id',
-            name: '$user_doc.name',
-            email: '$user_doc.email',
-            avatar: '$user_doc.avatar',
-            is_verified: '$user_doc.is_verified',
-          },
-          plan: {
-            id: '$plan_doc._id',
-            name: '$plan_doc.name',
-            slug: '$plan_doc.slug',
-          },
+          user: { id: '$user_doc._id',name: '$user_doc.name',email: '$user_doc.email',avatar: '$user_doc.avatar',is_verified: '$user_doc.is_verified',},
+          plan: { id: '$plan_doc._id', name: '$plan_doc.name', slug: '$plan_doc.slug' },
           verification_request: {
             $cond: [
               '$verificationRequest',
-              {
-                request_id: '$verificationRequest.request_id',
-                status: '$verificationRequest.status',
-                category: '$verificationRequest.category',
-              },
+              { request_id: '$verificationRequest.request_id', status: '$verificationRequest.status', category: '$verificationRequest.category' },
               null,
             ],
           },
@@ -553,7 +467,6 @@ exports.getAllSubscriptions = async (req, res) => {
     ]);
 
     return res.json({
-      success: true,
       data: subscriptions,
       pagination: {
         total,
@@ -564,10 +477,7 @@ exports.getAllSubscriptions = async (req, res) => {
     });
   } catch (error) {
     console.error('Error fetching all subscriptions:', error);
-    return res.status(500).json({
-      success: false,
-      message: 'Internal Server Error',
-    });
+    return res.status(500).json({ message: 'Internal Server Error', });
   }
 };
 
@@ -578,15 +488,9 @@ exports.getUserLimits = async (req, res) => {
   try {
     const limits = await getEffectiveLimits(userId, userRole);
 
-    return res.json({
-      success: true,
-      data: limits,
-    });
+    return res.json({ data: limits, });
   } catch (error) {
     console.error('Error getting user limits:', error);
-    return res.status(500).json({
-      success: false,
-      message: 'Internal Server Error',
-    });
+    return res.status(500).json({ message: 'Internal Server Error', });
   }
 };
