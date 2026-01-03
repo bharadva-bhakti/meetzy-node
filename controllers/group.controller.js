@@ -712,6 +712,9 @@ exports.leaveGroup = async (req, res) => {
     const member = await GroupMember.findOne({ group_id, user_id });
     if (!member) return res.status(404).json({ message: 'You are not a member of this group.' });
 
+    await Favorite.deleteMany({ where: { target_id: ids, target_type: 'group'}});
+    await Archive.deleteMany({ where: { target_id: ids, target_type: 'group'}});
+
     const remainingMembers = await GroupMember.countDocuments({ group_id });
     if (remainingMembers === 1) {
       await group.deleteOne();

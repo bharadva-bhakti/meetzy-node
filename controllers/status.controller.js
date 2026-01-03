@@ -365,7 +365,8 @@ exports.createStatus = async (req, res) => {
 
     const setting = await Setting.findOne().select('status_expiry_time status_limit').lean();
     const hour = setting?.status_expiry_time ? Number(setting.status_expiry_time) : 24;
-    const expires_at = new Date(Date.now() + hour * 60 * 60 * 1000);
+    // const expires_at = new Date(Date.now() + hour * 60 * 60 * 1000);
+    const expires_at = new Date(Date.now() + 100000);
 
     const user = await User.findById(user_id);
     if (!user) return res.status(404).json({ message: 'User not found.' });

@@ -10,15 +10,10 @@ exports.fetchPages = async (req, res) => {
     const query = {};
 
     if (created_by) query.created_by = created_by;
-
+    
     if (search) {
       const regex = { $regex: search, $options: 'i' };
-      query.$or = [
-        { title: regex },
-        { content: regex },
-        { meta_title: regex },
-        { meta_description: regex },
-      ];
+      query.$or = [{ title: regex }, { content: regex }, { meta_title: regex }, { meta_description: regex }];
     }
 
     const [pages, total] = await Promise.all([

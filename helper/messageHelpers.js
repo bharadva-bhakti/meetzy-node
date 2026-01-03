@@ -14,6 +14,7 @@ const UserSetting = db.UserSetting;
 const MessageDisappearing = db.MessageDisappearing;
 const Broadcast = db.Broadcast;
 const BroadcastMember = db.BroadcastMember;
+const Status = db.Status;
 const fs = require('fs');
 const path = require('path');
 const mongoose = require('mongoose');
@@ -78,7 +79,7 @@ async function formatMessageForDisplay(message, currentUserId) {
 
   if (deleteForMe) return null;
 
-  if ( message.disappearing?.enabled && message.disappearing.expire_at ) {
+  if ( message.disappearing?.enabled && (message.disappearing.expire_at ||  message.disappearing?.metadata?.immediate_disappear)) {
     const expireTime = new Date(message.disappearing.expire_at);
     const now = new Date();
     if (expireTime <= now) return null;
@@ -100,10 +101,14 @@ async function formatMessageForDisplay(message, currentUserId) {
 
   // Handle status reply expiry
   if (metadata && (metadata.is_status_reply === true || metadata.is_status_reply === 'true')) {
-    metadata.status_file_url = null;
-    metadata.isExpired = metadata.status_created_at
-      ? new Date(metadata.status_created_at) < new Date()
-      : false;
+    const status = await Status.findById(metadata.status_id);
+    const expiresAt = status?.expires_at;
+    const now = new Date();
+    const isExpired = expiresAt ? new Date(expiresAt) < now : false;
+    
+    if (isExpired || !status) {
+      metadata.status_file_url = null;
+    }
   }
 
   return {

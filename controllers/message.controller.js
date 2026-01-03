@@ -68,9 +68,7 @@ exports.sendMessage = async (req, res) => {
     const isMediaMessage = ['image', 'video', 'audio', 'document', 'file'].includes(message_type);
 
     if ((hasFiles || isMediaMessage) && !limits.allow_media_send) {
-      return res.status(403).json({
-        message: 'Sending media files is not allowed on your current plan.',
-      });
+      return res.status(403).json({ message: 'Sending media files is not allowed on your current plan.' });
     }
 
     let validatedMentions = [];
@@ -83,23 +81,14 @@ exports.sendMessage = async (req, res) => {
     let isBroadcast = false;
 
     if (recipientId) {
-      const blockEntry = await Block.findOne({
-        blocker_id: senderId,
-        blocked_id: recipientId,
-      }).lean();
-
+      const blockEntry = await Block.findOne({ blocker_id: senderId, blocked_id: recipientId, }).lean();
       if (blockEntry) {
         return res.status(403).json({ message: 'Cannot send message to blocked contact' });
       }
     }
 
     if (groupId) {
-      const blockEntry = await Block.findOne({
-        blocker_id: senderId,
-        group_id: groupId,
-        block_type: 'group',
-      }).lean();
-
+      const blockEntry = await Block.findOne({ blocker_id: senderId, group_id: groupId, block_type: 'group', }).lean();
       if (blockEntry) {
         return res.status(403).json({ message: 'Cannot send message to blocked group' });
       }
@@ -244,8 +233,8 @@ exports.sendMessage = async (req, res) => {
       {
         $addFields: {
           id: '$_id',
-          sender: { id: '$sender_doc._id', name: '$sender_doc.name', avatar: '$sender_doc.avatar'},
-          recipient: { id: '$recipient_doc._id', name: '$recipient_doc.name', avatar: '$recipient_doc.avatar', },
+          sender: { id: '$sender_doc._id', name: '$sender_doc.name', avatar: '$sender_doc.avatar', is_verified: '$sender_doc.is_verified'},
+          recipient: { id: '$recipient_doc._id', name: '$recipient_doc.name', avatar: '$recipient_doc.avatar', is_verified: '$sender_doc.is_verified'},
           group: null,
         },
       },
@@ -548,12 +537,7 @@ exports.getMessages = async (req, res) => {
         {
           $addFields: {
             id: '$_id',
-            sender: {
-              id: '$sender_doc._id',
-              name: '$sender_doc.name',
-              email: '$sender_doc.email',
-              avatar: '$sender_doc.avatar',
-            },
+            sender: { id: '$sender_doc._id', name: '$sender_doc.name', email: '$sender_doc.email', avatar: '$sender_doc.avatar', },
             statuses: {
               $map: {
                 input: '$statuses',
@@ -599,10 +583,7 @@ exports.getMessages = async (req, res) => {
           a.action_type === 'delete' &&
           a.details?.type === 'me'
         );
-        const deletedForEveryone = actions.some(a =>
-          a.action_type === 'delete' &&
-          a.details?.type === 'everyone'
-        );
+        const deletedForEveryone = actions.some(a => a.action_type === 'delete' && a.details?.type === 'everyone' );
     
         if (deletedForMe && !deletedForEveryone) return false;
         if (deletedForEveryone) {
@@ -613,7 +594,6 @@ exports.getMessages = async (req, res) => {
         return true;
       });
     
-      // Merge duplicates
       const mergedMap = new Map();
       for (const msg of messages) {
         const key = [
@@ -625,10 +605,7 @@ exports.getMessages = async (req, res) => {
         ].join('|');
     
         if (!mergedMap.has(key)) {
-          mergedMap.set(key, {
-            ...msg,
-            statuses: msg.statuses || [],
-          });
+          mergedMap.set(key, { ...msg, statuses: msg.statuses || [], });
         } else {
           const entry = mergedMap.get(key);
           entry.statuses = [...entry.statuses, ...(msg.statuses || [])];
@@ -671,6 +648,18 @@ exports.getMessages = async (req, res) => {
 
       const groupObjId = new mongoose.Types.ObjectId(groupId);
 
+      if (isChatLocked) {
+        const pin = req.query.pin;
+        if (!pin) return res.status(400).json({ message: 'PIN_REQUIRED' });
+    
+        if (!userSetting.pin_hash){
+          return res.status(400).json({ message: 'Set Your Pin first.' });
+        } 
+    
+        const match = await bcrypt.compare(pin, userSetting.pin_hash);
+        if (!match) return res.status(400).json({ message: 'INVALID_PIN' });
+      }
+      
       const pipeline = [
         { $match: { group_id: groupObjId } },
         ...(clearFilter ? [{ $match: clearFilter }] : []),
@@ -729,9 +718,21 @@ exports.getMessages = async (req, res) => {
 
       const recipient = await User.findById(recipientId).lean({ virtuals: true });
       if (!recipient) return res.status(404).json({ message: 'User not found' });
-
+     
       const userObjId = new mongoose.Types.ObjectId(userId);
       const recipientObjId = new mongoose.Types.ObjectId(recipientId);
+
+      if (isChatLocked) {
+        const pin = req.query.pin;
+        if (!pin) return res.status(400).json({ message: 'PIN_REQUIRED' });
+    
+        if (!userSetting.pin_hash){
+          return res.status(400).json({ message: 'Set Your Pin first.' });
+        } 
+    
+        const match = await bcrypt.compare(pin, userSetting.pin_hash);
+        if (!match) return res.status(400).json({ message: 'INVALID_PIN' });
+      }
 
       const pipeline = [
         {

@@ -34,6 +34,11 @@ exports.authenticate = async (req, res, next) => {
       return res.status(401).json({ message: 'Session expired or logged out. Please log in again.' });
     }
 
+    if (session.expires_at && new Date() > new Date(session.expires_at)) {
+      await Session.updateOne({ _id: session._id }, { $set: { status: 'inactive' } });
+      return res.status(401).json({ message: 'Session expired or logged out. Please log in again.' });
+    }
+
     req.user = user;
     req.token = token;
 

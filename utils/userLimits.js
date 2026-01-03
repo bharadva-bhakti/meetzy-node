@@ -4,7 +4,7 @@ const Subscription = db.Subscription;
 const Plan = db.Plan;
 
 async function getEffectiveLimits(userId, userRole = 'user') {
-  const globalSettings = await Setting.findOne();
+  const globalSettings = await Setting.findOne().lean();
 
   const defaults = {
     max_groups_per_user: globalSettings?.max_groups_per_user || 500,
@@ -26,21 +26,24 @@ async function getEffectiveLimits(userId, userRole = 'user') {
       status_limit_per_day: Infinity,
       max_storage_per_user_mb: Infinity,
       allow_media_send: true,
-      video_calls_enabled: true
+      video_calls_enabled: true,
     };
   }
 
-  const subscription = await Subscription.findOne({
-    user_id: userId,
-    status: { $in: ['active', 'trialing', 'past_due'] },
-    current_period_end: { $gt: new Date() },
-  }).populate('plan');
+  const result = await Subscription.aggregate([
+    { $match: { user_id: userId, status: { $in: ['active', 'trialing', 'past_due'] }, current_period_end: { $gt: new Date() }}},
+    { $lookup: { from: 'plans', localField: 'plan', foreignField: '_id', as: 'plan_doc' }},
+    { $unwind: { path: '$plan_doc', preserveNullAndEmptyArrays: true } },
+    { $limit: 1 },
+    { $project: { plan: '$plan_doc' }},
+  ]);
 
-  if (!subscription || !subscription.plan) {
+  const subscription = result[0];
+  const plan = subscription?.plan;
+
+  if (!plan) {
     return defaults;
   }
-
-  const plan = subscription.plan;
 
   return {
     max_groups_per_user: plan.max_groups ?? defaults.max_groups_per_user,
@@ -50,7 +53,7 @@ async function getEffectiveLimits(userId, userRole = 'user') {
     status_limit_per_day: plan.max_status ?? defaults.status_limit_per_day,
     max_storage_per_user_mb: plan.max_storage_per_user_mb ?? defaults.max_storage_per_user_mb,
     allow_media_send: plan.allows_file_sharing ?? defaults.allow_media_send,
-    video_calls_enabled: plan.video_calls_enabled ?? defaults.video_calls_enabled
+    video_calls_enabled: plan.video_calls_enabled ?? defaults.video_calls_enabled,
   };
 }
 

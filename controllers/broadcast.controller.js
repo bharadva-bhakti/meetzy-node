@@ -93,10 +93,7 @@ exports.createBroadcast = async (req, res) => {
       return res.status(400).json({ message: 'All recipients are blocked or invalid.' });
     }
 
-    const broadcast = await Broadcast.create({
-      creator_id,
-      name: name.trim(),
-    });
+    const broadcast = await Broadcast.create({ creator_id, name: name.trim() });
 
     const recipientRecords = finalRecipientIds.map(recipient_id => ({
       broadcast_id: broadcast._id,
@@ -323,11 +320,7 @@ exports.addRecipients = async (req, res) => {
 
     const recipientObjectIds = newRecipientIds.map(id => new mongoose.Types.ObjectId(id));
 
-    const validRecipients = await User.find({
-      _id: { $in: recipientObjectIds },
-      status: 'active',
-    }).select('_id name').lean();
-
+    const validRecipients = await User.find({ _id: { $in: recipientObjectIds }, status: 'active', }).select('_id name').lean();
     const validIds = validRecipients.map(u => u._id);
 
     const blocks = await Block.find({
@@ -346,7 +339,6 @@ exports.addRecipients = async (req, res) => {
     });
 
     const finalRecipientIds = validIds.filter(id => !blockedUserIds.has(id.toString()));
-
     if (finalRecipientIds.length === 0) {
       return res.status(400).json({ message: 'No valid recipients to add.' });
     }
@@ -415,10 +407,7 @@ exports.removeRecipients = async (req, res) => {
     }
 
     const recipientObjectIds = recipient_ids.map(id => new mongoose.Types.ObjectId(id));
-
-    const removedUsers = await User.find({
-      _id: { $in: recipientObjectIds },
-    }).select('_id name').lean();
+    const removedUsers = await User.find({ _id: { $in: recipientObjectIds }}).select('_id name').lean();
 
     const { deletedCount } = await BroadcastMember.deleteMany({
       broadcast_id: broadcast._id,
