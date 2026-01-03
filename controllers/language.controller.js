@@ -11,10 +11,7 @@ exports.fetchLanguages = async (req, res) => {
   try {
     const match = {};
     if (search) {
-      match.$or = [
-        { name: { $regex: search, $options: 'i' } },
-        { locale: { $regex: search, $options: 'i' } },
-      ];
+      match.$or = [{ name: { $regex: search, $options: 'i' } }, { locale: { $regex: search, $options: 'i' }}];
     }
 
     const settings = await Setting.findOne().select('default_language').lean();
@@ -60,10 +57,7 @@ exports.fetchActiveLanguages = async (req, res) => {
   try {
     const match = { is_active: true };
     if (search) {
-      match.$or = [
-        { name: { $regex: search, $options: 'i' } },
-        { locale: { $regex: search, $options: 'i' } },
-      ];
+      match.$or = [{ name: { $regex: search, $options: 'i' } },{ locale: { $regex: search, $options: 'i' } },];
     }
 
     const settings = await Setting.findOne().select('default_language').lean();

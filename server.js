@@ -34,28 +34,27 @@ const io = new Server(server, {
   },
 });
 
-connectDB()
-  .then(async () => {
-    console.log('DB connected');
+connectDB().then(async () => {
+  console.log('DB connected');
 
-    await createDefaultAdmin();
+  await createDefaultAdmin();
 
-    scheduler.start();
-    statusExpiryScheduler.start();
-    expiredMuteChat(io);
-    expiredPinnedMessages(io);
-    deleteClearedMessages();
-    deleteExpiredOtp.start();
-    deleteExpiredMessage.start(io);
+  scheduler.start();
+  statusExpiryScheduler.start();
+  expiredMuteChat(io);
+  expiredPinnedMessages(io);
+  deleteClearedMessages();
+  deleteExpiredOtp.start();
+  deleteExpiredMessage.start(io);
 
-    app.set('io', io);
+  app.set('io', io);
 
-    // require('./socket')(io);
+  require('./socket')(io);
 
-    server.listen(PORT, () => {
-      console.log(`Server running at http://localhost:${PORT}`);
-    });
-  })
-  .catch((err) => {
-    console.error('Error starting server:', err);
+  server.listen(PORT, () => {
+    console.log(`Server running at http://localhost:${PORT}`);
   });
+})
+.catch((err) => {
+  console.error('Error starting server:', err);
+});

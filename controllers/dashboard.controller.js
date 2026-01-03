@@ -121,12 +121,7 @@ exports.dashboard = async (req, res) => {
 
     const messageActivity = await Message.aggregate([
       { $match: { created_at: { $gte: sevenDaysAgo }}},
-      {
-        $group: {
-          _id: { $dateToString: { format: '%Y-%m-%d', date: '$created_at' } },
-          count: { $sum: 1 },
-        },
-      },
+      { $group: { _id: { $dateToString: { format: '%Y-%m-%d', date: '$created_at' } }, count: { $sum: 1 } }},
       { $sort: { _id: 1 } },
       { $project: { date: '$_id', count: 1, _id: 0 } },
     ]);
@@ -155,17 +150,9 @@ exports.dashboard = async (req, res) => {
       };
     });
 
-    return res.status(200).json({
-      success: true,
-      data: dashboardData,
-      message: 'Admin dashboard data fetched successfully',
-    });
+    return res.status(200).json({ data: dashboardData, message: 'Admin dashboard data fetched successfully', });
   } catch (error) {
     console.error('Admin dashboard error:', error);
-    return res.status(500).json({
-      success: false,
-      message: 'Internal Server Error',
-      error: error.message,
-    });
+    return res.status(500).json({ message: 'Internal Server Error', });
   }
 };

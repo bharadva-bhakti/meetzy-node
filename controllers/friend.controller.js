@@ -42,10 +42,7 @@ exports.getPendingRequests = async (req, res) => {
       const setting = settingsMap.get(requestedUser.id.toString());
       const avatar = setting && setting.profile_pic === false ? null : (requestedUser.avatar || null);
 
-      return {
-        ...req,
-        requested: {...requestedUser,avatar,},
-      };
+      return { ...req, requested: {...requestedUser,avatar,}, };
     });
 
     res.json({ requests: requestsWithPrivacy });
@@ -82,12 +79,7 @@ exports.sendFriendRequest = async (req, res) => {
       }
     }
 
-    await Friend.create({
-      user_id: currentUserId,
-      friend_id: friendId,
-      status: 'pending',
-      requested_by: currentUserId,
-    });
+    await Friend.create({ user_id: currentUserId, friend_id: friendId, status: 'pending', requested_by: currentUserId, });
 
     const currentUser = await User.findById(currentUserId).select('name bio avatar');
 
@@ -97,11 +89,7 @@ exports.sendFriendRequest = async (req, res) => {
       type: 'friend_request',
       title: 'New Friend Request',
       message: `${currentUser.name} sent you a friend request.`,
-      data: {
-        friend_id: currentUserId,
-        friend_name: currentUser.name,
-        friend_avatar: currentUser.avatar,
-      },
+      data: { friend_id: currentUserId, friend_name: currentUser.name, friend_avatar: currentUser.avatar, },
     });
 
     const io = req.app.get('io');
@@ -110,16 +98,8 @@ exports.sendFriendRequest = async (req, res) => {
         type: 'friend_request',
         title: 'New Friend Request',
         message: `${currentUser.name} sent you a friend request.`,
-        from_user: {
-          id: currentUserId,
-          name: currentUser.name,
-          avatar: currentUser.avatar,
-        },
-        data: {
-          friend_id: currentUserId,
-          friend_name: currentUser.name,
-          friend_avatar: currentUser.avatar,
-        },
+        from_user: { id: currentUserId, name: currentUser.name, avatar: currentUser.avatar, },
+        data: { friend_id: currentUserId, friend_name: currentUser.name, friend_avatar: currentUser.avatar, },
         created_at: new Date(),
       });
     }
@@ -151,11 +131,7 @@ exports.respondToFriendRequest = async (req, res) => {
 
     if (action === 'reject') {
       await Notification.updateMany(
-        {
-          user_id: currentUserId,
-          from_user_id: friendRequest.user_id,
-          type: 'friend_request',
-        },
+        { user_id: currentUserId, from_user_id: friendRequest.user_id, type: 'friend_request', },
         {
           type: 'friend_rejected',
           title: 'You rejected a friend request',
@@ -167,12 +143,7 @@ exports.respondToFriendRequest = async (req, res) => {
     }
 
     if (action === 'accept') {
-      await Friend.create({
-        user_id: currentUserId,
-        friend_id: friendRequest.user_id,
-        status: 'accepted',
-        requested_by: friendRequest.user_id,
-      });
+      await Friend.create({ user_id: currentUserId, friend_id: friendRequest.user_id, status: 'accepted', requested_by: friendRequest.user_id, });
     }
 
     const currentUser = await User.findById(currentUserId).select('name bio avatar');
@@ -188,11 +159,7 @@ exports.respondToFriendRequest = async (req, res) => {
       type: notificationType,
       title: action === 'accept' ? 'Friend Request Accepted' : 'Friend Request Rejected',
       message: notificationMessage,
-      data: {
-        friend_id: currentUserId,
-        friend_name: currentUser.name,
-        friend_avatar: currentUser.avatar,
-      },
+      data: { friend_id: currentUserId, friend_name: currentUser.name, friend_avatar: currentUser.avatar, },
     });
 
     const io = req.app.get('io');
@@ -201,16 +168,8 @@ exports.respondToFriendRequest = async (req, res) => {
         type: notificationType,
         title: action === 'accept' ? 'Friend Request Accepted' : 'Friend Request Rejected',
         message: notificationMessage,
-        from_user: {
-          id: currentUserId,
-          name: currentUser.name,
-          avatar: currentUser.avatar,
-        },
-        data: {
-          friend_id: currentUserId,
-          friend_name: currentUser.name,
-          friend_avatar: currentUser.avatar,
-        },
+        from_user: { id: currentUserId, name: currentUser.name, avatar: currentUser.avatar, },
+        data: { friend_id: currentUserId, friend_name: currentUser.name, friend_avatar: currentUser.avatar, },
         created_at: new Date(),
       });
 
@@ -259,23 +218,14 @@ exports.unFriend = async (req, res) => {
     }
 
     const friendship = await Friend.findOne({
-      $or: [
-        { user_id: userId, friend_id: targetId },
-        { user_id: targetId, friend_id: userId },
-      ],
+      $or: [{ user_id: userId, friend_id: targetId }, { user_id: targetId, friend_id: userId },],
       status: 'accepted',
     });
-
     if (!friendship) {
       return res.status(404).json({ message: 'Friendship not found or already removed' });
     }
 
-    await Friend.deleteMany({
-      $or: [
-        { user_id: userId, friend_id: targetId },
-        { user_id: targetId, friend_id: userId },
-      ],
-    });
+    await Friend.deleteMany({ $or: [{ user_id: userId, friend_id: targetId },{ user_id: targetId, friend_id: userId }]});
 
     const io = req.app.get('io');
     io.to(`user_${targetId}`).emit('friend_removed', { userId, targetId });

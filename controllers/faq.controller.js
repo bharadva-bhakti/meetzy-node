@@ -90,11 +90,7 @@ exports.updateFaq = async (req, res) => {
 
     const trimmedTitle = title.trim();
     if (trimmedTitle !== faq.title) {
-      const existingFaq = await Faq.findOne({
-        title: { $regex: `^${trimmedTitle}$`, $options: 'i' },
-        _id: { $ne: id },
-      });
-
+      const existingFaq = await Faq.findOne({ title: { $regex: `^${trimmedTitle}$`, $options: 'i' }, _id: { $ne: id }, });
       if (existingFaq) {
         return res.status(409).json({ message: 'FAQ with this title already exists.' });
       }
@@ -102,28 +98,17 @@ exports.updateFaq = async (req, res) => {
 
     await Faq.updateOne(
       { _id: id },
-      {
-        $set: {
-          title: trimmedTitle,
-          description: description.trim(),
-          status: status !== undefined ? Boolean(status) : faq.status,
-        },
-      }
+      { $set: { title: trimmedTitle, description: description.trim(), status: status !== undefined ? Boolean(status) : faq.status }}
     );
 
     const updatedFaq = await Faq.findById(id);
 
-    return res.status(200).json({
-      message: 'FAQ updated successfully',
-      faq: updatedFaq,
-    });
+    return res.status(200).json({ message: 'FAQ updated successfully', faq: updatedFaq, });
   } catch (error) {
     console.error('Error in updateFaq:', error);
-
     if (error.code === 11000) {
       return res.status(409).json({ message: 'FAQ with this title already exists.' });
     }
-
     return res.status(500).json({ message: 'Internal server error' });
   }
 };
@@ -155,15 +140,11 @@ exports.deleteFaq = async (req, res) => {
     }
 
     const result = await Faq.deleteMany({ _id: { $in: ids } });
-
     if (result.deletedCount === 0) {
       return res.status(404).json({ message: 'No FAQs found.' });
     }
 
-    const response = {
-      message: `${result.deletedCount} faq(s) deleted successfully`,
-      deletedCount: result.deletedCount,
-    };
+    const response = { message: `${result.deletedCount} faq(s) deleted successfully`, deletedCount: result.deletedCount, };
 
     return res.status(200).json(response);
   } catch (error) {

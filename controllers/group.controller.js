@@ -82,7 +82,6 @@ exports.getGroupInfo = async (req, res) => {
 
   try {
     const group = await Group.findById(groupId).populate('created_by', 'id name');
-
     if (!group) {
       return res.status(404).json({ message: 'Group not Found.' });
     }
@@ -96,10 +95,7 @@ exports.getGroupInfo = async (req, res) => {
     }
 
     const groupJson = group.toObject();
-    groupJson.members = members.map(m => ({
-      ...m.user_id.toObject(),
-      role: m.role,
-    }));
+    groupJson.members = members.map(m => ({ ...m.user_id.toObject(), role: m.role, }));
 
     if (myRole) {
       groupJson.myRole = myRole;
@@ -135,21 +131,11 @@ exports.getUserGroup = async (req, res) => {
     if (groupIds.length === 0) {
       return res.status(200).json({
         groups: [],
-        pagination: {
-          page,
-          limit,
-          totalCount: 0,
-          totalPages: 0,
-          hasMore: false,
-        },
+        pagination: { page, limit, totalCount: 0, totalPages: 0, hasMore: false, },
       });
     }
 
-    const groupQuery = {
-      _id: { $in: groupIds },
-      ...(search && { name: { $regex: search, $options: 'i' } }),
-    };
-
+    const groupQuery = { _id: { $in: groupIds }, ...(search && { name: { $regex: search, $options: 'i' } }), };
     const [totalCount, groups] = await Promise.all([
       Group.countDocuments(groupQuery),
       Group.find(groupQuery).populate('created_by', 'id name email').sort({ updated_at: -1 }).skip(skip).limit(limit),
@@ -169,13 +155,7 @@ exports.getUserGroup = async (req, res) => {
 
     return res.status(200).json({
       groups: updatedGroups,
-      pagination: {
-        page,
-        limit,
-        totalCount,
-        totalPages,
-        hasMore,
-      },
+      pagination: { page, limit, totalCount, totalPages, hasMore, },
     });
   } catch (error) {
     console.error('Error in getUserGroup:', error);
@@ -258,9 +238,7 @@ exports.addMembersToGroup = async (req, res) => {
 
     const currentCount = await GroupMember.countDocuments({ group_id });
     if (currentCount + members.length > limits.max_group_members) {
-      return res.status(400).json({
-        message: `This group cannot exceed ${limits.max_group_members} members.`,
-      });
+      return res.status(400).json({ message: `This group cannot exceed ${limits.max_group_members} members.`, });
     }
 
     const requester = await GroupMember.findOne({ group_id, user_id: requestingUserId });
@@ -320,11 +298,7 @@ exports.addMembersToGroup = async (req, res) => {
       added.forEach(member => {
         io.to(`user_${member.user_id}`).emit('group-added', groupPayload);
         if (member.role === 'admin') {
-          io.to(`group_${group_id}`).emit('member-role-updated', {
-            groupId: group_id,
-            userId: member.user_id,
-            newRole: 'admin',
-          });
+          io.to(`group_${group_id}`).emit('member-role-updated', { groupId: group_id, userId: member.user_id, newRole: 'admin', });
         }
       });
     }
@@ -462,18 +436,11 @@ exports.createGroup = async (req, res) => {
     if (req.user.role !== 'super_admin') {
       const userGroupCount = await GroupMember.countDocuments({ user_id: userId });
       if (userGroupCount >= limits.max_groups_per_user) {
-        return res.status(400).json({
-          message: `You can only be in ${limits.max_groups_per_user} groups.`,
-        });
+        return res.status(400).json({ message: `You can only be in ${limits.max_groups_per_user} groups.`, });
       }
     }
 
-    const group = await Group.create({
-      name,
-      description,
-      avatar,
-      created_by: userId,
-    });
+    const group = await Group.create({ name, description, avatar, created_by: userId, });
 
     const membersToAdd = [
       { group_id: group._id, user_id: userId, role: 'admin' },
@@ -533,7 +500,6 @@ exports.updateGroup = async (req, res) => {
     }
 
     const canEditInfo = isSuperAdmin || !groupSetting || groupSetting.allow_edit_info === 'everyone' || groupMember?.role === 'admin';
-
     if (!canEditInfo) {
       return res.status(403).json({ message: 'Only admins can edit group info.' });
     }
@@ -581,10 +547,7 @@ exports.updateGroup = async (req, res) => {
 
     const updatedGroup = await Group.findById(group_id);
 
-    return res.status(200).json({
-      message: 'Group updated successfully.',
-      data: updatedGroup,
-    });
+    return res.status(200).json({ message: 'Group updated successfully.', data: updatedGroup, });
   } catch (error) {
     console.error('Error in updateGroup:', error);
     return res.status(500).json({ message: 'Internal server error' });
@@ -608,6 +571,7 @@ exports.updateGroupSetting = async (req, res) => {
     if (!member || member.role !== 'admin') {
       return res.status(403).json({ message: 'Only admins can update group settings.' });
     }
+
     const updateData = {};
     if (['admin', 'everyone'].includes(allow_edit_info)) updateData.allow_edit_info = allow_edit_info;
     if (['admin', 'everyone'].includes(allow_send_message)) updateData.allow_send_message = allow_send_message;
@@ -625,23 +589,14 @@ exports.updateGroupSetting = async (req, res) => {
       const settingText = updateData.allow_send_message === 'admin'
         ? 'allowed only admins to send messages'
         : 'allowed everyone to send messages';
-      await createSystemMessage(req, group_id, 'group_settings_updated', {
-        updater_user_id: user_id,
-        setting_text: settingText,
-      });
+      await createSystemMessage(req, group_id, 'group_settings_updated', { updater_user_id: user_id, setting_text: settingText, });
     }
     const io = req.app.get('io');
     if (io) {
-      io.to(`group_${group_id}`).emit('group-settings-updated', {
-        groupId: group_id,
-        settings: updatedSetting,
-      });
+      io.to(`group_${group_id}`).emit('group-settings-updated', { groupId: group_id, settings: updatedSetting, });
     }
 
-    return res.status(200).json({
-      message: 'Group settings updated successfully.',
-      data: updatedSetting,
-    });
+    return res.status(200).json({ message: 'Group settings updated successfully.', data: updatedSetting, });
   } catch (error) {
     console.error('Error in updateGroupSetting:', error);
     return res.status(500).json({ message: 'Internal server error' });
@@ -718,8 +673,10 @@ exports.leaveGroup = async (req, res) => {
     const remainingMembers = await GroupMember.countDocuments({ group_id });
     if (remainingMembers === 1) {
       await group.deleteOne();
+
       const io = req.app.get('io');
       io.to(`user_${user_id}`).emit('group-deleted', { id: group_id, name: group.name });
+
       return res.status(200).json({ message: 'Group deleted as you were the last member.' });
     }
 
@@ -750,9 +707,7 @@ exports.leaveGroup = async (req, res) => {
 
     io.to(`group_${group_id}`).emit('member-left-group', { groupId: group_id, userId: user_id });
     if (newAdminPromoted) {
-      io.to(`group_${group_id}`).emit('member-role-updated', {
-        groupId: group_id, userId: newAdminPromoted, newRole: 'admin',
-      });
+      io.to(`group_${group_id}`).emit('member-role-updated', { groupId: group_id, userId: newAdminPromoted, newRole: 'admin' });
     }
     io.to(`user_${user_id}`).emit('group-left', { groupId: group_id });
 

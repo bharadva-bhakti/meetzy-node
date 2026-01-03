@@ -25,10 +25,7 @@ exports.getAllInquiries = async (req, res) => {
       : {};
 
     const [inquiries, total] = await Promise.all([
-      ContactInquiry.find(query)
-        .sort({ [safeSortField]: sortOrder })
-        .skip(skip)
-        .limit(limit),
+      ContactInquiry.find(query).sort({ [safeSortField]: sortOrder }).skip(skip).limit(limit),
       ContactInquiry.countDocuments(query),
     ]);
 

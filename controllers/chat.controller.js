@@ -22,18 +22,12 @@ exports.togglePinConversation = async (req, res) => {
   const { type, targetId } = req.body;
 
   try {
-    const existingPin = await PinnedConversation.findOne({
-      user_id: userId,
-      type,
-      target_id: targetId,
-    });
+    const existingPin = await PinnedConversation.findOne({ user_id: userId, type, target_id: targetId, });
 
     const io = req.app.get('io');
     const emitPinUpdate = (pinned, pinnedAt = null) => {
       if (!io) return;
-      io.to(`user_${userId}`).emit('chat-pin-updated', {
-        type, targetId, pinned, pinned_at: pinnedAt,
-      });
+      io.to(`user_${userId}`).emit('chat-pin-updated', { type, targetId, pinned, pinned_at: pinnedAt, });
     };
 
     if (existingPin) {
@@ -43,12 +37,7 @@ exports.togglePinConversation = async (req, res) => {
     }
 
     const pinnedAt = new Date();
-    await PinnedConversation.create({
-      user_id: userId,
-      type,
-      target_id: targetId,
-      pinned_at: pinnedAt,
-    });
+    await PinnedConversation.create({ user_id: userId, type, target_id: targetId, pinned_at: pinnedAt, });
 
     emitPinUpdate(true, pinnedAt.toISOString());
     return res.status(201).json({ 
@@ -70,10 +59,7 @@ exports.getArchivedChats = async (req, res) => {
   try {
     const { archivedChats, pagination } = await fetchArchiveChats({ userId: currentUserId, page, limit });
 
-    res.status(200).json({
-      archived: archivedChats, 
-      ...pagination
-    });
+    res.status(200).json({ archived: archivedChats,  ...pagination });
   } catch (error) {
     console.error('Error in getArchivedChats:', error);
     res.status(500).json({ message: 'Internal Server Error' });
@@ -87,45 +73,35 @@ exports.toggleArchive = async (req, res) => {
   if (!targetId) return res.status(400).json({ message: 'Target Id is required' });
 
   try {
-    // Validate target exists
     if (targetType === 'user') {
       const user = await User.findById(targetId);
       if (!user) return res.status(404).json({ message: 'User Not Found' });
+
     } else if (targetType === 'group') {
       const group = await Group.findById(targetId);
       if (!group) return res.status(404).json({ message: 'Group Not Found' });
+
     } else if (targetType === 'broadcast') {
       const broadcast = await Broadcast.findById(targetId);
       if (!broadcast) return res.status(404).json({ message: 'Broadcast Not Found' });
     }
 
-    const existingArchive = await Archive.findOne({
-      user_id: userId,
-      target_id: targetId,
-      target_type: targetType,
-    });
+    const existingArchive = await Archive.findOne({ user_id: userId, target_id: targetId, target_type: targetType, });
 
     const io = req.app.get('io');
     const emitArchiveUpdate = (isArchived) => {
       if (!io) return;
       const chatType = targetType === 'group' ? 'group' : 'direct';
-      io.to(`user_${userId}`).emit('chat-archive-updated', {
-        targetId,
-        type: chatType,
-        isArchived,
-      });
+      io.to(`user_${userId}`).emit('chat-archive-updated', { targetId, type: chatType, isArchived, });
     };
 
     if (existingArchive) {
       await Archive.deleteOne({ _id: existingArchive._id });
       emitArchiveUpdate(false);
       return res.status(200).json({ action: 'unarchive', message: 'Chat Restored From Archive' });
+
     } else {
-      await Archive.create({
-        user_id: userId,
-        target_id: targetId,
-        target_type: targetType,
-      });
+      await Archive.create({ user_id: userId, target_id: targetId, target_type: targetType, });
       emitArchiveUpdate(true);
       return res.status(200).json({ action: 'archive', message: 'Chat Archived Successfully' });
     }
@@ -169,36 +145,17 @@ exports.archiveAllChats = async (req, res) => {
   const userId = req.user._id;
 
   try {
-    // Get all direct chat partners
     const directPartners = await Message.aggregate([
-      {
-        $match: {
-          group_id: null,
-          $or: [{ sender_id: userId }, { recipient_id: userId }],
-        }
-      },
-      {
-        $project: {
-          partner_id: {
-            $cond: [
-              { $eq: ['$sender_id', userId] },
-              '$recipient_id',
-              '$sender_id'
-            ]
-          }
-        }
-      },
+      { $match: { group_id: null, $or: [{ sender_id: userId }, { recipient_id: userId }] }},
+      { $project: { partner_id: { $cond: [{ $eq: ['$sender_id', userId] }, '$recipient_id', '$sender_id'] }}},
       { $group: { _id: '$partner_id' } },
       { $project: { _id: 0, partner_id: '$_id' } }
     ]);
 
     const directPartnerIds = directPartners.map(p => p.partner_id);
-
-    // Get all groups user is member of
     const groupMembers = await GroupMember.find({ user_id: userId }).select('group_id').lean();
     const groupIds = groupMembers.map(g => g.group_id);
 
-    // Get blocked users
     const blocked = await Block.find({ blocker_id: userId }).select('blocked_id').lean();
     const blockedIds = blocked.map(b => b.blocked_id.toString());
 
@@ -227,18 +184,10 @@ exports.archiveAllChats = async (req, res) => {
     const io = req.app.get('io');
     if (io) {
       finalUserTargets.forEach((targetId) => {
-        io.to(`user_${userId}`).emit('chat-archive-updated', {
-          targetId,
-          type: 'direct',
-          isArchived: true,
-        });
+        io.to(`user_${userId}`).emit('chat-archive-updated', { targetId, type: 'direct', isArchived: true, });
       });
       groupIds.forEach((targetId) => {
-        io.to(`user_${userId}`).emit('chat-archive-updated', {
-          targetId,
-          type: 'group',
-          isArchived: true,
-        });
+        io.to(`user_${userId}`).emit('chat-archive-updated', { targetId, type: 'group', isArchived: true, });
       });
     }
 
@@ -333,27 +282,13 @@ exports.toggleBlock = async (req, res) => {
 
     const io = req.app.get('io');
     if (io) {
-      io.to(`user_${userId}`).emit('block-status-updated', {
-        blockType: block_type,
-        targetId,
-        action,
-      });
+      io.to(`user_${userId}`).emit('block-status-updated', { blockType: block_type, targetId, action, });
 
-      // Emit system message
       const fullSystemMessage = await Message.aggregate([
         { $match: { _id: createdSystemMessage._id } },
         { $lookup: { from: 'users', localField: 'sender_id', foreignField: '_id', as: 'sender_doc' } },
         { $unwind: { path: '$sender_doc', preserveNullAndEmptyArrays: true } },
-        {
-          $addFields: {
-            id: '$_id',
-            sender: {
-              id: '$sender_doc._id',
-              name: '$sender_doc.name',
-              avatar: '$sender_doc.avatar',
-            },
-          },
-        },
+        { $addFields: { id: '$_id', sender: { id: '$sender_doc._id', name: '$sender_doc.name', avatar: '$sender_doc.avatar' }}},
         { $project: { _id: 0, id: 1, content: 1, message_type: 1, metadata: 1, created_at: 1, sender: 1 } },
       ]);
 
@@ -401,10 +336,7 @@ exports.getFavoriteChat = async (req, res) => {
   try {
     const { validFavorites, pagination } = await fetchFavoriteData(currentUserId, page, limit);
 
-    res.status(200).json({
-      favorites: validFavorites,
-      ...pagination,
-    });
+    res.status(200).json({ favorites: validFavorites, ...pagination, });
   } catch (error) {
     console.error('Error in getFavoriteChat:', error);
     res.status(500).json({ message: 'Internal Server Error' });
@@ -419,16 +351,13 @@ exports.toggleFavorite = async (req, res) => {
     if (targetType === 'user') {
       const user = await User.findById(targetId);
       if (!user) return res.status(404).json({ message: 'User not found.' });
+
     } else if (targetType === 'group') {
       const group = await Group.findById(targetId);
       if (!group) return res.status(404).json({ message: 'Group not found.' });
     }
 
-    const favorite = await Favorite.findOne({
-      user_id: currentUserId,
-      target_id: targetId,
-      target_type: targetType,
-    });
+    const favorite = await Favorite.findOne({ user_id: currentUserId, target_id: targetId, target_type: targetType, });
 
     let isFavorite = false;
 
@@ -436,18 +365,11 @@ exports.toggleFavorite = async (req, res) => {
       await Favorite.deleteOne({ _id: favorite._id });
       isFavorite = false;
     } else {
-      await Favorite.create({
-        user_id: currentUserId,
-        target_id: targetId,
-        target_type: targetType,
-      });
+      await Favorite.create({ user_id: currentUserId, target_id: targetId, target_type: targetType, });
       isFavorite = true;
     }
 
-    res.status(200).json({
-      isFavorite,
-      message: isFavorite ? 'Added to favorites' : 'Removed from favorites',
-    });
+    res.status(200).json({ isFavorite, message: isFavorite ? 'Added to favorites' : 'Removed from favorites', });
   } catch (error) {
     console.error('Error in toggleFavorite:', error);
     res.status(500).json({ message: 'Internal Server Error' });
@@ -502,6 +424,7 @@ exports.muteChat = async (req, res) => {
     if (target_type === 'user') {
       const user = await User.findById(target_id);
       if (!user) return res.status(404).json({ message: 'User not found.' });
+
     } else if (target_type === 'group') {
       const group = await Group.findById(target_id);
       if (!group) return res.status(404).json({ message: 'Group not found.' });
@@ -558,6 +481,7 @@ exports.unmuteChat = async (req, res) => {
     if (target_type === 'user') {
       const user = await User.findById(target_id);
       if (!user) return res.status(404).json({ message: 'User not found.' });
+
     } else if (target_type === 'group') {
       const group = await Group.findById(target_id);
       if (!group) return res.status(404).json({ message: 'Group not found.' });
@@ -566,11 +490,7 @@ exports.unmuteChat = async (req, res) => {
     await MutedChat.deleteOne({ user_id: userId, target_id, target_type });
 
     const io = req.app.get('io');
-    io.to(`user_${userId}`).emit('chat_unmuted', {
-      userId,
-      targetId: target_id,
-      targetType: target_type,
-    });
+    io.to(`user_${userId}`).emit('chat_unmuted', { userId, targetId: target_id, targetType: target_type, });
 
     res.status(200).json({ message: 'Chat unmute Successfully.' });
   } catch (error) {
@@ -587,10 +507,7 @@ exports.getRecentChats = async (req, res) => {
   try {
     const { messages, pagination } = await fetchRecentChat(currentUserId, page, limit, { paginate: true });
 
-    res.status(200).json({
-      chats: messages, 
-      pagination
-    });
+    res.status(200).json({ chats: messages,  pagination });
   } catch (err) {
     console.error('getRecentChats error:', err);
     res.status(500).json({ success: false, message: 'Internal server error' });
@@ -615,10 +532,7 @@ exports.searchRecentChat = async (req, res) => {
 
       const phone = ch.chat_type === 'direct' ? ch.lastMessage.recipient?.phone?.toLowerCase() : null;
       
-      return (
-        (name && name.includes(searchTerm)) ||
-        (phone && phone.includes(searchTerm))
-      );
+      return ( (name && name.includes(searchTerm)) || (phone && phone.includes(searchTerm)) );
     });
 
     const totalCount = filteredChat.length;
@@ -629,9 +543,7 @@ exports.searchRecentChat = async (req, res) => {
     res.status(200).json({
       success: true,
       chats: paginatedChats,
-      pagination: {
-        page, limit, totalCount, totalPages, hasMore: page < totalPages
-      }
+      pagination: { page, limit, totalCount, totalPages, hasMore: page < totalPages }
     });
   } catch (error) {
     console.error('Error in searchRecentChat:', error);
@@ -682,6 +594,7 @@ exports.deleteChat = async (req, res) => {
     if (targetType === 'user') {
       const user = await User.findById(targetId);
       if (!user) return res.status(404).json({ message: 'User not found.' });
+
     } else if (targetType === 'group') {
       const group = await Group.findById(targetId);
       if (!group) return res.status(404).json({ message: 'Group not found.' });
@@ -723,11 +636,7 @@ exports.deleteAllChats = async (req, res) => {
   try {
     const directPartners = await Message.aggregate([
       { $match: { group_id: null, $or: [{ sender_id: userId }, { recipient_id: userId }] }},
-      {
-        $project: {
-          partner_id: { $cond: [{ $eq: ['$sender_id', userId] }, '$recipient_id', '$sender_id']},
-        },
-      },
+      { $project: { partner_id: { $cond: [{ $eq: ['$sender_id', userId] }, '$recipient_id', '$sender_id']} }},
       { $group: { _id: '$partner_id' } },
       { $match: { _id: { $ne: null } } },
     ]);
@@ -756,7 +665,6 @@ exports.deleteAllChats = async (req, res) => {
       );
     }
 
-    // Clear group chats
     for (const groupId of groupIds) {
       clearPromises.push(
         ChatClear.updateOne(
@@ -771,9 +679,7 @@ exports.deleteAllChats = async (req, res) => {
 
     const io = req.app.get('io');
     if (io) {
-      io.to(`user_${userId}`).emit('chats-deleted-all', {
-        userId: userId.toString(), deletedCount: deletePayloads.length,
-      });
+      io.to(`user_${userId}`).emit('chats-deleted-all', { userId: userId.toString(), deletedCount: deletePayloads.length });
     }
 
     return res.status(200).json({
@@ -826,6 +732,7 @@ exports.exportChat = async (req, res) => {
     } else if (recipientId) {
       const recipientObjId = new mongoose.Types.ObjectId(recipientId);
       const currentUser = await User.findById(userId).lean();
+
       const recipient = await User.findById(recipientObjId).lean();
       if (!recipient) return res.status(400).json({ message: 'Recipient user not found.' });
 
@@ -891,9 +798,7 @@ exports.clearChat = async (req, res) => {
   try {
     const targets = [recipientId, groupId, broadcastId].filter(Boolean);
     if (targets.length !== 1) {
-      return res.status(400).json({ 
-        message: 'Provide exactly one of: recipientId, groupId, or broadcastId.' 
-      });
+      return res.status(400).json({ message: 'Provide exactly one of: recipientId, groupId, or broadcastId.' });
     }
 
     const filter = { user_id: userId };
@@ -933,11 +838,7 @@ exports.clearAllChats = async (req, res) => {
   try {
     const directPartners = await Message.aggregate([
       { $match: { group_id: null, $or: [{ sender_id: userId }, { recipient_id: userId }]}},
-      {
-        $project: {
-          partner_id: { $cond: [{ $eq: ['$sender_id', userId] }, '$recipient_id', '$sender_id']},
-        },
-      },
+      { $project: { partner_id: { $cond: [{ $eq: ['$sender_id', userId] }, '$recipient_id', '$sender_id']} }},
       { $group: { _id: '$partner_id' } },
       { $match: { _id: { $ne: null } } },
     ]);
@@ -968,11 +869,7 @@ exports.clearAllChats = async (req, res) => {
     }
 
     for (const groupId of groupIds) {
-      clearPromises.push(
-        ChatClear.updateOne(
-          { user_id: userId, group_id: groupId }, { $set: { cleared_at: now } }, { upsert: true }
-        )
-      );
+      clearPromises.push( ChatClear.updateOne( { user_id: userId, group_id: groupId }, { $set: { cleared_at: now } }, { upsert: true }));
     }
 
     if (clearPromises.length > 0) {
@@ -981,10 +878,7 @@ exports.clearAllChats = async (req, res) => {
 
     const io = req.app.get('io');
     if (io) {
-      io.to(`user_${userId}`).emit('chats-cleared-all', {
-        userId: userId.toString(),
-        clearedCount: deletePayloads.length,
-      });
+      io.to(`user_${userId}`).emit('chats-cleared-all', { userId: userId.toString(), clearedCount: deletePayloads.length, });
     }
 
     return res.status(200).json({

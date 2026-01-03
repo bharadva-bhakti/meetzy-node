@@ -15,10 +15,7 @@ exports.fetchAllData = async (req, res) => {
     const query = search ? { title: { $regex: search, $options: 'i' } } : {};
 
     const [reports, total] = await Promise.all([
-      ReportReason.find(query)
-        .sort({ [safeSortField]: sortOrder })
-        .skip(skip)
-        .limit(limit),
+      ReportReason.find(query).sort({ [safeSortField]: sortOrder }).skip(skip).limit(limit),
       ReportReason.countDocuments(query),
     ]);
 

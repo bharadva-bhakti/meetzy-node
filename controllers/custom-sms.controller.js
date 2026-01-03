@@ -109,14 +109,8 @@ exports.saveGateway = async (req, res) => {
       params: custom_config.params || [],
       headers: custom_config.headers || [],
       field_mappings: custom_config.field_mappings || {},
-      success_response: custom_config.success_response || { 
-        field: 'success', 
-        value: true 
-      },
-      error_response: custom_config.error_response || { 
-        field: 'error', 
-        value: true 
-      }
+      success_response: custom_config.success_response || { field: 'success', value: true },
+      error_response: custom_config.error_response || { field: 'error', value: true }
     };
 
     if (!existingGateway) {
@@ -139,7 +133,6 @@ exports.saveGateway = async (req, res) => {
       }
 
       const updateData = { name, base_url, method, auth_type, account_sid, auth_token, from_number, enabled };
-
       const existingConfig = existingGateway.custom_config || {};
 
       updateData.custom_config = {

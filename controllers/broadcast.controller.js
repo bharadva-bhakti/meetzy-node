@@ -82,24 +82,18 @@ exports.createBroadcast = async (req, res) => {
     const blockedUserIds = new Set();
     blocks.forEach(block => {
       const blockedId = block.blocker_id.toString() === creator_id.toString()
-        ? block.blocked_id
-        : block.blocker_id;
+        ? block.blocked_id : block.blocker_id;
       blockedUserIds.add(blockedId.toString());
     });
 
     const finalRecipientIds = validRecipientIds.filter(id => !blockedUserIds.has(id.toString()));
-
     if (finalRecipientIds.length === 0) {
       return res.status(400).json({ message: 'All recipients are blocked or invalid.' });
     }
 
     const broadcast = await Broadcast.create({ creator_id, name: name.trim() });
 
-    const recipientRecords = finalRecipientIds.map(recipient_id => ({
-      broadcast_id: broadcast._id,
-      recipient_id,
-    }));
-
+    const recipientRecords = finalRecipientIds.map(recipient_id => ({ broadcast_id: broadcast._id, recipient_id, }));
     await BroadcastMember.insertMany(recipientRecords);
 
     await Message.create({
@@ -173,27 +167,14 @@ exports.getMyBroadcasts = async (req, res) => {
                         ],
                       },
                     },
-                    in: {
-                      id: '$$matchedUser._id',
-                      name: '$$matchedUser.name',
-                      avatar: '$$matchedUser.avatar',
-                    },
+                    in: { id: '$$matchedUser._id', name: '$$matchedUser.name', avatar: '$$matchedUser.avatar', },
                   },
                 },
               },
             },
           },
         },
-        {
-          $project: {
-            id: '$_id',
-            _id: 0,
-            name: 1,
-            created_at: 1,
-            updated_at: 1,
-            recipients: 1,
-          },
-        },
+        { $project: { id: '$_id', _id: 0, name: 1, created_at: 1, updated_at: 1, recipients: 1 }},
       ]),
     ]);
 
@@ -244,10 +225,7 @@ exports.updateBroadcast = async (req, res) => {
 
       const io = req.app.get('io');
       if (io) {
-        io.to(`user_${creator_id}`).emit('broadcast-updated', {
-          broadcast_id: broadcast._id,
-          name: name,
-        });
+        io.to(`user_${creator_id}`).emit('broadcast-updated', { broadcast_id: broadcast._id, name: name, });
       }
     }
 
@@ -273,9 +251,7 @@ exports.deleteBroadcast = async (req, res) => {
 
     const io = req.app.get('io');
     if (io) {
-      io.to(`user_${creator_id}`).emit('broadcast-deleted', {
-        broadcast_id: broadcast._id,
-      });
+      io.to(`user_${creator_id}`).emit('broadcast-deleted', { broadcast_id: broadcast._id, });
     }
 
     return res.json({ message: 'Broadcast list deleted successfully.' });
@@ -343,11 +319,7 @@ exports.addRecipients = async (req, res) => {
       return res.status(400).json({ message: 'No valid recipients to add.' });
     }
 
-    const recipientRecords = finalRecipientIds.map(recipient_id => ({
-      broadcast_id: broadcast._id,
-      recipient_id,
-    }));
-
+    const recipientRecords = finalRecipientIds.map(recipient_id => ({ broadcast_id: broadcast._id, recipient_id, }));
     await BroadcastMember.insertMany(recipientRecords);
 
     const addedUsers = validRecipients.filter(u => finalRecipientIds.includes(u._id));

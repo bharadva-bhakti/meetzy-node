@@ -103,10 +103,7 @@ exports.initiateCall = async (req, res) => {
     }
     if (!chatId) return res.status(400).json({ message: 'chatId is required' });
 
-    const initiatorBusy = await CallParticipant.findOne({
-      user_id: initiatorId,
-      status: { $in: ['joined', 'invited'] },
-    });
+    const initiatorBusy = await CallParticipant.findOne({ user_id: initiatorId, status: { $in: ['joined', 'invited'] }, });
 
     if (initiatorBusy) {
       const activeCall = await Call.findOne({ _id: initiatorBusy.call_id, status: 'active' });
@@ -176,11 +173,9 @@ exports.initiateCall = async (req, res) => {
     if (chatType === 'direct') {
       io.to(`user_${chatId}`).emit('incoming-call', callData);
     } else {
-      participants
-        .filter((p) => p.user_id.toString() !== initiatorId.toString())
-        .forEach((p) => {
-          io.to(`user_${p.user_id}`).emit('incoming-call', callData);
-        });
+      participants .filter((p) => p.user_id.toString() !== initiatorId.toString()) .forEach((p) => {
+        io.to(`user_${p.user_id}`).emit('incoming-call', callData);
+      });
     }
 
     // Unanswered timeout
@@ -197,12 +192,7 @@ exports.initiateCall = async (req, res) => {
         }).lean();
 
         if (answeredParticipants.length === 0) {
-          await Call.findByIdAndUpdate(call._id, {
-            status: 'ended',
-            ended_at: new Date(),
-            duration: 0,
-          });
-
+          await Call.findByIdAndUpdate(call._id, { status: 'ended', ended_at: new Date(), duration: 0, });
           await CallParticipant.updateMany({ call_id: call._id, status: 'invited' }, { status: 'missed' });
 
           const missedCall = await getFullCallData(call._id);
@@ -234,9 +224,7 @@ exports.answerCall = async (req, res) => {
   try {
     if (!callId) return res.status(400).json({ message: 'callId is required' });
 
-    // Fetch call with full nested data using aggregation
     const callAggregation = await getFullCallData(callId);
-    console.log("🚀 ~ callAggregation:", callAggregation)
     const call = callAggregation[0];
     if (!call) return res.status(404).json({ message: 'Call not found.' });
 
@@ -244,11 +232,7 @@ exports.answerCall = async (req, res) => {
       return res.status(400).json({ message: 'Call has already ended' });
     }
 
-    const participant = await CallParticipant.findOne({
-      call_id: call.id,
-      user_id: userId,
-    }).lean();
-
+    const participant = await CallParticipant.findOne({ call_id: call.id, user_id: userId, }).lean();
     if (!participant) {
       return res.status(404).json({ message: 'You are not invited to this call.' });
     }
@@ -257,7 +241,6 @@ exports.answerCall = async (req, res) => {
       return res.status(400).json({ message: 'You have already joined this call.' });
     }
 
-    // Check if user is busy in another call
     const userBusy = await CallParticipant.findOne({
       user_id: userId,
       status: { $in: ['joined', 'invited'] },
@@ -265,22 +248,17 @@ exports.answerCall = async (req, res) => {
     });
 
     const busyCall = userBusy ? await Call.findOne({ _id: userBusy.call_id, status: 'active' }) : null;
-
     if (busyCall) {
       io.to(`user_${call.initiator_id}`).emit('call-busy', { userId: userId.toString() });
       return res.status(409).json({ message: 'You are already in another active call.' });
     }
 
-    // 1. Count non-initiator joined BEFORE updating current user
     const nonInitiatorBeforeCount = await CallParticipant.countDocuments({
       call_id: call.id,
       status: 'joined',
       user_id: { $ne: call.initiator_id },
     });
 
-    console.log(`[CALL DEBUG] Non-initiator joined BEFORE update: ${nonInitiatorBeforeCount}`);
-
-    // 2. Now update participant to joined
     await CallParticipant.findOneAndUpdate(
       { call_id: call.id, user_id: userId },
       {
@@ -291,11 +269,9 @@ exports.answerCall = async (req, res) => {
       }
     );
 
-    // 3. If this was the FIRST non-initiator to join → set accepted_time
     if (nonInitiatorBeforeCount === 0) {
       const now = new Date();
       await Call.findByIdAndUpdate(call.id, { accepted_time: now });
-      console.log(`[CALL DEBUG] FIRST ANSWERER! accepted_time set to ${now.toISOString()}`);
     }
 
     await createCallMessage(call, 'ongoing', req, userId.toString());
@@ -313,13 +289,8 @@ exports.answerCall = async (req, res) => {
     };
 
     const joinedParticipants = updatedCall.participants.filter((p) => p.status === 'joined' && p.user_id.toString() !== userId.toString());
-
     joinedParticipants.forEach((p) => {
-      io.to(`user_${p.user_id}`).emit('call-accepted', {
-        callId: call.id.toString(),
-        userId: userId.toString(),
-        user: userData,
-      });
+      io.to(`user_${p.user_id}`).emit('call-accepted', { callId: call.id.toString(), userId: userId.toString(), user: userData, });
     });
 
     const participantsForSync = updatedCall.participants
@@ -335,10 +306,7 @@ exports.answerCall = async (req, res) => {
         isScreenSharing: p.is_screen_sharing || false,
       }));
 
-    io.to(`user_${userId}`).emit('call-participants-sync', {
-      callId: call.id.toString(),
-      participants: participantsForSync,
-    });
+    io.to(`user_${userId}`).emit('call-participants-sync', { callId: call.id.toString(), participants: participantsForSync, });
 
     res.json({ message: 'Call answered successfully', call: updatedCall });
   } catch (error) {
@@ -355,21 +323,15 @@ exports.declineCall = async (req, res) => {
   try {
     if (!callId) return res.status(400).json({ message: 'callId is required' });
 
-    // Fetch call with aggregation (no populate)
     const callAggregation = await getFullCallData(callId);
     const call = callAggregation[0];
-
     if (!call) return res.status(404).json({ message: 'Call not found' });
 
     if (call.status !== 'active') {
       return res.status(400).json({ message: 'Call has already ended' });
     }
 
-    const participant = await CallParticipant.findOne({
-      call_id: call.id,
-      user_id: userId,
-    }).lean();
-
+    const participant = await CallParticipant.findOne({ call_id: call.id, user_id: userId, }).lean();
     if (!participant) {
       return res.status(404).json({ message: 'You are not invited to this call' });
     }
@@ -387,12 +349,7 @@ exports.declineCall = async (req, res) => {
     await createCallMessage(call, 'declined', req);
 
     if (call.call_mode === 'direct') {
-      await Call.findByIdAndUpdate(call.id, {
-        status: 'ended',
-        ended_at: new Date(),
-        duration: 0,
-      });
-
+      await Call.findByIdAndUpdate(call.id, { status: 'ended', ended_at: new Date(), duration: 0, });
       await CallParticipant.findOneAndUpdate({ call_id: call.id, user_id: call.initiator_id }, { status: 'left' });
 
       io.to(`user_${call.initiator_id}`).emit('call-declined', { callId: call.id.toString(), userId: userId.toString() });
@@ -411,14 +368,9 @@ exports.declineCall = async (req, res) => {
       const hasInvited = remaining.some((p) => p.status === 'invited');
 
       if (!hasActive && !hasInvited) {
-        await Call.findByIdAndUpdate(call.id, {
-          status: 'ended',
-          ended_at: new Date(),
-          duration: 0,
-        });
+        await Call.findByIdAndUpdate(call.id, { status: 'ended', ended_at: new Date(), duration: 0, });
 
         await CallParticipant.updateMany({ call_id: call.id, status: 'joined' }, { status: 'left' });
-
         await CallParticipant.updateMany({ call_id: call.id, status: 'invited' }, { status: 'missed' });
 
         call.participants.forEach((p) => {
@@ -447,81 +399,49 @@ exports.endCall = async (req, res) => {
   try {
     if (!callId) return res.status(400).json({ message: 'callId is required' });
 
-    // Fetch call with aggregation (no populate)
     const callAggregation = await getFullCallData(callId);
     const call = callAggregation[0];
-
     if (!call) return res.status(404).json({ message: 'Call not found' });
 
-    const participant = await CallParticipant.findOne({
-      call_id: call.id,
-      user_id: userId,
-    }).lean();
-
+    const participant = await CallParticipant.findOne({ call_id: call.id, user_id: userId, }).lean();
     if (!participant) {
       return res.status(403).json({ message: 'You are not part of this call' });
     }
 
     if (call.status === 'ended') {
-      return res.json({
-        message: 'Call already ended',
-        callEnded: true,
-        duration: call.duration || 0,
-      });
+      return res.json({ message: 'Call already ended', callEnded: true, duration: call.duration || 0, });
     }
 
     await CallParticipant.findOneAndUpdate({ call_id: call.id, user_id: userId }, { status: 'left', left_at: new Date() });
 
-    const remainingJoined = await CallParticipant.find({
-      call_id: call.id,
-      status: 'joined',
-    }).lean();
-    console.log('🚀 ~ remainingJoined:', remainingJoined);
-
+    const remainingJoined = await CallParticipant.find({ call_id: call.id, status: 'joined', }).lean();
     const shouldEndCall = remainingJoined.length < 2;
-    console.log('🚀 ~ shouldEndCall:', shouldEndCall);
 
     let duration = 0;
     if (shouldEndCall) {
       let endTime;
       if (call.accepted_time) {
-        // Call was answered at some point → calculate real duration
         endTime = new Date();
         duration = Math.max(1, Math.floor((endTime - new Date(call.accepted_time)) / 1000));
-        console.log(`[CALL DEBUG] Call was answered! Duration from accepted_time: ${duration}s`);
       } else {
-        // Never answered → duration 0
-        console.log(`[CALL DEBUG] Call never answered → duration = 0`);
         duration = 0;
       }
 
-      // Always save duration (even if 0)
-      await Call.findByIdAndUpdate(call.id, {
-        status: 'ended',
-        ended_at: new Date(),
-        duration,
-      });
+      await Call.findByIdAndUpdate(call.id, { status: 'ended', ended_at: new Date(), duration, });
 
       await CallParticipant.updateMany({ call_id: call.id, status: 'joined' }, { status: 'left', left_at: endTime });
-
       await CallParticipant.updateMany({ call_id: call.id, status: 'invited' }, { status: 'missed' });
 
-      // Fetch final call data with aggregation
       const finalCallAggregation = await getFullCallData(callId);
       const finalCall = finalCallAggregation[0];
 
       await createCallMessage(finalCall, 'ended', req, userId.toString());
 
-      // Get participant user IDs without populate
       const participants = await CallParticipant.find({ call_id: call.id }).select('user_id').lean();
       const participantIds = participants.map((p) => p.user_id.toString());
 
       participantIds.forEach((uid) => {
-        io.to(`user_${uid}`).emit('call-ended', {
-          callId: call.id.toString(),
-          reason: 'ended',
-          duration,
-        });
+        io.to(`user_${uid}`).emit('call-ended', { callId: call.id.toString(), reason: 'ended', duration, });
       });
     } else {
       const leftUser = await User.findById(userId).select('id name avatar').lean();
@@ -531,11 +451,7 @@ exports.endCall = async (req, res) => {
           io.to(`user_${p.user_id}`).emit('participant-left', {
             callId: call.id.toString(),
             userId: userId.toString(),
-            user: {
-              userId: userId.toString(),
-              name: leftUser?.name || 'Unknown',
-              avatar: leftUser?.avatar || null,
-            },
+            user: { userId: userId.toString(), name: leftUser?.name || 'Unknown', avatar: leftUser?.avatar || null, },
           });
         }
       });
@@ -572,9 +488,7 @@ exports.getCallHistory = async (req, res) => {
       ...participated.map((p) => p.call_id),
     ];
 
-    const uniqueCallIds = [...new Set(callIds.map((id) => id.toString()))]
-      .map((id) => new mongoose.Types.ObjectId(id));
-
+    const uniqueCallIds = [...new Set(callIds.map((id) => id.toString()))].map((id) => new mongoose.Types.ObjectId(id));
     if (uniqueCallIds.length === 0) {
       return res.json({
         calls: {},
@@ -594,11 +508,9 @@ exports.getCallHistory = async (req, res) => {
       filteredCallIds = outgoing.map((c) => c._id);
       
     } else if (filter === 'missed') {
-      const missed = await CallParticipant.find({
-        call_id: { $in: uniqueCallIds },
-        user_id: userId,
-        status: 'missed',
-      }).select('call_id').lean();
+      const missed = await CallParticipant.find(
+        { call_id: { $in: uniqueCallIds }, user_id: userId, status: 'missed', }
+      ).select('call_id').lean();
       filteredCallIds = missed.map((p) => p.call_id);
     }
 
@@ -611,7 +523,6 @@ exports.getCallHistory = async (req, res) => {
     }
 
     const totalCount = filteredCallIds.length;
-
     const paginatedCallIds = filteredCallIds.sort((a, b) => b - a).slice(skip, skip + parseInt(limit));
 
     const calls = await Call.aggregate([
@@ -705,9 +616,7 @@ exports.getCallHistory = async (req, res) => {
 
     let finalCalls = processedCalls;
     if (search.trim()) {
-      finalCalls = processedCalls.filter((call) =>
-        matchesSearchCriteria(call, search, userId.toString())
-      );
+      finalCalls = processedCalls.filter((call) => matchesSearchCriteria(call, search, userId.toString()) );
     }
 
     const groupedCalls = groupCallsByDate(finalCalls);

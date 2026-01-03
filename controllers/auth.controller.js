@@ -6,7 +6,6 @@ const OTPLog = db.OTPLog;
 const UserSetting = db.UserSetting;
 const GoogleToken = db.GoogleToken;
 const Setting = db.Setting;
-
 const getOAuthClient = require('../config/googleAuth');
 const { google } = require('googleapis');
 const { sendMail } = require('../utils/mail');
@@ -89,8 +88,7 @@ exports.register = async (req, res) => {
     if (err.message === 'MAINTENANCE_MODE') {
       const settings = await getSettings();
       return res.status(503).json({
-        message: settings.maintenance_message || 'System under maintenance',
-        maintenance: true,
+        message: settings.maintenance_message || 'System under maintenance', maintenance: true,
       });
     }
 
@@ -178,8 +176,7 @@ exports.loginInit = async (req, res) => {
     if (error.message === 'MAINTENANCE_MODE') {
       const settings = await getSettings();
       return res.status(503).json({
-        message: settings.maintenance_message || 'System under maintenance',
-        maintenance: true,
+        message: settings.maintenance_message || 'System under maintenance', maintenance: true,
       });
     }
 
@@ -280,28 +277,20 @@ exports.loginWithPassword = async (req, res) => {
 
     if (!isSuperAdmin) {
       if (loginMethod === 'otp') {
-        return res.status(400).json({
-          message: 'Password login is disabled. Please use OTP login.'
-        });
+        return res.status(400).json({ message: 'Password login is disabled. Please use OTP login.' });
       }
 
       if (isEmailFormat && authMethod === 'phone') {
-        return res.status(400).json({
-          message: 'Email login is disabled by admin. Use phone to login.'
-        });
+        return res.status(400).json({ message: 'Email login is disabled by admin. Use phone to login.' });
       }
 
       if (!isEmailFormat && authMethod === 'email') {
-        return res.status(400).json({
-          message: 'Phone login is disabled by admin. Use email to login.'
-        });
+        return res.status(400).json({ message: 'Phone login is disabled by admin. Use email to login.' });
       }
     }
 
     if (user.status === 'deactive') {
-      return res.status(400).json({
-        message: 'Your account has been deactivated. Please contact your Admin.'
-      });
+      return res.status(400).json({ message: 'Your account has been deactivated. Please contact your Admin.' });
     }
 
     if (!user.password) {
@@ -361,7 +350,6 @@ exports.linkIdentifier = async (req, res) => {
     }
 
     const result = await sendOtp(sendType, sendValue, 'Verification Code', updateType, updateValue);
-
     if (result.demo) {
       return res.json({ message: 'OTP sent successfully', demo_otp: result.otp });
     }
@@ -642,12 +630,7 @@ exports.logout = async (req, res) => {
   const token = req.token;
 
   try {
-    const session = await Session.findOne({
-      user_id: userId,
-      session_token: token,
-      status: 'active',
-    });
-
+    const session = await Session.findOne({ user_id: userId, session_token: token, status: 'active', });
     if (!session) {
       return res.status(404).json({ message: 'Session not found or already logged out.' });
     }

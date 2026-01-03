@@ -1,25 +1,39 @@
-'use strict';
+const mongoose = require('mongoose');
+const { db } = require('../models');
+const ReportReason = db.ReportReason;
 
-/** @type {import('sequelize-cli').Migration} */
-module.exports = {
-  async up (queryInterface, Sequelize) {
-    const reportReasons = [
-      { id: 1, title: 'Spam', created_at: new Date(), updated_at: new Date() },
-      { id: 2, title: 'Fraud', created_at: new Date(), updated_at: new Date() },
-      { id: 3, title: 'Nudity or Sexual Content', created_at: new Date(), updated_at: new Date() },
-      { id: 4, title: 'Hate Speech or Abusive Content', created_at: new Date(), updated_at: new Date() },
-      { id: 5, title: 'Harassment or Bullying', created_at: new Date(), updated_at: new Date() },
-      { id: 6, title: 'Violence or Threats', created_at: new Date(), updated_at: new Date() },
-      { id: 7, title: 'Self-Harm or Suicide', created_at: new Date(), updated_at: new Date() },
-      { id: 8, title: 'Misinformation or Fake News', created_at: new Date(), updated_at: new Date() },
-      { id: 9, title: 'Impersonation', created_at: new Date(), updated_at: new Date() },
-      { id: 10, title: 'Other', created_at: new Date(), updated_at: new Date() }
-    ];
+mongoose.connect(process.env.MONGODB_URI,)
+  .then(() => console.log('MongoDB connected for seeding report reasons'))
+  .catch(err => {
+    console.error('MongoDB connection error:', err);
+    process.exit(1);
+  });
 
-    await queryInterface.bulkInsert('report_reasons', reportReasons, {});
-  },
+const reportReasons = [
+  { title: 'Spam' },
+  { title: 'Fraud' },
+  { title: 'Nudity or Sexual Content' },
+  { title: 'Hate Speech or Abusive Content' },
+  { title: 'Harassment or Bullying' },
+  { title: 'Violence or Threats' },
+  { title: 'Self-Harm or Suicide' },
+  { title: 'Misinformation or Fake News' },
+  { title: 'Impersonation' },
+  { title: 'Other' },
+];
 
-  async down (queryInterface, Sequelize) {
-    await queryInterface.bulkDelete('report_reasons', null, {});
+async function seed() {
+  try {
+    await ReportReason.deleteMany({});
+
+    await ReportReason.insertMany(reportReasons);
+    console.log('Report reasons seeded successfully!');
+
+    process.exit(0);
+  } catch (error) {
+    console.error('Error seeding report reasons:', error);
+    process.exit(1);
   }
-};
+}
+
+seed();
