@@ -41,7 +41,7 @@ exports.authenticate = async (req, res, next) => {
 
     req.user = user;
     req.token = token;
-
+    
     next();
   } catch (err) {
     console.error('JWT error:', err);

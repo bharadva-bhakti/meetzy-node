@@ -131,16 +131,31 @@ exports.getUserProfile = async (req, res) => {
         announcement_type: m.metadata?.announcement_type || null,
       }));
 
-    const starredActions = await MessageAction.find({
-      user_id: currentUserId,
-      action_type: 'star',
-    }).populate({
-        path: 'message',
-        populate: { path: 'sender_id', select: 'id name avatar' },
-        match: {
-          $or: [buildMatch({}),{ sender_id: userId, recipient_id: null, group_id: null, message_type: 'announcement' }],
-        },
-      }).sort({ created_at: -1 }).limit(10);
+      const starredActions = await MessageAction.find({
+        user_id: currentUserId,
+        action_type: 'star',
+      })
+        .populate({
+          path: 'message_id',                          // ← Correct field name from schema
+          select: 'id content created_at sender_id file_url file_type metadata message_type recipient_id group_id',
+          populate: {
+            path: 'sender_id',
+            select: 'id name avatar',
+          },
+          match: {
+            $or: [
+              buildMatch({}),
+              {
+                sender_id: userId,
+                recipient_id: null,
+                group_id: null,
+                message_type: 'announcement',
+              },
+            ],
+          },
+        })
+        .sort({ created_at: -1 })
+        .limit(10);
 
     const starredMessages = starredActions
       .filter(a => a.message)

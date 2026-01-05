@@ -122,30 +122,38 @@ module.exports = function initSocket(io) {
           user_id: userId,
           status: 'sent',
         })
-          .populate('message')
+          .populate({
+            path: 'message_id',                    // ← Correct field name
+            select: 'sender_id',                   // Only need sender_id
+          })
           .lean();
-
-        const messageIds = undeliveredStatuses.map((ms) => ms.message_id);
-
+        
+        const messageIds = undeliveredStatuses.map((ms) => ms.message_id?._id || ms.message_id);
+        
         if (messageIds.length > 0) {
           await MessageStatus.updateMany(
             { message_id: { $in: messageIds }, user_id: userId, status: 'sent' },
             { status: 'delivered' }
           );
-
+        
           for (const status of undeliveredStatuses) {
-            const senderId = status.message.sender_id.toString();
-            io.to(`user_${senderId}`).emit('message-status-updated', {
-              messageId: status.message_id.toString(),
-              userId: userId.toString(),
-              status: 'delivered',
-            });
+            // After population, message_id is now the full Message document
+            const senderId = status.message_id?.sender_id?.toString();
+            
+            if (senderId) {
+              io.to(`user_${senderId}`).emit('message-status-updated', {
+                messageId: status.message_id._id.toString(),  // or status.message_id.id if using virtuals
+                userId: userId.toString(),
+                status: 'delivered',
+              });
+            }
           }
         }
       } catch (error) {
         console.error(`Error while joining room`, error);
       }
     });
+
     socket.on("request-status-update", async () => {
       const userId = socket.userId;
       if (!userId) {

@@ -1226,6 +1226,7 @@ exports.editMessage = async (req, res) => {
 exports.forwardMessage = async (req, res) => {
   const senderId = req.user._id;
   let { messageIds, recipients, encryptedContents } = req.body;
+  console.log("🚀 ~ req.body:", req.body)
 
   try {
     if (!messageIds || !recipients || recipients.length === 0) {
