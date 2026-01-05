@@ -4,6 +4,7 @@ const Friend = db.Friend;
 const Notification = db.Notification;
 const UserSetting = db.UserSetting;
 const { fetchFriendSuggestions } = require('../helper/chatHelpers');
+const mongoose = require('mongoose')
 
 exports.getFriendSuggestions = async (req, res) => {
   const currentUserId = req.user?._id;
@@ -117,7 +118,7 @@ exports.respondToFriendRequest = async (req, res) => {
 
   try {
     const friendRequest = await Friend.findOne({
-      requested_by: requestId,
+      requested_by: new mongoose.Types.ObjectId(requestId),
       friend_id: currentUserId,
       status: 'pending',
     }).populate('requested_by', 'id name bio avatar');

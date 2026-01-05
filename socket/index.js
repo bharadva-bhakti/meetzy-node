@@ -146,35 +146,45 @@ module.exports = function initSocket(io) {
         console.error(`Error while joining room`, error);
       }
     });
-
-    socket.on('request-status-update', async () => {
+    socket.on("request-status-update", async () => {
       const userId = socket.userId;
       if (!userId) {
-        console.error('No userId for request-status-update');
+        console.error("No userId for request-status-update");
         return;
       }
 
       try {
+        // Fetch all users with only needed fields
         const allUsersFromDb = await User.find({})
-          .populate('setting', 'last_seen')
-          .select('id is_online last_seen')
+          .select("_id is_online last_seen setting.last_seen") // Use _id instead of id
           .lean();
 
         const allUsers = allUsersFromDb
           .map((user) => {
+            // Safely get userId from _id (handles cases where _id might be missing)
+            const userIdStr = user._id ? user._id.toString() : null;
+
+            if (!userIdStr) {
+              console.warn(`User document missing _id:`, user);
+              return null; // Skip invalid users
+            }
+
+            // Check if user has setting and if last_seen is allowed
             const shouldShowLastSeen = !user.setting || user.setting.last_seen !== false;
+
             return {
-              userId: user.id.toString(),
-              status: user.is_online ? 'online' : 'offline',
+              userId: userIdStr,
+              status: user.is_online ? "online" : "offline",
               lastSeen: shouldShowLastSeen && user.last_seen ? user.last_seen.toISOString() : null,
             };
           })
-          .filter((u) => u.userId !== userId.toString());
+          .filter((u) => u !== null && u.userId !== userId.toString()); // Remove nulls and exclude self
 
-        socket.emit('bulk-user-status-update', allUsers);
-        console.log(`Sent status update for user ${userId}`);
+        socket.emit("bulk-user-status-update", allUsers);
+        console.log(`Sent status update to user ${userId} (${allUsers.length} users)`);
       } catch (error) {
         console.error(`Error fetching status update for user ${userId}:`, error);
+        socket.emit("bulk-user-status-update-error", { message: "Failed to fetch user statuses" });
       }
     });
 
