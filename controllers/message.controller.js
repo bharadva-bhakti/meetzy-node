@@ -202,23 +202,31 @@ exports.sendMessage = async (req, res) => {
       return res.status(201).json({ messages: fullMessages });
     }
 
+    const blockedRecipients = new Set();
+
     for (const rid of recipientIds) {
-      const blocked = await Block.findOne({
+      const recipientBlockedSender = await Block.findOne({
         blocker_id: rid,
         blocked_id: senderId,
       }).lean();
 
+      if (recipientBlockedSender) {
+        blockedRecipients.add(rid.toString());
+      }
+
       for (const payload of payloads) {
+        const isBlocked = blockedRecipients.has(rid.toString());
+
         const msg = await createMessageWithStatus({
           senderId,
           recipientId: isBroadcast ? rid : recipientId,
           groupId,
           payload: isBroadcast
-            ? { ...payload, metadata: { ...payload.metadata, is_broadcast: true, broadcast_id: broadcastId,}}
+            ? { ...payload, metadata: { ...payload.metadata, is_broadcast: true, broadcast_id: broadcastId }}
             : payload,
           mentions: validatedMentions,
           isEncrypted,
-          isBlocked: !!blocked,
+          isBlocked,
         });
 
         messages.push(msg);
@@ -291,6 +299,10 @@ exports.sendMessage = async (req, res) => {
         io.to(`user_${senderId}`).emit('receive-message', msg);
 
         if (msg.recipient_id) {
+          const recipientIdStr = msg.recipient_id.toString();
+          if (blockedRecipients.has(recipientIdStr)) {
+            return;
+          }
           io.to(`user_${msg.recipient_id}`).emit('receive-message', msg);
         }
       });
@@ -527,7 +539,7 @@ exports.getMessages = async (req, res) => {
       if (!broadcastId) return res.status(400).json({ message: 'broadcastId is required' });
     
       const pipeline = [
-        { $match: { 'metadata.is_broadcast': true, 'metadata.broadcast_id': broadcastId }},
+        { $match: { 'metadata.is_broadcast': true, 'metadata.broadcast_id': new mongoose.Types.ObjectId(broadcastId) }},
         ...(clearFilter ? [{ $match: clearFilter }] : []),
         { $sort: { created_at: 1 } },
         { $skip: parseInt(offset) },
@@ -800,25 +812,25 @@ exports.getMessages = async (req, res) => {
 
     if (recipientId) {
       isChatLocked = checkLockedChat('user', recipientId);
-
+    
       const recipient = await User.findById(recipientId).lean({ virtuals: true });
       if (!recipient) return res.status(404).json({ message: 'User not found' });
-     
+    
       const userObjId = new mongoose.Types.ObjectId(userId);
       const recipientObjId = new mongoose.Types.ObjectId(recipientId);
-
+    
       if (isChatLocked) {
         const pin = req.query.pin;
         if (!pin) return res.status(400).json({ message: 'PIN_REQUIRED' });
     
-        if (!userSetting.pin_hash){
+        if (!userSetting.pin_hash) {
           return res.status(400).json({ message: 'Set Your Pin first.' });
-        } 
+        }
     
         const match = await bcrypt.compare(pin, userSetting.pin_hash);
         if (!match) return res.status(400).json({ message: 'INVALID_PIN' });
       }
-
+    
       const pipeline = [
         {
           $match: {
@@ -847,25 +859,36 @@ exports.getMessages = async (req, res) => {
         ...addStatusesAndReactions,
         { $project: { ...commonProject, group: 1 } },
       ];
+    
+      let messages = await Message.aggregate(pipeline);
+      
+      const [iBlockedThem, theyBlockedMe] = await Promise.all([
+        Block.findOne({ blocker_id: userId, blocked_id: new mongoose.Types.ObjectId(recipientId) }).lean(),        
+        Block.findOne({ blocker_id: new mongoose.Types.ObjectId(recipientId), blocked_id: userId }).lean(),
+      ]);
+      
+      if (iBlockedThem) {
+        const blockTime = new Date(iBlockedThem.created_at);
+    
+        messages = messages.filter(msg => {
+          if (msg.sender_id.toString() === userId.toString()) return true;
 
-      messages = await Message.aggregate(pipeline);
-
+          return new Date(msg.created_at) <= blockTime;
+        });
+      }
+    
       const groupedMessages = await groupMessagesBySender(messages, userId);
       const dateGroupedMessages = groupMessagesByDate(groupedMessages);
-
+    
       const commonMeta = await getCommonChatMeta('user', recipientId);
-
-      const [iBlockedThem, theyBlockedMe, friendEntry] = await Promise.all([
-        Block.findOne({ blocker_id: userId, blocked_id: recipientId }),
-        Block.findOne({ blocker_id: recipientId, blocked_id: userId }),
-        Friend.findOne({
-          $or: [{ user_id: userId, friend_id: recipientId }, { user_id: recipientId, friend_id: userId }],
-        }),
-      ]);
-
+    
+      const friendEntry = await Friend.findOne({
+        $or: [{ user_id: userId, friend_id: recipientId }, { user_id: recipientId, friend_id: userId }],
+      });
+    
       const canSendMessages = !iBlockedThem && !theyBlockedMe;
       const canReceiveMessages = !theyBlockedMe;
-
+    
       chatTarget = {
         id: recipient._id.toString(),
         avatar: recipient.avatar,
@@ -899,7 +922,7 @@ exports.getMessages = async (req, res) => {
         canSendMessages,
         canReceiveMessages,
       };
-
+    
       return res.json({
         messages: dateGroupedMessages,
         chatTarget,
@@ -1226,7 +1249,6 @@ exports.editMessage = async (req, res) => {
 exports.forwardMessage = async (req, res) => {
   const senderId = req.user._id;
   let { messageIds, recipients, encryptedContents } = req.body;
-  console.log("🚀 ~ req.body:", req.body)
 
   try {
     if (!messageIds || !recipients || recipients.length === 0) {

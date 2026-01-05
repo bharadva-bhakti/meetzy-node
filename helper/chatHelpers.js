@@ -786,14 +786,23 @@ async function fetchRecentChat(currentUserId, page = 1, limit = 20, options = {}
   const { hiddenSet, archivedSet, blockedUsers, blockedGroups, pinnedSet, pinnedTimeMap, mutedMap, favoriteSet } = relations;
 
   const directConvos = await Message.aggregate([
-    { $match: { group_id: null, $or: [{ sender_id: currentUserId }, { recipient_id: currentUserId }]}},
+    { $match: { group_id: null, $or: [{ sender_id: currentUserId }, { recipient_id: currentUserId }] } },
     {
       $group: {
         _id: { $cond: [{ $eq: ['$sender_id', currentUserId] }, '$recipient_id', '$sender_id'] },
         last_activity: { $max: '$created_at' },
       },
     },
-    { $sort: { last_activity: -1 } },
+    {
+      $lookup: {
+        from: 'users',
+        localField: '_id',
+        foreignField: '_id',
+        as: 'user',
+      },
+    },
+    { $match: { 'user.0': { $exists: true } } },
+    { $project: { _id: 1, last_activity: 1 } },
   ]);
 
   const directList = directConvos.filter(dc => {
@@ -833,11 +842,23 @@ async function fetchRecentChat(currentUserId, page = 1, limit = 20, options = {}
   const filteredBroadcastIds = broadcastIds.filter(id => !broadcastExcludeIds.includes(id));
 
   const broadcastConvos = filteredBroadcastIds.length > 0
-    ? await Message.aggregate([
-        { $match: { 'metadata.broadcast_id': { $in: filteredBroadcastIds } } },
-        { $group: { _id: '$metadata.broadcast_id', last_activity: { $max: '$created_at' } } },
-      ])
-    : [];
+  ? await Message.aggregate([
+      { 
+        $match: { 
+          'metadata.broadcast_id': { 
+            $in: filteredBroadcastIds.map(id => new mongoose.Types.ObjectId(id))
+          } 
+        } 
+      },
+      { 
+        $group: { 
+          _id: '$metadata.broadcast_id', 
+          last_activity: { $max: '$created_at' } 
+        } 
+      },
+      { $sort: { last_activity: -1 } },
+    ])
+  : [];
 
   const adminUser = await User.findOne({role: 'super_admin'});
   const adminObjectId = new mongoose.Types.ObjectId(adminUser._id);

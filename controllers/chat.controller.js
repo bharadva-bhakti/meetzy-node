@@ -524,15 +524,29 @@ exports.searchRecentChat = async (req, res) => {
     const { messages } = await fetchRecentChat(currentUserId, page, limit, { paginate: true });
 
     const filteredChat = messages.filter(ch => {
-      const name =
-        ch.chat_type === 'direct'
-          ? ch.lastMessage.recipient?.name?.toLowerCase()
-          : ch.lastMessage.group?.name?.toLowerCase() || ch.info?.name?.toLowerCase();
-          
-
-      const phone = ch.chat_type === 'direct' ? ch.lastMessage.recipient?.phone?.toLowerCase() : null;
-      
-      return ( (name && name.includes(searchTerm)) || (phone && phone.includes(searchTerm)) );
+      if (!ch.lastMessage) {
+        const name = (ch.name || '').toLowerCase();
+        return name.includes(searchTerm);
+      }
+    
+      let name = '';
+      let phone = null;
+    
+      if (ch.chat_type === 'direct') {
+        name = ch.lastMessage.recipient?.name || ch.name || '';
+        phone = ch.lastMessage.recipient?.phone || ch.phone;
+      } else if (ch.chat_type === 'group') {
+        name = ch.lastMessage.group?.name || ch.name || '';
+      } else if (ch.chat_type === 'broadcast') {
+        name = ch.name || ''; // broadcasts have .name directly
+      } else if (ch.chat_type === 'announcement') {
+        name = ch.name || 'Announcements';
+      }
+    
+      return (
+        name.toLowerCase().includes(searchTerm) ||
+        (phone && phone.toLowerCase().includes(searchTerm))
+      );
     });
 
     const totalCount = filteredChat.length;

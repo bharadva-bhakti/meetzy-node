@@ -11,6 +11,7 @@ const CallParticipant = db.CallParticipant;
 const UserSetting = db.UserSetting;
 const MessageDisappearing = db.MessageDisappearing;
 const Block = db.Block;
+const mongoose = require('mongoose');
 const { updateUserStatus } = require('../utils/userStatusHelper');
 
 const resetOnlineStatuses = async () => {
@@ -483,26 +484,38 @@ module.exports = function initSocket(io) {
 
     socket.on('message-delivered', async ({ messageId, senderId }) => {
       const userId = socket.userId;
-      if (!userId || !messageId || !senderId) return;
-
+      if (!userId || !messageId) return;
+    
+      // Safely extract the actual ID string
+      let senderIdStr = senderId;
+      if (typeof senderId === 'object' && senderId !== null) {
+        senderIdStr = senderId.id || senderId._id || senderId.userId;
+      }
+    
+      // Validate it's a proper ObjectId string
+      if (!senderIdStr || !mongoose.Types.ObjectId.isValid(senderIdStr)) {
+        console.warn('Invalid or missing senderId in message-delivered:', senderId);
+        return;
+      }
+    
       try {
         const message = await Message.findOne({
           _id: messageId,
-          sender_id: senderId,
-        }).select('id sender_id recipient_id group_id').lean();
-
+          sender_id: senderIdStr,  // now a valid string/ObjectId
+        }).select('sender_id recipient_id group_id').lean();
+    
         if (!message) {
-          console.warn(`Message ${messageId} not found or doesn't belong to sender ${senderId}`);
+          console.warn(`Message ${messageId} not found or not sent by ${senderIdStr}`);
           return;
         }
-
+    
         const result = await MessageStatus.updateMany(
           { message_id: messageId, user_id: userId, status: 'sent' },
           { status: 'delivered', updated_at: new Date() }
         );
-
+    
         if (result.modifiedCount > 0) {
-          io.to(`user_${senderId}`).emit('message-status-updated', {
+          io.to(`user_${senderIdStr}`).emit('message-status-updated', {
             messageId: messageId.toString(),
             userId: userId.toString(),
             status: 'delivered',
