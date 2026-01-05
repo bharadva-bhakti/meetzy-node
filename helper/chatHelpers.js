@@ -566,7 +566,10 @@ async function getLatestMessage(conv, currentUserId, pinnedSet, pinnedTimeMap, m
     user_id: currentUserId,
     action_type: 'delete',
     'details.type': 'me',
-    'details.is_broadcast_view': false,
+    $or: [
+      { 'details.is_broadcast_view': { $exists: false } },
+      { 'details.is_broadcast_view': false }
+    ]
   }).select('message_id').lean();
 
   const deletedIds = deletedMessages.map(d => d.message_id);
