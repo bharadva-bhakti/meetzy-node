@@ -496,11 +496,8 @@ exports.uploadDocuments = async (req, res) => {
     let verification = null;
 
     if (request_id) {
-      if (!mongoose.Types.ObjectId.isValid(request_id)) {
-        return res.status(400).json({ message: 'Invalid request_id' });
-      }
 
-      verification = await VerificationRequest.findOne({ _id: request_id, user_id: userId, }).lean();
+      verification = await VerificationRequest.findOne({ request_id: request_id, user_id: userId, }).lean();
       if (!verification) {
         return res.status(404).json({ message: 'Verification request not found' });
       }
@@ -512,11 +509,7 @@ exports.uploadDocuments = async (req, res) => {
         }
       }
     } else if (subscription_id) {
-      if (!mongoose.Types.ObjectId.isValid(subscription_id)) {
-        return res.status(400).json({ message: 'Invalid subscription_id' });
-      }
-
-      const subscription = await Subscription.findOne({ _id: subscription_id, user_id: userId }).lean();
+      const subscription = await Subscription.findOne({ _id: new mongoose.Types.ObjectId(subscription_id), user_id: userId }).lean();
       if (!subscription) {
         return res.status(404).json({ message: 'Subscription not found' });
       }
@@ -525,7 +518,7 @@ exports.uploadDocuments = async (req, res) => {
         return res.status(400).json({ message: 'Subscription must be active to upload documents.' });
       }
 
-      verification = await VerificationRequest.findOne({ subscription_id: subscription_id, user_id: userId }).lean();
+      verification = await VerificationRequest.findOne({ subscription_id: new mongoose.Types.ObjectId(subscription_id), user_id: userId }).lean();
       if (!verification) {
         if (!full_name || !category) {
           return res.status(400).json({ message: 'full_name and category are required when creating a new verification request.' });
@@ -537,7 +530,7 @@ exports.uploadDocuments = async (req, res) => {
         }
 
         const completedPayment = await Payment.findOne({
-          subscription_id: subscription_id,
+          subscription_id: new mongoose.Types.ObjectId(subscription_id),
           user_id: userId,
           status: 'completed',
         }).sort({ completed_at: -1 }).lean();
