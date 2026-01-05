@@ -305,8 +305,10 @@ function isLockedChat(userSetting, chatType, chatId) {
     return false;
   }
 
+  const normalizedChatType = chatType === 'direct' ? 'user' : chatType;
+
   return userSetting.locked_chat_ids.some(
-    chat => chat.type === chatType && chat.id.toString() === chatId.toString()
+    chat => chat.type === normalizedChatType && chat.id.toString() === chatId.toString()
   );
 }
 
