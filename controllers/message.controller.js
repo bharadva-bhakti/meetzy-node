@@ -217,6 +217,8 @@ exports.sendMessage = async (req, res) => {
 
     const blockedRecipients = new Set();
 
+    const broadcastMessageId = new mongoose.Types.ObjectId().toString();
+
     for (const rid of recipientIds) {
       const recipientBlockedSender = await Block.findOne({
         blocker_id: rid,
@@ -235,7 +237,7 @@ exports.sendMessage = async (req, res) => {
           recipientId: isBroadcast ? rid : recipientId,
           groupId,
           payload: isBroadcast
-            ? { ...payload, metadata: { ...payload.metadata, is_broadcast: true, broadcast_id: broadcastId }}
+            ? { ...payload, metadata: { ...payload.metadata, is_broadcast: true, broadcast_id: broadcastId, broadcast_message_id: broadcastMessageId }}
             : payload,
           mentions: validatedMentions,
           isEncrypted,
@@ -551,53 +553,48 @@ exports.getMessages = async (req, res) => {
     if (isBroadcast === 'true' || isBroadcast === true) {
       if (!broadcastId) return res.status(400).json({ message: 'broadcastId is required' });
     
+      isChatLocked = checkLockedChat('broadcast', broadcastId);
+    
+      const broadcast = await Broadcast.findById(broadcastId).lean({ virtuals: true });
+      if (!broadcast || broadcast.creator_id.toString() !== userId.toString()) {
+        return res.status(404).json({ message: 'Broadcast not found or access denied' });
+      }
+    
       const pipeline = [
-        { $match: { 'metadata.is_broadcast': true, 'metadata.broadcast_id': new mongoose.Types.ObjectId(broadcastId) }},
+        { $match: { 
+          sender_id: userId, 
+          'metadata.is_broadcast': true, 
+          'metadata.broadcast_id': broadcastId.toString()
+        }},
         ...(clearFilter ? [{ $match: clearFilter }] : []),
-        { $sort: { created_at: 1 } },
+        {
+          $group: {
+            _id: '$metadata.broadcast_message_id',
+            doc: { $first: '$$ROOT' },
+            // Collect all recipient_ids for status tracking
+            recipient_ids: { $push: '$recipient_id' },
+            // Collect all statuses
+            all_statuses: { $push: '$_id' }
+          }
+        },
+        { $replaceRoot: { newRoot: '$doc' } },
+        { $sort: { created_at: -1 } },
         { $skip: parseInt(offset) },
         { $limit: parseInt(limit) },
         { $lookup: { from: 'users', localField: 'sender_id', foreignField: '_id', as: 'sender_doc' } },
         { $unwind: { path: '$sender_doc', preserveNullAndEmptyArrays: true } },
-        { $lookup: { from: 'message_statuses', localField: '_id', foreignField: 'message_id', as: 'statuses' } },
         {
           $addFields: {
             id: '$_id',
-            sender: { id: '$sender_doc._id', name: '$sender_doc.name', email: '$sender_doc.email', avatar: '$sender_doc.avatar', },
-            statuses: {
-              $map: {
-                input: '$statuses',
-                as: 's',
-                in: { user_id: '$$s.user_id', status: '$$s.status', updated_at: '$$s.updated_at' },
-              },
+            sender: { 
+              id: '$sender_doc._id', 
+              name: '$sender_doc.name', 
+              avatar: '$sender_doc.avatar' 
             },
-          },
+          }
         },
-        ...addStatusesAndReactions.slice(2),
-        {
-          $project: {
-            _id: 0,
-            id: 1,
-            sender_id: 1,
-            recipient_id: 1,
-            group_id: 1,
-            content: 1,
-            message_type: 1,
-            file_url: 1,
-            file_type: 1,
-            mentions: 1,
-            has_unread_mentions: 1,
-            metadata: 1,
-            is_encrypted: 1,
-            created_at: 1,
-            updated_at: 1,
-            deleted_at: 1,
-            sender: 1,
-            statuses: 1,
-            reactions: 1,
-            actions: 1,
-          },
-        },
+        ...addStatusesAndReactions,
+        { $project: { ...commonProject, group: null, recipient: null } },
       ];
     
       let messages = await Message.aggregate(pipeline);
@@ -609,7 +606,7 @@ exports.getMessages = async (req, res) => {
           a.action_type === 'delete' &&
           a.details?.type === 'me'
         );
-        const deletedForEveryone = actions.some(a => a.action_type === 'delete' && a.details?.type === 'everyone' );
+        const deletedForEveryone = actions.some(a => a.action_type === 'delete' && a.details?.type === 'everyone');
     
         if (deletedForMe && !deletedForEveryone) return false;
         if (deletedForEveryone) {
@@ -620,41 +617,27 @@ exports.getMessages = async (req, res) => {
         return true;
       });
     
-      const mergedMap = new Map();
-      for (const msg of messages) {
-        const key = [
-          msg.created_at?.toISOString(),
-          msg.content || '',
-          msg.file_url || '',
-          msg.message_type,
-          msg.metadata?.file_index ?? '',
-        ].join('|');
-    
-        if (!mergedMap.has(key)) {
-          mergedMap.set(key, { ...msg, statuses: msg.statuses || [], });
-        } else {
-          const entry = mergedMap.get(key);
-          entry.statuses = [...entry.statuses, ...(msg.statuses || [])];
-        }
-      }
-    
-      const mergedMessages = Array.from(mergedMap.values());
-
-      const groupedBySender = await groupBroadcastMessages(mergedMessages, userId);
-      const dateGrouped = groupMessagesByDate(groupedBySender);
+      const groupedMessages = await groupMessagesBySender(messages, userId);
+      const dateGroupedMessages = groupMessagesByDate(groupedMessages);
     
       const commonMeta = await getCommonChatMeta('broadcast', broadcastId);
     
       chatTarget = {
+        id: broadcastId,
+        name: broadcast.name || 'Broadcast',
+        avatar: null,
         type: 'broadcast',
         broadcast_id: broadcastId,
-        isArchived: !!commonMeta.isArchived,
-        isMuted: !!commonMeta.isMuted,
-        isFavorite: !!commonMeta.isFavorite,
+        recipient_count: broadcast.recipients?.length || 0,
+        ...commonMeta,
+        isBlocked: false,
+        hasBlockedMe: false,
+        canSendMessages: true,
+        canReceiveMessages: true,
       };
     
       return res.json({
-        messages: dateGrouped,
+        messages: dateGroupedMessages,
         chatTarget,
         metadata: {
           offset,
@@ -664,7 +647,7 @@ exports.getMessages = async (req, res) => {
           isChatLocked,
         },
       });
-    }   
+    }  
 
     if (groupId) {
       isChatLocked = checkLockedChat('group', groupId);
