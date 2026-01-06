@@ -236,6 +236,32 @@ exports.updateBroadcast = async (req, res) => {
   }
 };
 
+exports.getBroadcast = async (req, res) => {
+  const creator_id = req.user._id;
+  const { broadcast_id } = req.params;
+
+  try {
+    const broadcast = await fetchBroadcastWithRecipients(broadcast_id);
+    if (!broadcast) {
+      return res.status(404).json({ message: 'Broadcast list not found.' });
+    }
+
+    // Check ownership
+    const originalBroadcast = await Broadcast.findById(broadcast_id);
+    if (!originalBroadcast || originalBroadcast.creator_id.toString() !== creator_id.toString()) {
+      return res.status(403).json({ message: 'Access denied.' });
+    }
+
+    return res.json({
+      message: 'Broadcast fetched successfully.',
+      broadcast,
+    });
+  } catch (error) {
+    console.error('Error in getBroadcast:', error);
+    return res.status(500).json({ message: 'Internal server error' });
+  }
+};
+
 exports.deleteBroadcast = async (req, res) => {
   const creator_id = req.user._id;
   const { broadcast_id } = req.params;

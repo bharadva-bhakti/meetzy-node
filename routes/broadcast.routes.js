@@ -6,6 +6,7 @@ const broadcastController = require('../controllers/broadcast.controller');
 router.post('/create', authenticate, broadcastController.createBroadcast);
 
 router.get('/my-broadcasts', authenticate, broadcastController.getMyBroadcasts);
+router.get('/:broadcast_id', authenticate, broadcastController.getBroadcast);
 
 router.put('/:broadcast_id', authenticate, broadcastController.updateBroadcast);
 router.delete('/:broadcast_id', authenticate, broadcastController.deleteBroadcast);
