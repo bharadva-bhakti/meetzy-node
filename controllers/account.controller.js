@@ -158,9 +158,9 @@ exports.getUserProfile = async (req, res) => {
         .limit(10);
 
     const starredMessages = starredActions
-      .filter(a => a.message)
+      .filter(a => a.message_id)
       .map(a => {
-        const msg = a.message;
+        const msg = a.message_id;
         return {
           id: msg.id,
           content: msg.content,

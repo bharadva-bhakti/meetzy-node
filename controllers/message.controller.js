@@ -117,13 +117,26 @@ exports.sendMessage = async (req, res) => {
     if (groupId) {
       const member = await GroupMember.findOne({ group_id: groupId, user_id: senderId });
       if (!member) return res.status(403).json({ message: 'Not a group member' });
+
+      const groupMemberIds = await GroupMember.find({ group_id: groupId })
+        .select('user_id')
+        .lean()
+        .then(members => members.map(m => m.user_id));
+
+      if (groupMemberIds.length > 0) {
+        await UserDelete.deleteMany({
+          target_id: new mongoose.Types.ObjectId(groupId),
+          target_type: 'group',
+          user_id: { $in: groupMemberIds }
+        });
+      }
     }
 
-    if (recipientId || groupId) {
-      const targetId = recipientId || groupId;
-    
+    if (recipientId) {
+      const targetId = recipientId ? recipientId :  groupId;
+
       const deleteChat = await UserDelete.findOne({
-        user_id: new mongoose.Types.ObjectId(senderId),
+        user_id: senderId,
         target_id: new mongoose.Types.ObjectId(targetId),
         target_type: recipientId ? 'user' : 'group',
       });
