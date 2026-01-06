@@ -16,7 +16,7 @@ const createSystemMessage = async (req, groupId, action, metadata = {}) => {
   try {
     let content = '';
     let systemMetadata = { system_action: action, ...metadata };
-    
+
     const senderId = metadata.creator_user_id || metadata.updater_user_id || req.user._id;
     if (!senderId) {
       throw new Error('Sender ID is required to create a system message');
@@ -24,8 +24,8 @@ const createSystemMessage = async (req, groupId, action, metadata = {}) => {
 
     switch (action) {
       case 'group_created':
-        const group = await Group.findById(groupId).populate('created_by', 'name');
-        const creatorName = group?.created_by?.name || 'Someone';
+        const groupCreated = await Group.findById(groupId).populate('created_by', 'name');
+        const creatorName = groupCreated?.created_by?.name || 'Someone';
         content = `${creatorName} created this group.`;
         break;
       case 'member_added':
@@ -63,30 +63,44 @@ const createSystemMessage = async (req, groupId, action, metadata = {}) => {
       metadata: systemMetadata,
     });
 
-    const fullSystemMessage = await Message.findById(systemMessage._id)
-    .populate('sender_id', 'id name avatar')
-    .populate('group_id', 'id name avatar')
-    .lean(); // Important: use .lean() for easier manipulation
+    const populatedMessage = await Message.findById(systemMessage._id)
+      .populate('sender_id', 'id name avatar')
+      .populate('group_id', 'id name avatar')
+      .lean({ virtuals: true });
 
-    // Transform field names
     const transformedMessage = {
-      ...fullSystemMessage,
-      sender: fullSystemMessage.sender_id ? {
-        id: fullSystemMessage.sender_id.id || fullSystemMessage.sender_id._id,
-        name: fullSystemMessage.sender_id.name,
-        avatar: fullSystemMessage.sender_id.avatar,
-      } : null,
-      group: fullSystemMessage.group_id ? {
-        id: fullSystemMessage.group_id.id || fullSystemMessage.group_id._id,
-        name: fullSystemMessage.group_id.name,
-        avatar: fullSystemMessage.group_id.avatar,
-      } : null,
+      id: populatedMessage._id,
+      content: populatedMessage.content,
+      message_type: populatedMessage.message_type,
+      file_url: populatedMessage.file_url,
+      file_type: populatedMessage.file_type,
+      mentions: populatedMessage.mentions,
+      has_unread_mentions: populatedMessage.has_unread_mentions,
+      metadata: populatedMessage.metadata,
+      is_encrypted: populatedMessage.is_encrypted,
+      created_at: populatedMessage.created_at,
+      updated_at: populatedMessage.updated_at,
+      deleted_at: populatedMessage.deleted_at,
+      sender: populatedMessage.sender_id
+        ? {
+            id: populatedMessage.sender_id.id || populatedMessage.sender_id._id,
+            name: populatedMessage.sender_id.name,
+            avatar: populatedMessage.sender_id.avatar,
+          }
+        : null,
+      group: populatedMessage.group_id
+        ? {
+            id: populatedMessage.group_id.id || populatedMessage.group_id._id,
+            name: populatedMessage.group_id.name,
+            avatar: populatedMessage.group_id.avatar,
+          }
+        : null,
+      group_id: populatedMessage.group_id
+        ? (populatedMessage.group_id.id || populatedMessage.group_id._id)
+        : null,
+      recipient_id: populatedMessage.recipient_id || null,
+      parent_id: populatedMessage.parent_id || null,
     };
-
-    // Remove old fields
-    delete transformedMessage.sender_id;
-    delete transformedMessage.group_id;
-
     const io = req.app.get('io');
     io.to(`group_${groupId}`).emit('receive-message', transformedMessage);
 
