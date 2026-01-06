@@ -560,9 +560,14 @@ async function getLatestMessage(conv, currentUserId, pinnedSet, pinnedTimeMap, m
   }
 
   if (leftAt) {
-    messageMatch.created_at = messageMatch.created_at
-      ? { $and: [messageMatch.created_at, { $lte: leftAt }] }
-      : { $lte: leftAt };
+    if (messageMatch.created_at) {
+      messageMatch.created_at = {
+        ...messageMatch.created_at,
+        $lte: leftAt,
+      };
+    } else {
+      messageMatch.created_at = { $lte: leftAt };
+    }
   }
 
   const deletedMessages = await MessageAction.find({

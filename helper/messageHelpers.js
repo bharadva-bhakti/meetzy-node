@@ -498,36 +498,72 @@ async function getTargetUsers(message) {
   return [message.sender_id, message.recipient_id].filter(Boolean);
 }
 
-async function createSocketPayload(message, targetUserId, newPrevMessagesMap, deleteType, wasUnreadOverride) {
+async function createSocketPayload(message, targetUserId, newPrevMessagesMap, deleteType, wasUnreadOverride = undefined) {
   const key = getConversationKey(message);
-  const newPrevMessage = newPrevMessagesMap.get(key);
-  const deletedMessageHadMentions = message.has_unread_mentions;
+  const newPrevMessageRaw = newPrevMessagesMap.get(key) || null;
 
+  // Clean newPrevMessage — only include necessary fields and convert IDs to strings
+  const newPrevMessage = newPrevMessageRaw
+    ? {
+        id: newPrevMessageRaw.id || newPrevMessageRaw._id.toString(),
+        sender_id: newPrevMessageRaw.sender_id.toString(),
+        recipient_id: newPrevMessageRaw.recipient_id ? newPrevMessageRaw.recipient_id.toString() : null,
+        group_id: newPrevMessageRaw.group_id ? newPrevMessageRaw.group_id.toString() : null,
+        parent_id: newPrevMessageRaw.parent_id || null,
+        content: newPrevMessageRaw.content || '',
+        message_type: newPrevMessageRaw.message_type || 'text',
+        file_url: newPrevMessageRaw.file_url || null,
+        file_type: newPrevMessageRaw.file_type || null,
+        mentions: newPrevMessageRaw.mentions || [],
+        has_unread_mentions: newPrevMessageRaw.has_unread_mentions || false,
+        metadata: newPrevMessageRaw.metadata || null,
+        is_encrypted: !!newPrevMessageRaw.is_encrypted,
+        created_at: newPrevMessageRaw.created_at,
+        updated_at: newPrevMessageRaw.updated_at,
+        deleted_at: newPrevMessageRaw.deleted_at || null,
+      }
+    : null;
+
+  // Determine if the deleted message was unread for the target user
   let wasUnread = wasUnreadOverride;
   if (wasUnread === undefined) {
-    const status = await MessageStatus.findOne({ message_id: message._id, user_id: targetUserId });
+    const status = await MessageStatus.findOne({
+      message_id: message._id,
+      user_id: targetUserId,
+    }).lean();
+
     wasUnread = status ? status.status !== 'seen' : false;
   }
 
-  const hasUnreadMentions = deletedMessageHadMentions; // Simplified - full logic would require more queries
+  // Basic mention tracking (you can enhance this later if needed)
+  const hasUnreadMentions = message.has_unread_mentions || false;
 
-  const payload = {
-    messageId: message.id,
-    newPrevMessage,
-    deleteType,
-    wasUnread,
-    hasUnreadMentions,
-    deletedMessage: {
-      sender_id: message.sender_id,
-      group_id: message.group_id,
-      recipient_id: message.recipient_id,
-    },
-    created_at: message.created_at,
-    sender_id: message.sender_id,
+  // Minimal info about the deleted message
+  const deletedMessage = {
+    sender_id: message.sender_id.toString(),
+    recipient_id: message.recipient_id ? message.recipient_id.toString() : null,
+    group_id: message.group_id ? message.group_id.toString() : null,
   };
 
-  if (message.group_id) payload.group_id = message.group_id;
-  else payload.recipient_id = message.recipient_id;
+  // Base payload
+  const payload = {
+    messageId: message.id || message._id.toString(),
+    newPrevMessage,
+    deleteType, // 'delete-for-me' or 'delete-for-everyone'
+    wasUnread,
+    hasUnreadMentions,
+    deletedMessage,
+    created_at: message.created_at,
+  };
+
+  // Add context-specific fields
+  if (message.group_id) {
+    payload.group_id = message.group_id.toString();
+  } else {
+    // Direct message
+    payload.sender_id = message.sender_id.toString();
+    payload.recipient_id = message.recipient_id.toString();
+  }
 
   return payload;
 }
