@@ -42,7 +42,7 @@ exports.updateUserSetting = async (req, res) => {
     const isLocking = !!lock_chat;
     const isUnlocking = !!unlock_chat;
     const isChangingPin = !!new_pin;
-    const needsPin = isLocking || isUnlocking || isChangingPin;
+    const needsPin = isLocking || isUnlocking || isChangingPin || !!pin;
 
     if (needsPin) {
       if (!pin) {
