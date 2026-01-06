@@ -246,7 +246,12 @@ exports.getGroupMembers = async (req, res) => {
       group_id: group._id,
       group_name: group.name,
       group_avatar: group.avatar,
-      members,
+      members: members.map(member => {
+        return {
+        ...member,
+        is_created_by: member.id.toString() === group.created_by.toString()
+      };
+      }),
       page: parseInt(page),
       limit: parseInt(limit),
       total_pages: Math.ceil(members.length / parseInt(limit)),
