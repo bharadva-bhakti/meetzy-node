@@ -64,10 +64,31 @@ const createSystemMessage = async (req, groupId, action, metadata = {}) => {
     });
 
     const fullSystemMessage = await Message.findById(systemMessage._id)
-    .populate('sender_id', 'id name avatar').populate('group_id', 'id name avatar');
+    .populate('sender_id', 'id name avatar')
+    .populate('group_id', 'id name avatar')
+    .lean(); // Important: use .lean() for easier manipulation
+
+    // Transform field names
+    const transformedMessage = {
+      ...fullSystemMessage,
+      sender: fullSystemMessage.sender_id ? {
+        id: fullSystemMessage.sender_id.id || fullSystemMessage.sender_id._id,
+        name: fullSystemMessage.sender_id.name,
+        avatar: fullSystemMessage.sender_id.avatar,
+      } : null,
+      group: fullSystemMessage.group_id ? {
+        id: fullSystemMessage.group_id.id || fullSystemMessage.group_id._id,
+        name: fullSystemMessage.group_id.name,
+        avatar: fullSystemMessage.group_id.avatar,
+      } : null,
+    };
+
+    // Remove old fields
+    delete transformedMessage.sender_id;
+    delete transformedMessage.group_id;
 
     const io = req.app.get('io');
-    io.to(`group_${groupId}`).emit('receive-message', fullSystemMessage);
+    io.to(`group_${groupId}`).emit('receive-message', transformedMessage);
 
     return systemMessage;
   } catch (error) {
