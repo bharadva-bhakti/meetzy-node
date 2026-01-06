@@ -18,6 +18,7 @@ const MessageStatus = db.MessageStatus;
 const Broadcast = db.Broadcast;
 const UserDelete = db.UserDelete;
 const MessageAction = db.MessageAction;
+const MessageDisappearing = db.MessageDisappearing;
 
 async function formatLastMessage(message, currentUserId = null) {
   if (!message) return 'No messages yet';
@@ -578,11 +579,11 @@ async function getLatestMessage(conv, currentUserId, pinnedSet, pinnedTimeMap, m
   if (deletedIds.length > 0) {
     messageMatch._id = { $nin: deletedIds };
   }
-  const latestMessages = await Message.aggregate([
+
+  const candidateMessages = await Message.aggregate([
     { $match: messageMatch },
-    
     { $sort: { created_at: -1 } },
-    { $limit: 1 },
+    { $limit: 10 },
     { $lookup: { from: 'users', localField: 'sender_id', foreignField: '_id', as: 'sender_doc' } },
     { $unwind: { path: '$sender_doc', preserveNullAndEmptyArrays: true } },
     { $lookup: { from: 'users', localField: 'recipient_id', foreignField: '_id', as: 'recipient_doc' } },
@@ -636,7 +637,43 @@ async function getLatestMessage(conv, currentUserId, pinnedSet, pinnedTimeMap, m
     },
   ]);
 
-  const latest = latestMessages[0] || null;
+  let latest = null;
+
+  for (const msg of candidateMessages) {
+    const deletedForMe = await MessageAction.findOne({
+      message_id: msg.id,
+      user_id: currentUserId,
+      action_type: 'delete',
+      'details.type': 'me',
+    }).lean();
+
+    if (deletedForMe) continue;
+
+    const disappearingDoc = await MessageDisappearing.findOne({
+      message_id: msg.id,
+    }).lean();
+
+    if (disappearingDoc?.enabled && (disappearingDoc.expire_at ||  disappearingDoc?.metadata?.immediate_disappear)) {
+      const expireTime = new Date(disappearingDoc.expire_at);
+      const now = new Date();
+      if (expireTime <= now) {
+        continue;
+      }
+    }
+
+    const deletedForEveryone = await MessageAction.findOne({
+      message_id: msg.id,
+      action_type: 'delete',
+      'details.type': 'everyone',
+    }).lean();
+
+    if (deletedForEveryone) {
+      msg.content = 'This message was deleted';
+    }
+
+    latest = msg;
+    break;
+  }
   
   let groupMentionMap = new Map();
 
