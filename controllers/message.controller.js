@@ -1554,6 +1554,10 @@ exports.toggleDisappearingMessages = async (req, res) => {
       setting = await ChatSetting.findOne({ group_id: groupId });
     }
 
+    if(!enabled && !setting.disappearing_enabled){
+      return res.status(400).json({message: 'You already turned off this setting.'})
+    }
+
     const wasEnabled = setting?.disappearing_enabled || false;
     const oldDuration = setting?.expire_after_seconds || null;
 
