@@ -1,10 +1,11 @@
 const express = require('express');
 const router = express.Router();
 const { authenticate, authorizeRoles } = require('../middlewares/auth');
+const { restrictImpersonationActions } = require("../middlewares/impersonation");
 const messageController = require('../controllers/message.controller');
 const { uploadFiles, uploadSingle } = require('../utils/upload');
 
-router.post('/send', authenticate, uploadFiles('messages', 'files'), messageController.sendMessage);
+router.post('/send', authenticate, uploadFiles('messages', 'files'), restrictImpersonationActions, messageController.sendMessage);
 router.get('/get',authenticate,messageController.getMessages);
 
 router.post('/mark/read', authenticate, messageController.markMessagesAsRead)

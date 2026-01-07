@@ -39,9 +39,16 @@ exports.authenticate = async (req, res, next) => {
       return res.status(401).json({ message: 'Session expired or logged out. Please log in again.' });
     }
 
+    if (session.agenda && session.agenda.startsWith('impersonation_by_')) {
+      req.isImpersonating = true;
+      req.impersonatorId = session.agenda.replace('impersonation_by_', '');
+    } else {
+      req.isImpersonating = false;
+    }
+
     req.user = user;
     req.token = token;
-    
+
     next();
   } catch (err) {
     console.error('JWT error:', err);
