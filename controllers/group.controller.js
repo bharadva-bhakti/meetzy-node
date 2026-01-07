@@ -715,43 +715,24 @@ exports.leaveGroup = async (req, res) => {
     const member = await GroupMember.findOne({ group_id, user_id });
     if (!member) return res.status(404).json({ message: 'You are not a member of this group.' });
 
-    // === FIX: Clean up user's favorite/archive for this group ===
-    await Favorite.deleteOne({ 
-      user_id, 
-      target_id: group_id, 
-      target_type: 'group' 
-    });
-
-    await Archive.deleteOne({ 
-      user_id, 
-      target_id: group_id, 
-      target_type: 'group' 
-    });
-    // === END FIX ===
+    await Favorite.deleteOne({ user_id, target_id: group_id, target_type: 'group' });
+    await Archive.deleteOne({ user_id, target_id: group_id, target_type: 'group' });
 
     const remainingMembers = await GroupMember.countDocuments({ group_id });
 
     const io = req.app.get('io');
 
     if (remainingMembers === 1) {
-      // User is the last member → delete the group
-      await GroupMember.deleteOne({ group_id, user_id }); // remove member record
+      await GroupMember.deleteOne({ group_id, user_id });
       await group.deleteOne();
 
-      io.to(`user_${user_id}`).emit('group-deleted', { 
-        id: group_id, 
-        name: group.name 
-      });
+      io.to(`user_${user_id}`).emit('group-deleted', { id: group_id, name: group.name });
 
-      return res.status(200).json({ 
-        message: 'Group deleted as you were the last member.' 
-      });
+      return res.status(200).json({ message: 'Group deleted as you were the last member.' });
     }
 
-    // Remove the member
     await member.deleteOne();
 
-    // Leave the group room
     const userRoom = io.sockets.adapter.rooms.get(`user_${user_id}`);
     if (userRoom) {
       userRoom.forEach(socketId => {
@@ -760,49 +741,30 @@ exports.leaveGroup = async (req, res) => {
       });
     }
 
-    // Handle admin promotion if needed
     let newAdminPromoted = null;
     if (member.role === 'admin') {
       const adminsLeft = await GroupMember.countDocuments({ group_id, role: 'admin' });
       if (adminsLeft === 0) {
-        const oldestMember = await GroupMember.findOne({ group_id })
-          .sort({ created_at: 1 })
-          .lean();
+        const oldestMember = await GroupMember.findOne({ group_id }).sort({ created_at: 1 }).lean();
 
         if (oldestMember) {
-          await GroupMember.updateOne(
-            { _id: oldestMember._id },
-            { role: 'admin' }
-          );
+          await GroupMember.updateOne({ _id: oldestMember._id },{ role: 'admin' });
           newAdminPromoted = oldestMember.user_id.toString();
         }
       }
     }
 
-    // Send system message: "You left the group" or "X left"
     await createSystemMessage(req, group_id, 'member_left', { user_id });
 
-    // Notify group members
-    io.to(`group_${group_id}`).emit('member-left-group', { 
-      groupId: group_id, 
-      userId: user_id 
-    });
+    io.to(`group_${group_id}`).emit('member-left-group', { groupId: group_id, userId: user_id });
 
     if (newAdminPromoted) {
-      io.to(`group_${group_id}`).emit('member-role-updated', { 
-        groupId: group_id, 
-        userId: newAdminPromoted, 
-        newRole: 'admin' 
-      });
+      io.to(`group_${group_id}`).emit('member-role-updated', { groupId: group_id, userId: newAdminPromoted, newRole: 'admin' });
     }
 
-    // Notify the user who left
     io.to(`user_${user_id}`).emit('group-left', { groupId: group_id });
 
-    return res.status(200).json({ 
-      message: 'You have left the group successfully.' 
-    });
-
+    return res.status(200).json({ message: 'You have left the group successfully.' });
   } catch (error) {
     console.error('Error in leaveGroup:', error);
     return res.status(500).json({ message: 'Internal server error' });
@@ -810,29 +772,58 @@ exports.leaveGroup = async (req, res) => {
 };
 
 exports.getAllGroups = async (req, res) => {
-  const { page = 1, limit = 10, search, sort_by = 'created_at', sort_order } = req.query;
+  const { page = 1, limit = 10, search, sort_by = 'created_at', sort_order = 'desc' } = req.query;
   const skip = (parseInt(page) - 1) * parseInt(limit);
-  const orderDirection = sort_order?.toUpperCase() === 'ASC' ? 1 : -1;
+  const orderDirection = sort_order?.toLowerCase() === 'asc' ? 1 : -1;
 
   try {
-    const query = search ? {
-      $or: [{ name: { $regex: search, $options: 'i' } },{ description: { $regex: search, $options: 'i' } }],
-    } : {};
+    const searchQuery = search
+      ? {$or: [{ name: { $regex: search, $options: 'i' } },{ description: { $regex: search, $options: 'i' }}]}
+      : {};
 
-    const sortObj = {};
-    sortObj[sort_by] = orderDirection;
+    const sortObj = { [sort_by]: orderDirection };
 
-    const [total, groups] = await Promise.all([
-      Group.countDocuments(query),
-      Group.find(query).populate('created_by', 'id name email avatar') .sort(sortObj) .skip(skip) .limit(parseInt(limit)) ,
+    const pipeline = [
+      { $match: searchQuery },
+      { $lookup: { from: 'group_members', localField: '_id', foreignField: 'group_id', as: 'members' }},
+      { $addFields: { member_count: { $size: '$members' }}},
+      { $lookup: { from: 'users', localField: 'created_by', foreignField: '_id', as: 'created_by_user' }},
+      { $unwind: { path: '$created_by_user', preserveNullAndEmptyArrays: true } },
+      {
+        $project: {
+          id: '$_id',
+          _id: 0,
+          name: 1,
+          description: 1,
+          avatar: 1,
+          is_public: 1,
+          created_at: 1,
+          updated_at: 1,
+          member_count: 1,
+          created_by: {
+            id: '$created_by_user._id',
+            name: '$created_by_user.name',
+            email: '$created_by_user.email',
+            avatar: '$created_by_user.avatar',
+          },
+        },
+      },
+      { $sort: sortObj },
+      { $skip: skip },
+      { $limit: parseInt(limit) },
+    ];
+
+    const [result, total] = await Promise.all([
+      Group.aggregate(pipeline),
+      Group.countDocuments(searchQuery),
     ]);
 
     res.status(200).json({
       total,
       totalPages: Math.ceil(total / parseInt(limit)),
-      page: parseInt(page),
+      currentPage: parseInt(page),
       limit: parseInt(limit),
-      groups,
+      groups: result,
     });
   } catch (error) {
     console.error('Error in getAllGroups:', error);

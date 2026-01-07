@@ -852,7 +852,7 @@ exports.rejectVerification = async (req, res) => {
 };
 
 exports.fetchAllVerificationRequests = async (req, res) => {
-  let { page = 1, limit = 20, search = '', status = '', filter = '' } = req.query;
+  let { page = 1, limit = 20, search = '', status = '', filter = 'subscription' } = req.query;
   page = parseInt(page);
   limit = Math.min(parseInt(limit), 100);
   const skip = (page - 1) * limit;

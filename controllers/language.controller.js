@@ -112,18 +112,24 @@ exports.createLanguage = async (req, res) => {
     let translationJson = null;
     let metadata = {};
     let flagPath = null;
-
+    
     if (req.files?.translation?.[0]) {
       const file = req.files.translation[0];
-      const fileContent = fs.readFileSync(file.path, 'utf8');
-
+      
       try {
+        const fileContent = fs.readFileSync(file.path, 'utf8');
         translationJson = JSON.parse(fileContent);
-      } catch {
+        metadata.fileName = file.originalname;
+        metadata.fileSize = file.size;
+        metadata.uploadedAt = new Date();
+      } catch (parseError) {
+        console.error('JSON Parse Error:', parseError);
+        fs.unlinkSync(file.path);
+        if (req.files?.flag?.[0]) {
+          fs.unlinkSync(req.files.flag[0].path);
+        }
         return res.status(400).json({ message: 'Invalid JSON file for translations' });
       }
-
-      metadata.fileName = file.originalname;
     }
 
     if (req.files?.flag?.[0]) {
@@ -144,7 +150,18 @@ exports.createLanguage = async (req, res) => {
       language,
     });
   } catch (error) {
-    console.error('Error in createLanguage', error);
+    console.error('Error in createLanguage:', error);
+    try {
+      if (req.files?.translation?.[0]) {
+        fs.unlinkSync(req.files.translation[0].path);
+      }
+      if (req.files?.flag?.[0]) {
+        fs.unlinkSync(req.files.flag[0].path);
+      }
+    } catch (cleanupError) {
+      console.error('❌ Error cleaning up files:', cleanupError);
+    }
+    
     return res.status(500).json({ message: 'Internal server error' });
   }
 };

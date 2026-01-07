@@ -150,12 +150,12 @@ exports.updateSettings = async (req, res) => {
       return res.status(400).json({ message: 'Session expiration days must be between 1 and 365' });
     }
 
-    if (updateData.default_language) {
-      const validLang = await Language.findOne({ locale: updateData.default_language, is_active: true }).lean();
-      if (!validLang) {
-        return res.status(400).json({ message: 'Default language is invalid or inactive' });
-      }
-    }
+    // if (updateData.default_language) {
+    //   const validLang = await Language.findOne({ locale: updateData.default_language, is_active: true }).lean();
+    //   if (!validLang) {
+    //     return res.status(400).json({ message: 'Default language is invalid or inactive' });
+    //   }
+    // }
 
     // Update settings
     await Setting.updateOne({}, { $set: updateData }, { upsert: true });

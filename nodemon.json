@@ -1,0 +1,14 @@
+{
+    "verbose": false,
+    "ignore": [
+      "uploads/**",
+      "node_modules/**",
+      "*.log",
+      "logs/**"
+    ],
+    "watch": [
+      "."
+    ],
+    "ext": "js,json",
+    "delay": 500
+}

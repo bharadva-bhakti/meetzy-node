@@ -11,7 +11,7 @@ const uploadFiles = uploader('translations').fields([
 
 router.get('/', authenticate, authorizeRoles(['super_admin', 'user']), languageController.fetchLanguages);
 router.get('/active', authenticate, authorizeRoles(['super_admin', 'user']), languageController.fetchActiveLanguages);
-router.post('/create', authenticate, uploadFiles, authorizeRoles(['super_admin']), languageController.createLanguage);
+router.post('/create', authenticate, authorizeRoles(['super_admin']), ...uploadFiles, languageController.createLanguage);
 
 router.put('/update/:id', authenticate, uploadFiles, authorizeRoles(['super_admin']), languageController.updateLanguage);
 router.put('/:id/update/status', authenticate, authorizeRoles(['super_admin']), languageController.updateLanguageStatus);
