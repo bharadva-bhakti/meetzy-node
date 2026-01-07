@@ -365,8 +365,7 @@ exports.createStatus = async (req, res) => {
 
     const setting = await Setting.findOne().select('status_expiry_time status_limit').lean();
     const hour = setting?.status_expiry_time ? Number(setting.status_expiry_time) : 24;
-    // const expires_at = new Date(Date.now() + hour * 60 * 60 * 1000);
-    const expires_at = new Date(Date.now() + 100000);
+    const expires_at = new Date(Date.now() + hour * 60 * 60 * 1000);
 
     const user = await User.findById(user_id);
     if (!user) return res.status(404).json({ message: 'User not found.' });
@@ -432,7 +431,7 @@ exports.createStatus = async (req, res) => {
     if (Boolean(isSponsored)) {
       const allUsers = await User.find().select('id').lean();
       allUsers.forEach(u => {
-        io.to(`user_${u.id}`).emit('status-uploaded', statusData);
+        io.to(`user_${u._id}`).emit('status-uploaded', statusData);
       });
     } else {
       const friends = await Friend.find({
@@ -591,13 +590,13 @@ exports.deleteStatus = async (req, res) => {
       if (isSponsored) {
         const allUsers = await User.find().select('id').lean({ virtuals: true });
         allUsers.forEach(u => {
-          io.to(`user_${u.id}`).emit('status-deleted', { status_id, user_id, sponsored: isSponsored});
+          io.to(`user_${u._id}`).emit('status-deleted', { status_id:status._id, user_id, sponsored: isSponsored});
         });
       } else {
         visibleFriendIds.forEach(friend => {
-          io.to(`user_${friend}`).emit('status-deleted', { status_id, user_id, sponsored: isSponsored,});
+          io.to(`user_${friend}`).emit('status-deleted', { status_id: status._id, user_id, sponsored: isSponsored,});
         });
-        io.to(`user_${user_id}`).emit('status-deleted', { status_id, user_id, sponsored: isSponsored,});
+        io.to(`user_${user_id}`).emit('status-deleted', { status_id: status._id, user_id, sponsored: isSponsored,});
       }
     }
 

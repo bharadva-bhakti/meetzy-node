@@ -87,7 +87,7 @@ exports.sendAnnouncement = async (req, res) => {
 
     const users = await User.find().select('id').lean({ virtuals: true });
     users.forEach(user => {
-      io.to(`user_${user.id}`).emit('receive-message', fullMessage);
+      io.to(`user_${user._id}`).emit('receive-message', fullMessage);
     });
 
     const announcementData = {
@@ -277,7 +277,7 @@ exports.deleteAnnouncement = async (req, res) => {
     const users = await User.find().select('id').lean({ virtuals: true });
 
     users.forEach(user => {
-      io.to(`user_${user.id}`).emit('announcement:delete', {
+      io.to(`user_${user._id}`).emit('announcement-delete', {
         id: messageIds.map(id => id.toString()), deleted_at: new Date(),
       });
     });
