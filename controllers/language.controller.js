@@ -267,8 +267,16 @@ exports.deleteLanguages = async (req, res) => {
     if (languages.length === 0) {
       return res.status(404).json({ message: 'No languages found for the provided IDs' });
     }
-
+    
+    const settings = await Setting.findOne().select('default_language').lean();
+    
     for (const lang of languages) {
+      if (lang.locale === settings?.default_language) {
+        return res.status(400).json({
+          message: 'Default language cannot be deleted. Please change the default language first.',
+        });
+      }
+
       if (lang.flag && fs.existsSync(lang.flag)) {
         fs.unlinkSync(lang.flag);
       }

@@ -598,23 +598,14 @@ async function getLatestMessage(conv, currentUserId, pinnedSet, pinnedTimeMap, m
     {
       $addFields: {
         id: { $toString: '$_id' },
-        sender: {
-          id: { $toString: '$sender_doc._id' },
-          name: '$sender_doc.name',
-          avatar: '$sender_doc.avatar',
-          phone: '$sender_doc.phone',
-        },
+        sender: { id: { $toString: '$sender_doc._id' }, name: '$sender_doc.name', avatar: '$sender_doc.avatar', phone: '$sender_doc.phone', },
         recipient: {
           id: { $toString: '$recipient_doc._id' },
           name: '$recipient_doc.name',
           avatar: '$recipient_doc.avatar',
           phone: '$recipient_doc.phone',
         },
-        group: {
-          id: { $toString: '$group_doc._id' },
-          name: '$group_doc.name',
-          avatar: '$group_doc.avatar',
-        },
+        group: { id: { $toString: '$group_doc._id' }, name: '$group_doc.name', avatar: '$group_doc.avatar', },
       },
     },
     {
