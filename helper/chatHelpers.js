@@ -434,7 +434,7 @@ async function getLatestMessage(conv, currentUserId, pinnedSet, pinnedTimeMap, m
       action_type: 'delete',
       'details.type': 'me',
       'details.is_broadcast_view': true,
-    }).select('message_id').lean();
+    }).lean();
 
     const deletedIds = deletedMessages.map(d => d.message_id);
     if (deletedIds.length > 0) {
@@ -578,7 +578,7 @@ async function getLatestMessage(conv, currentUserId, pinnedSet, pinnedTimeMap, m
       { 'details.is_broadcast_view': { $exists: false } },
       { 'details.is_broadcast_view': false }
     ]
-  }).select('message_id').lean();
+  }).lean();
 
   const deletedIds = deletedMessages.map(d => d.message_id);
   if (deletedIds.length > 0) {
@@ -650,6 +650,7 @@ async function getLatestMessage(conv, currentUserId, pinnedSet, pinnedTimeMap, m
       user_id: currentUserId,
       action_type: 'delete',
       'details.type': 'me',
+      'details.is_broadcast_view': false
     }).lean();
 
     if (deletedForMe) continue;
@@ -840,14 +841,7 @@ async function fetchRecentChat(currentUserId, page = 1, limit = 20, options = {}
         last_activity: { $max: '$created_at' },
       },
     },
-    {
-      $lookup: {
-        from: 'users',
-        localField: '_id',
-        foreignField: '_id',
-        as: 'user',
-      },
-    },
+    { $lookup: { from: 'users', localField: '_id', foreignField: '_id', as: 'user', }, },
     { $match: { 'user.0': { $exists: true } } },
     { $project: { _id: 1, last_activity: 1 } },
   ]);
@@ -890,19 +884,8 @@ async function fetchRecentChat(currentUserId, page = 1, limit = 20, options = {}
 
   const broadcastConvos = filteredBroadcastIds.length > 0
   ? await Message.aggregate([
-      { 
-        $match: { 
-          'metadata.broadcast_id': { 
-            $in: filteredBroadcastIds.map(id => new mongoose.Types.ObjectId(id))
-          } 
-        } 
-      },
-      { 
-        $group: { 
-          _id: '$metadata.broadcast_id', 
-          last_activity: { $max: '$created_at' } 
-        } 
-      },
+      { $match: { 'metadata.broadcast_id': { $in: filteredBroadcastIds.map(id => new mongoose.Types.ObjectId(id))}}},
+      { $group: { _id: '$metadata.broadcast_id', last_activity: { $max: '$created_at' }}},
       { $sort: { last_activity: -1 } },
     ])
   : [];

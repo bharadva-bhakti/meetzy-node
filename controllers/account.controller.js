@@ -131,48 +131,90 @@ exports.getUserProfile = async (req, res) => {
         announcement_type: m.metadata?.announcement_type || null,
       }));
 
-      const starredActions = await MessageAction.find({
-        user_id: currentUserId,
-        action_type: 'star',
-      })
-        .populate({
-          path: 'message_id',
-          select: 'id content created_at sender_id file_url file_type metadata message_type recipient_id group_id',
-          populate: {
-            path: 'sender_id',
-            select: 'id name avatar',
-          },
-          match: {
-            $or: [
-              buildMatch({}),
-              {
-                sender_id: userId,
-                recipient_id: null,
-                group_id: null,
-                message_type: 'announcement',
+    const starredActions = await MessageAction.aggregate([
+      { $match: { user_id: new mongoose.Types.ObjectId(currentUserId), action_type: 'star', }, },
+      {
+        $lookup: {
+          from: 'messages',
+          let: { messageId: '$message_id' },
+          pipeline: [
+            { $match: { $expr: { $eq: ['$_id', '$$messageId'] } } },
+            {
+              $match: {
+                $or: [
+                  {
+                    $and: [
+                      {
+                        $or: [
+                          { sender_id: new mongoose.Types.ObjectId(currentUserId), recipient_id: new mongoose.Types.ObjectId(userId) },
+                          { sender_id: new mongoose.Types.ObjectId(userId), recipient_id: new mongoose.Types.ObjectId(currentUserId) },
+                        ],
+                      },
+                      clearEntry
+                        ? { created_at: { $gt: clearEntry.cleared_at } }
+                        : { $expr: { $cond: [false, false, true] } },
+                    ],
+                  },
+                  {
+                    sender_id: new mongoose.Types.ObjectId(userId),
+                    recipient_id: null,
+                    group_id: null,
+                    message_type: 'announcement',
+                    ...(clearEntry && { created_at: { $gt: clearEntry.cleared_at } }),
+                  },
+                ],
               },
-            ],
-          },
-        })
-        .sort({ created_at: -1 })
-        .limit(10);
-      console.log("🚀 ~ starredActions:", starredActions)
+            },
+            {
+              $lookup: {
+                from: 'users',
+                localField: 'sender_id',
+                foreignField: '_id',
+                as: 'sender',
+                pipeline: [{ $project: { id: '$_id', _id: 0, name: 1, avatar: 1 } }],
+              },
+            },
+            { $unwind: { path: '$sender', preserveNullAndEmptyArrays: true } },
+            {
+              $project: {
+                id: '$_id',
+                _id: 0,
+                content: 1,
+                file_url: 1,
+                file_type: 1,
+                message_type: 1,
+                created_at: 1,
+                metadata: 1,
+                sender_id: 1,
+                recipient_id: 1,
+                group_id: 1,
+                sender: 1,
+              },
+            },
+          ],
+          as: 'message',
+        },
+      },
+      { $unwind: { path: '$message', preserveNullAndEmptyArrays: true } },
+      { $match: { message: { $ne: null } } },
+      { $sort: { created_at: -1 } },
+      { $limit: 10 },
+      { $project: { message: 1, }, },
+    ]);
 
-    const starredMessages = starredActions
-      .filter(a => a.message_id)
-      .map(a => {
-        const msg = a.message_id;
-        return {
-          id: msg.id,
-          content: msg.content,
-          date: msg.created_at,
-          sender: {
-            id: msg.sender_id.id,
-            name: msg.sender_id.name,
-            avatar: msg.sender_id.avatar,
-          },
-        };
-      });
+    const starredMessages = starredActions.map(item => {
+      const msg = item.message;
+      return {
+        id: msg.id,
+        content: msg.content,
+        date: msg.created_at,
+        sender: {
+          id: msg.sender.id,
+          name: msg.sender.name,
+          avatar: msg.sender.avatar, 
+        },
+      };
+    });
 
     const senderIds = [
       ...starredMessages.map(m => m.sender.id),
