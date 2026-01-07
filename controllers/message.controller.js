@@ -455,19 +455,8 @@ exports.getMessages = async (req, res) => {
         },
       },
       { $addFields: { pin: { $arrayElemAt: ['$pin_docs', 0] }}},
-      {
-        $lookup: {
-          from: 'message_disappearings',
-          localField: '_id',
-          foreignField: 'message_id',
-          as: 'disappearing_docs',
-        },
-      },
-      {
-        $addFields: {
-          disappearing: { $arrayElemAt: ['$disappearing_docs', 0] },
-        },
-      },
+      { $lookup: { from: 'message_disappearings', localField: '_id', foreignField: 'message_id', as: 'disappearing_docs' }},
+      { $addFields: { disappearing: { $arrayElemAt: ['$disappearing_docs', 0] }}},
       {
         $addFields: {
           disappearing: {
@@ -484,6 +473,28 @@ exports.getMessages = async (req, res) => {
           },
         },
       },
+      { $lookup: { from: 'messages', localField: 'parent_id', foreignField: '_id', as: 'parent_message_doc' }},
+      { $unwind: { path: '$parent_message_doc', preserveNullAndEmptyArrays: true }},
+      { $lookup: { from: 'users', localField: 'parent_message_doc.sender_id', foreignField: '_id', as: 'parent_sender_doc' }},
+      { $unwind: { path: '$parent_sender_doc', preserveNullAndEmptyArrays: true }},
+      {
+        $addFields: {
+          parent: {
+            $cond: [
+              { $eq: ['$parent_message_doc', null] },
+              null,
+              {
+                id: '$parent_message_doc._id',
+                content: '$parent_message_doc.content',
+                message_type: '$parent_message_doc.message_type',
+                file_url: '$parent_message_doc.file_url',
+                created_at: '$parent_message_doc.created_at',
+                sender: { id: '$parent_sender_doc._id', name: '$parent_sender_doc.name', avatar: '$parent_sender_doc.avatar' }
+              }
+            ]
+          }
+        }
+      }
     ];
 
     const commonProject = {
@@ -504,6 +515,7 @@ exports.getMessages = async (req, res) => {
       updated_at: 1,
       deleted_at: 1,
       sender: 1,
+      parent: 1,
       statuses: 1,
       reactions: 1,
       actions: 1,

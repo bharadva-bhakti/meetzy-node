@@ -778,7 +778,7 @@ async function getLatestMessage(conv, currentUserId, pinnedSet, pinnedTimeMap, m
 
   const avatar = isAnnouncement
     ? latest.sender?.avatar
-    : (userSetting?.profile_pic === false ? null : latest.sender?.avatar || null);
+    : (userSetting?.profile_pic === false ? null : info?.avatar || null);
 
   const favoriteKey = isDM ? `user:${conv.id}` : `${conv.type}:${conv.id}`;
   const muteKey = isDM ? `user:${conv.id}` : `${conv.type}:${conv.id}`;

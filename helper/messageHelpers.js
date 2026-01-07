@@ -116,7 +116,7 @@ async function formatMessageForDisplay(message, currentUserId) {
     content,
     default_content: metadata?.default_content || null,
     message_type: messageType,
-    parent_id: message.parent_id || null,
+    parent_id: message.parent?.id || null,
     file_url: message.file_url,
     created_at: message.created_at,
     recipient_id: message.recipient_id,
@@ -135,7 +135,7 @@ async function formatMessageForDisplay(message, currentUserId) {
     isForwarded,
     isStarred,
     isPinned: !!message.pin,
-    isAnnouncement,
+    isAnnouncement : isForwarded ? false : isAnnouncement,
     pinInfo: message.pin
       ? {
           id: message.pin.id,
