@@ -136,7 +136,7 @@ exports.getUserProfile = async (req, res) => {
         action_type: 'star',
       })
         .populate({
-          path: 'message_id',                          // ← Correct field name from schema
+          path: 'message_id',
           select: 'id content created_at sender_id file_url file_type metadata message_type recipient_id group_id',
           populate: {
             path: 'sender_id',
@@ -156,6 +156,7 @@ exports.getUserProfile = async (req, res) => {
         })
         .sort({ created_at: -1 })
         .limit(10);
+      console.log("🚀 ~ starredActions:", starredActions)
 
     const starredMessages = starredActions
       .filter(a => a.message_id)
