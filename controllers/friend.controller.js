@@ -130,18 +130,22 @@ exports.respondToFriendRequest = async (req, res) => {
     const newStatus = action === 'accept' ? 'accepted' : 'rejected';
     await Friend.updateOne({ _id: friendRequest._id }, { status: newStatus });
 
-    if (action === 'reject') {
-      await Notification.updateMany(
-        { user_id: currentUserId, from_user_id: friendRequest.user_id, type: 'friend_request', },
-        {
-          type: 'friend_rejected',
-          title: 'You rejected a friend request',
-          message: `You rejected ${friendRequest.requested_by.name}'s friend request.`,
-          is_read: true,
-          read_at: new Date(),
-        }
-      );
-    }
+    await Notification.updateMany(
+      { 
+        user_id: currentUserId, 
+        from_user_id: friendRequest.user_id, 
+        type: 'friend_request' 
+      },
+      {
+        type: action === 'accept' ? 'friend_accepted' : 'friend_rejected',
+        title: action === 'accept' ? 'Friend Request Accepted' : 'Friend Request Rejected',
+        message: action === 'accept' 
+          ? `You accepted ${friendRequest.requested_by.name}'s friend request.`
+          : `You rejected ${friendRequest.requested_by.name}'s friend request.`,
+        is_read: true,
+        read_at: new Date(),
+      }
+    );
 
     if (action === 'accept') {
       await Friend.create({ user_id: currentUserId, friend_id: friendRequest.user_id, status: 'accepted', requested_by: friendRequest.user_id, });
