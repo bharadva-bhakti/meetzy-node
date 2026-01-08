@@ -90,7 +90,6 @@ exports.updateSettings = async (req, res) => {
       }
     });
 
-    // Handle file removal
     Object.keys(fieldMap).forEach((uploadField) => {
       if (req.body[uploadField] === 'null' || req.body[uploadField] == null) {
         const dbField = fieldMap[uploadField];
@@ -150,36 +149,21 @@ exports.updateSettings = async (req, res) => {
       return res.status(400).json({ message: 'Session expiration days must be between 1 and 365' });
     }
 
-    // if (updateData.default_language) {
-    //   const validLang = await Language.findOne({ locale: updateData.default_language, is_active: true }).lean();
-    //   if (!validLang) {
-    //     return res.status(400).json({ message: 'Default language is invalid or inactive' });
-    //   }
-    // }
-
-    // Update settings
     await Setting.updateOne({}, { $set: updateData }, { upsert: true });
 
-    // Fetch updated settings cleanly
     const updatedSettings = await Setting.findOne().lean({ virtuals: true });
 
-    // Remove sensitive field and _id
     const { smtp_pass, _id, ...safeSettings } = updatedSettings || {};
 
-    // Manually add id from _id if virtual didn't work
     safeSettings.id = updatedSettings.id || updatedSettings._id?.toString();
 
-    // Emit to online users
     const io = req.app.get('io');
     const onlineUsers = await User.find({ is_online: true }).select('id').lean({ virtuals: true });
     onlineUsers.forEach((user) => {
-      io.to(`user_${user.id}`).emit('admin-settings-updated', safeSettings);
+      io.to(`user_${user._id}`).emit('admin-settings-updated', safeSettings);
     });
 
-    return res.status(200).json({
-      message: 'Settings updated successfully',
-      settings: safeSettings,
-    });
+    return res.status(200).json({ message: 'Settings updated successfully', settings: safeSettings, });
   } catch (err) {
     console.error('Error updating settings:', err);
 
