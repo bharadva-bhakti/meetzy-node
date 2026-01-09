@@ -1651,18 +1651,25 @@ exports.toggleDisappearingMessages = async (req, res) => {
 exports.searchMessages = async (req, res) => {
   const currentUserId = req.user._id;
   const {
-    searchTerm,limit = 50,recipientId = null,groupId = null,broadcast_id = null,page = 1,isAnnouncement = false,isBroadcast = false,
+    limit = 50,
+    recipientId = null,
+    groupId = null,
+    broadcast_id = null,
+    page = 1,
+    isAnnouncement = false,
+    isBroadcast = false,
   } = req.query;
 
   try {
-    if (!searchTerm || searchTerm.trim().length < 2) {
-      return res.status(400).json({ message: 'Search query must be at least 2 characters.' });
-    }
-
     const parsedLimit = parseInt(limit);
     const parsedPage = parseInt(page);
     const offset = (parsedPage - 1) * parsedLimit;
-    const searchRegex = { $regex: searchTerm.trim(), $options: 'i' };
+
+    // Check if E2E encryption is enabled
+    const setting = await Setting.findOne()
+      .select("e2e_encryption_enabled")
+      .lean();
+    const e2eEnabled = setting?.e2e_encryption_enabled || false;
 
     let match = {};
     let contextType = 'direct';
@@ -1672,7 +1679,6 @@ exports.searchMessages = async (req, res) => {
         message_type: 'announcement',
         recipient_id: null,
         group_id: null,
-        $or: [{ content: searchRegex },{ 'metadata.title': searchRegex }],
       };
       contextType = 'announcement';
     } else if (isBroadcast === 'true' || isBroadcast === true) {
@@ -1680,20 +1686,20 @@ exports.searchMessages = async (req, res) => {
       
       match = {
         sender_id: currentUserId,
-        content: searchRegex,
-        'metadata.is_broadcast': true,
-        'metadata.broadcast_id': broadcast_id,
+        "metadata.is_broadcast": true,
+        "metadata.broadcast_id": broadcast_id,
       };
-      contextType = 'broadcast';
+      contextType = "broadcast";
     } else if (groupId) {
-      match = { group_id: new mongoose.Types.ObjectId(groupId), message_type: 'text', content: searchRegex };
-      contextType = 'group';
-
+      match = {
+        group_id: new mongoose.Types.ObjectId(groupId),
+        message_type: "text",
+      };
+      contextType = "group";
     } else if (recipientId) {
       const recipientObjId = new mongoose.Types.ObjectId(recipientId);
       match = {
-        message_type: 'text',
-        content: searchRegex,
+        message_type: "text",
         $or: [
           { sender_id: currentUserId, recipient_id: recipientObjId },
           { sender_id: recipientObjId, recipient_id: currentUserId },
@@ -1738,10 +1744,14 @@ exports.searchMessages = async (req, res) => {
           file_url: 1,
           created_at: 1,
           sender: 1,
+          sender_id: 1,
+          is_encrypted: 1,
           announcement: 1,
           group: 1,
-          broadcast_id: { $ifNull: ['$metadata.broadcast_id', null] },
-          is_broadcast: { $cond: [{ $eq: ['$metadata.is_broadcast', true] }, true, false] },
+          broadcast_id: { $ifNull: ["$metadata.broadcast_id", null] },
+          is_broadcast: {
+            $cond: [{ $eq: ["$metadata.is_broadcast", true] }, true, false],
+          },
         },
       },
     ];
@@ -1749,13 +1759,15 @@ exports.searchMessages = async (req, res) => {
     const messages = await Message.aggregate(pipeline);
     const totalPages = Math.ceil(total / parsedLimit);
 
-    const results = messages.map(msg => ({
+    const results = messages.map((msg) => ({
       id: msg.id,
       content: msg.content,
       message_type: msg.message_type,
       file_url: msg.file_url,
       created_at: msg.created_at,
       sender: msg.sender || null,
+      sender_id: msg.sender_id,
+      is_encrypted: msg.is_encrypted,
       announcement: msg.announcement || null,
       group: msg.group || null,
       broadcast_id: msg.broadcast_id,
@@ -1764,6 +1776,7 @@ exports.searchMessages = async (req, res) => {
 
     return res.status(200).json({
       messages: results,
+      e2e_enabled: e2eEnabled,
       context: {
         type: contextType,
         recipientId: recipientId || null,
