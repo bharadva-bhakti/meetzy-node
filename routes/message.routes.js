@@ -10,16 +10,16 @@ router.get('/get',authenticate,messageController.getMessages);
 
 router.post('/mark/read', authenticate, messageController.markMessagesAsRead)
 
-router.post('/toggle-reaction', authenticate, messageController.toggleReaction);
-router.post('/star', authenticate, messageController.toggleStarMessage);
-router.post('/edit/:id',authenticate, messageController.editMessage);
-router.post('/forward', authenticate, messageController.forwardMessage);
-router.post('/delete', authenticate, messageController.deleteMessage);
+router.post('/toggle-reaction', authenticate, restrictImpersonationActions, messageController.toggleReaction);
+router.post('/star', authenticate, restrictImpersonationActions, messageController.toggleStarMessage);
+router.post('/edit/:id',authenticate, restrictImpersonationActions, messageController.editMessage);
+router.post('/forward', authenticate, restrictImpersonationActions, messageController.forwardMessage);
+router.post('/delete', authenticate, restrictImpersonationActions, messageController.deleteMessage);
 
-router.post('/toggle-disappear', authenticate, messageController.toggleDisappearingMessages);
+router.post('/toggle-disappear', authenticate, restrictImpersonationActions, messageController.toggleDisappearingMessages);
 
 router.get('/search', authenticate, messageController.searchMessages);
-router.post('/pin', authenticate, messageController.togglePinMessage);
+router.post('/pin', authenticate, restrictImpersonationActions, messageController.togglePinMessage);
 
 router.get('/get-documents', authenticate, messageController.listDocuments);
 router.get('/search-document', authenticate, messageController.searchDocuments);
