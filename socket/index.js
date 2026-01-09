@@ -214,78 +214,219 @@ module.exports = function initSocket(io) {
       }
     });
 
+    // socket.on('join-call', async (data) => {
+    //   const { callId, user } = data;
+    //   const userId = socket.userId;
+
+    //   try {
+    //     await CallParticipant.updateOne(
+    //       { call_id: callId, user_id: userId },
+    //       {
+    //         peer_id: socket.id,
+    //         is_video_enabled: user.isVideoEnabled || false,
+    //         is_muted: !user.isAudioEnabled,
+    //       }
+    //     );
+
+    //     userCalls.set(userId, callId);
+
+    //     const call = await Call.findById(callId).select('initiator_id').lean();
+    //     if (!call) {
+    //       console.error(`Call ${callId} not found`);
+    //       return;
+    //     }
+
+    //     const participants = await CallParticipant.find({
+    //       call_id: callId,
+    //       status: 'joined',
+    //       user_id: { $ne: userId },
+    //     })
+    //       .populate('user', 'id name avatar')
+    //       .lean();
+
+    //     participants.forEach((participant) => {
+    //       io.to(`user_${participant.user_id}`).emit('participant-joined', {
+    //         callId,
+    //         userId: parseInt(userId, 10),
+    //         user: {
+    //           ...user,
+    //           socketId: socket.id,
+    //           userId: parseInt(userId, 10),
+    //         },
+    //       });
+    //     });
+
+    //     const allParticipants = await CallParticipant.find({
+    //       call_id: callId,
+    //       status: 'joined',
+    //       user_id: { $ne: userId },
+    //     })
+    //       .populate('user', 'id name avatar')
+    //       .lean();
+
+    //     const participantsWithSocket = allParticipants.map((participant) => ({
+    //       userId: parseInt(participant.user_id, 10),
+    //       socketId: participant.peer_id,
+    //       name: participant.user.name,
+    //       avatar: participant.user.avatar,
+    //       joinedAt: participant.joined_at,
+    //       isAudioEnabled: !participant.is_muted,
+    //       isVideoEnabled: participant.is_video_enabled,
+    //       isScreenSharing: participant.is_screen_sharing,
+    //     }));
+
+    //     socket.emit('call-participants-sync', {
+    //       callId,
+    //       participants: participantsWithSocket,
+    //     });
+
+    //     console.log(`User ${userId} joined call ${callId}`);
+    //   } catch (error) {
+    //     console.error('Error in join-call:', error);
+    //   }
+    // });
+    
     socket.on('join-call', async (data) => {
       const { callId, user } = data;
-      const userId = socket.userId;
-
+      const userId = socket.userId; // string ObjectId
+    
       try {
+        if (!mongoose.Types.ObjectId.isValid(callId)) {
+          console.error(`Invalid callId: ${callId}`);
+          return;
+        }
+    
+        // Update peer_id and media states
         await CallParticipant.updateOne(
-          { call_id: callId, user_id: userId },
           {
-            peer_id: socket.id,
-            is_video_enabled: user.isVideoEnabled || false,
-            is_muted: !user.isAudioEnabled,
+            call_id: new mongoose.Types.ObjectId(callId),
+            user_id: new mongoose.Types.ObjectId(userId)
+          },
+          {
+            $set: {
+              peer_id: socket.id,
+              is_video_enabled: user.isVideoEnabled || false,
+              is_muted: !user.isAudioEnabled
+            }
           }
         );
-
+    
         userCalls.set(userId, callId);
-
-        const call = await Call.findById(callId).select('initiator_id').lean();
+    
+        // Fetch only needed call fields: initiator_id and call_mode
+        const call = await Call.findById(callId)
+          .select('initiator_id call_mode')
+          .lean();
+    
         if (!call) {
           console.error(`Call ${callId} not found`);
           return;
         }
-
-        const participants = await CallParticipant.find({
-          call_id: callId,
-          status: 'joined',
-          user_id: { $ne: userId },
-        })
-          .populate('user', 'id name avatar')
-          .lean();
-
-        participants.forEach((participant) => {
+    
+        // === Fetch joined participants EXCEPT current user (to notify them) ===
+        const participantsForNotify = await CallParticipant.aggregate([
+          {
+            $match: {
+              call_id: new mongoose.Types.ObjectId(callId),
+              status: 'joined',
+              user_id: { $ne: new mongoose.Types.ObjectId(userId) }
+            }
+          },
+          {
+            $lookup: {
+              from: 'users',
+              localField: 'user_id',
+              foreignField: '_id',
+              as: 'user',
+              pipeline: [{ $project: { _id: 1, name: 1, avatar: 1 } }]
+            }
+          },
+          { $unwind: '$user' },
+          { $project: { user_id: 1, user: 1 } }
+        ]);
+    
+        // Notify each other participant
+        participantsForNotify.forEach(participant => {
           io.to(`user_${participant.user_id}`).emit('participant-joined', {
             callId,
-            userId: parseInt(userId, 10),
+            userId: userId,
             user: {
               ...user,
               socketId: socket.id,
-              userId: parseInt(userId, 10),
-            },
+              userId: userId
+            }
           });
         });
-
-        const allParticipants = await CallParticipant.find({
-          call_id: callId,
+    
+        // === Build match condition for participants to sync back to joining user ===
+        let matchCondition = {
+          call_id: new mongoose.Types.ObjectId(callId),
           status: 'joined',
-          user_id: { $ne: userId },
-        })
-          .populate('user', 'id name avatar')
-          .lean();
-
-        const participantsWithSocket = allParticipants.map((participant) => ({
-          userId: parseInt(participant.user_id, 10),
-          socketId: participant.peer_id,
+          user_id: { $ne: new mongoose.Types.ObjectId(userId) }
+        };
+    
+        // Special direct call rule: if joiner is not initiator, exclude initiator from sync list
+        if (call.call_mode === 'direct' && userId !== call.initiator_id.toString()) {
+          matchCondition.user_id = {
+            $nin: [
+              new mongoose.Types.ObjectId(userId),
+              call.initiator_id
+            ]
+          };
+        }
+    
+        // === Fetch participants for sync using aggregation + lookup ===
+        const allParticipants = await CallParticipant.aggregate([
+          { $match: matchCondition },
+          {
+            $lookup: {
+              from: 'users',
+              localField: 'user_id',
+              foreignField: '_id',
+              as: 'user',
+              pipeline: [{ $project: { name: 1, avatar: 1 } }]
+            }
+          },
+          { $unwind: '$user' },
+          {
+            $project: {
+              user_id: 1,
+              peer_id: 1,
+              joined_at: 1,
+              is_muted: 1,
+              is_video_enabled: 1,
+              is_screen_sharing: 1,
+              'user.name': 1,
+              'user.avatar': 1
+            }
+          }
+        ]);
+    
+        // Map to exact same format as original Sequelize code
+        const participantsWithSocket = allParticipants.map(participant => ({
+          userId: participant.user_id.toString(),
+          socketId: participant.peer_id || null,
           name: participant.user.name,
           avatar: participant.user.avatar,
           joinedAt: participant.joined_at,
           isAudioEnabled: !participant.is_muted,
           isVideoEnabled: participant.is_video_enabled,
-          isScreenSharing: participant.is_screen_sharing,
+          isScreenSharing: participant.is_screen_sharing || false,
         }));
-
+    
+        // Send sync to the joining user
         socket.emit('call-participants-sync', {
           callId,
-          participants: participantsWithSocket,
+          participants: participantsWithSocket
         });
-
+    
         console.log(`User ${userId} joined call ${callId}`);
+    
       } catch (error) {
         console.error('Error in join-call:', error);
       }
     });
-
+    
     socket.on('decline-call', async (data) => {
       const { callId } = data;
       const userId = socket.userId;

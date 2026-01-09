@@ -216,102 +216,334 @@ exports.initiateCall = async (req, res) => {
   }
 };
 
+// exports.answerCall = async (req, res) => {
+//   const { callId } = req.body;
+//   const userId = req.user._id;
+//   const io = req.app.get('io');
+
+//   try {
+//     if (!callId) return res.status(400).json({ message: 'callId is required' });
+
+//     const callAggregation = await getFullCallData(callId);
+//     const call = callAggregation[0];
+//     if (!call) return res.status(404).json({ message: 'Call not found.' });
+
+//     if (call.status !== 'active') {
+//       return res.status(400).json({ message: 'Call has already ended' });
+//     }
+
+//     const participant = await CallParticipant.findOne({ call_id: call.id, user_id: userId, }).lean();
+//     if (!participant) {
+//       return res.status(404).json({ message: 'You are not invited to this call.' });
+//     }
+
+//     if (participant.status === 'joined') {
+//       return res.status(400).json({ message: 'You have already joined this call.' });
+//     }
+
+//     const userBusy = await CallParticipant.findOne({
+//       user_id: userId,
+//       status: { $in: ['joined', 'invited'] },
+//       call_id: { $ne: call.id },
+//     });
+
+//     const busyCall = userBusy ? await Call.findOne({ _id: userBusy.call_id, status: 'active' }) : null;
+//     if (busyCall) {
+//       io.to(`user_${call.initiator_id}`).emit('call-busy', { userId: userId.toString() });
+//       return res.status(409).json({ message: 'You are already in another active call.' });
+//     }
+
+//     const nonInitiatorBeforeCount = await CallParticipant.countDocuments({
+//       call_id: call.id,
+//       status: 'joined',
+//       user_id: { $ne: call.initiator_id },
+//     });
+
+//     await CallParticipant.findOneAndUpdate(
+//       { call_id: call.id, user_id: userId },
+//       {
+//         status: 'joined',
+//         joined_at: new Date(),
+//         is_muted: false,
+//         is_video_enabled: call.call_type === 'video',
+//       }
+//     );
+
+//     if (nonInitiatorBeforeCount === 0) {
+//       const now = new Date();
+//       await Call.findByIdAndUpdate(call.id, { accepted_time: now });
+//     }
+
+//     await createCallMessage(call, 'ongoing', req, userId.toString());
+
+//     const updatedCallAggregation = await getFullCallData(callId);
+//     const updatedCall = updatedCallAggregation[0];
+
+//     const userData = {
+//       userId: userId.toString(),
+//       name: req.user.name,
+//       avatar: req.user.avatar,
+//       isAudioEnabled: true,
+//       isVideoEnabled: call.call_type === 'video',
+//       socketId: null,
+//     };
+
+//     const joinedParticipants = updatedCall.participants.filter((p) => p.status === 'joined' && p.user_id.toString() !== userId.toString());
+//     joinedParticipants.forEach((p) => {
+//       io.to(`user_${p.user_id}`).emit('call-accepted', { callId: call.id.toString(), userId: userId.toString(), user: userData, });
+//     });
+
+//     const participantsForSync = updatedCall.participants
+//       .filter((p) => p.status === 'joined' && p.user_id.toString() !== userId.toString())
+//       .map((p) => ({
+//         userId: p.user_id.toString(),
+//         socketId: null,
+//         name: p.user.name,
+//         avatar: p.user.avatar,
+//         joinedAt: p.joined_at,
+//         isAudioEnabled: !p.is_muted,
+//         isVideoEnabled: p.is_video_enabled,
+//         isScreenSharing: p.is_screen_sharing || false,
+//       }));
+
+//     io.to(`user_${userId}`).emit('call-participants-sync', { callId: call.id.toString(), participants: participantsForSync, });
+
+//     res.json({ message: 'Call answered successfully', call: updatedCall });
+//   } catch (error) {
+//     console.error('Error in answerCall:', error);
+//     res.status(500).json({ message: 'Internal Server Error' });
+//   }
+// };
+
 exports.answerCall = async (req, res) => {
   const { callId } = req.body;
-  const userId = req.user._id;
+  const userId = req.user.id;
   const io = req.app.get('io');
 
   try {
-    if (!callId) return res.status(400).json({ message: 'callId is required' });
+      if (!callId) return res.status(400).json({ message: 'callId is required' });
 
-    const callAggregation = await getFullCallData(callId);
-    const call = callAggregation[0];
-    if (!call) return res.status(404).json({ message: 'Call not found.' });
-
-    if (call.status !== 'active') {
-      return res.status(400).json({ message: 'Call has already ended' });
-    }
-
-    const participant = await CallParticipant.findOne({ call_id: call.id, user_id: userId, }).lean();
-    if (!participant) {
-      return res.status(404).json({ message: 'You are not invited to this call.' });
-    }
-
-    if (participant.status === 'joined') {
-      return res.status(400).json({ message: 'You have already joined this call.' });
-    }
-
-    const userBusy = await CallParticipant.findOne({
-      user_id: userId,
-      status: { $in: ['joined', 'invited'] },
-      call_id: { $ne: call.id },
-    });
-
-    const busyCall = userBusy ? await Call.findOne({ _id: userBusy.call_id, status: 'active' }) : null;
-    if (busyCall) {
-      io.to(`user_${call.initiator_id}`).emit('call-busy', { userId: userId.toString() });
-      return res.status(409).json({ message: 'You are already in another active call.' });
-    }
-
-    const nonInitiatorBeforeCount = await CallParticipant.countDocuments({
-      call_id: call.id,
-      status: 'joined',
-      user_id: { $ne: call.initiator_id },
-    });
-
-    await CallParticipant.findOneAndUpdate(
-      { call_id: call.id, user_id: userId },
-      {
-        status: 'joined',
-        joined_at: new Date(),
-        is_muted: false,
-        is_video_enabled: call.call_type === 'video',
+      if (!mongoose.Types.ObjectId.isValid(callId)) {
+          return res.status(400).json({ message: 'Invalid callId' });
       }
-    );
 
-    if (nonInitiatorBeforeCount === 0) {
-      const now = new Date();
-      await Call.findByIdAndUpdate(call.id, { accepted_time: now });
-    }
+      const fetchCallWithDetails = async (id) => {
+          const result = await Call.aggregate([
+              { $match: { _id: new mongoose.Types.ObjectId(id) } },
+              {
+                  $lookup: {
+                      from: 'users',
+                      localField: 'initiator_id',
+                      foreignField: '_id',
+                      as: 'initiator',
+                      pipeline: [{ $project: { id: '$_id', _id: 0, name: 1, avatar: 1 } }]
+                  }
+              },
+              { $unwind: { path: '$initiator', preserveNullAndEmptyArrays: true } },
+              {
+                  $lookup: {
+                      from: 'users',
+                      localField: 'receiver_id',
+                      foreignField: '_id',
+                      as: 'receiver',
+                      pipeline: [{ $project: { id: '$_id', _id: 0, name: 1, avatar: 1 } }]
+                  }
+              },
+              { $unwind: { path: '$receiver', preserveNullAndEmptyArrays: true } },
+              {
+                  $lookup: {
+                      from: 'groups',
+                      localField: 'group_id',
+                      foreignField: '_id',
+                      as: 'group',
+                      pipeline: [{ $project: { id: '$_id', _id: 0, name: 1 } }]
+                  }
+              },
+              { $unwind: { path: '$group', preserveNullAndEmptyArrays: true } },
+              {
+                  $lookup: {
+                      from: 'call_participants',
+                      localField: '_id',
+                      foreignField: 'call_id',
+                      as: 'participants'
+                  }
+              },
+              {
+                  $unwind: { path: '$participants', preserveNullAndEmptyArrays: true }
+              },
+              {
+                  $lookup: {
+                      from: 'users',
+                      localField: 'participants.user_id',
+                      foreignField: '_id',
+                      as: 'participants.user',
+                      pipeline: [{ $project: { id: '$_id', _id: 0, name: 1, avatar: 1 } }]
+                  }
+              },
+              { $unwind: { path: '$participants.user', preserveNullAndEmptyArrays: true } },
+              {
+                  $group: {
+                      _id: '$_id',
+                      doc: { $first: '$$ROOT' },
+                      participants: { $push: '$participants' }
+                  }
+              },
+              {
+                  $replaceRoot: {
+                      newRoot: {
+                          $mergeObjects: [
+                              '$doc',
+                              { participants: '$participants' }
+                          ]
+                      }
+                  }
+              }
+          ]);
 
-    await createCallMessage(call, 'ongoing', req, userId.toString());
+          return result[0] || null;
+      };
 
-    const updatedCallAggregation = await getFullCallData(callId);
-    const updatedCall = updatedCallAggregation[0];
+      const call = await fetchCallWithDetails(callId);
 
-    const userData = {
-      userId: userId.toString(),
-      name: req.user.name,
-      avatar: req.user.avatar,
-      isAudioEnabled: true,
-      isVideoEnabled: call.call_type === 'video',
-      socketId: null,
-    };
+      if (!call) return res.status(404).json({ message: 'Call not found.' });
 
-    const joinedParticipants = updatedCall.participants.filter((p) => p.status === 'joined' && p.user_id.toString() !== userId.toString());
-    joinedParticipants.forEach((p) => {
-      io.to(`user_${p.user_id}`).emit('call-accepted', { callId: call.id.toString(), userId: userId.toString(), user: userData, });
-    });
+      if (call.status !== 'active') {
+          return res.status(400).json({ message: 'Call has already ended' });
+      }
 
-    const participantsForSync = updatedCall.participants
-      .filter((p) => p.status === 'joined' && p.user_id.toString() !== userId.toString())
-      .map((p) => ({
-        userId: p.user_id.toString(),
-        socketId: null,
-        name: p.user.name,
-        avatar: p.user.avatar,
-        joinedAt: p.joined_at,
-        isAudioEnabled: !p.is_muted,
-        isVideoEnabled: p.is_video_enabled,
-        isScreenSharing: p.is_screen_sharing || false,
-      }));
+      const participant = call.participants.find(
+          p => p.user_id.toString() === userId
+      );
 
-    io.to(`user_${userId}`).emit('call-participants-sync', { callId: call.id.toString(), participants: participantsForSync, });
+      if (!participant) {
+          return res.status(404).json({ message: 'You are not invited to this call.' });
+      }
 
-    res.json({ message: 'Call answered successfully', call: updatedCall });
+      if (participant.status === 'joined') {
+          return res.status(400).json({ message: 'You have already joined this call.' });
+      }
+
+      if (participant.status === 'declined' && call.status === 'active') {
+          console.log(`User ${userId} rejoining call ${callId} after declining`);
+      } else if (participant.status === 'declined' && call.status !== 'active') {
+          return res.status(400).json({ message: 'Call has already ended.' });
+      }
+
+      // Check if user is in another active call
+      const userBusy = await CallParticipant.findOne({
+          user_id: new mongoose.Types.ObjectId(userId),
+          status: { $in: ['joined', 'invited'] },
+          call_id: { $ne: new mongoose.Types.ObjectId(callId) }
+      }).lean();
+
+      if (userBusy) {
+          const busyCall = await Call.findOne({
+              _id: userBusy.call_id,
+              status: 'active'
+          }).lean();
+
+          if (busyCall) {
+              io.to(`user_${call.initiator_id}`).emit('call-busy', { userId });
+              return res.status(409).json({ message: 'You are already in another active call.' });
+          }
+      }
+
+      // Count joined participants excluding initiator (for first acceptance logic)
+      const currentJoinedParticipants = call.participants.filter(p =>
+          p.status === 'joined' && p.user_id.toString() !== call.initiator_id.toString()
+      ).length;
+
+      const isFirstAcceptance = currentJoinedParticipants === 0;
+
+      // Update participant to joined
+      await CallParticipant.updateOne(
+          {
+              call_id: new mongoose.Types.ObjectId(callId),
+              user_id: new mongoose.Types.ObjectId(userId)
+          },
+          {
+              $set: {
+                  status: 'joined',
+                  joined_at: new Date(),
+                  is_muted: false,
+                  is_video_enabled: call.call_type === 'video'
+              }
+          }
+      );
+
+      let callForMessage;
+
+      if (isFirstAcceptance) {
+          await Call.updateOne(
+              { _id: new mongoose.Types.ObjectId(callId) },
+              { $set: { accepted_time: new Date() } }
+          );
+
+          callForMessage = await fetchCallWithDetails(callId);
+          await createCallMessage(callForMessage, 'ongoing', req, userId);
+      } else {
+          callForMessage = await fetchCallWithDetails(callId);
+          await createCallMessage(callForMessage, 'ongoing', req, userId);
+      }
+
+      const updatedCall = callForMessage;
+
+      const callData = updatedCall; // Structure matches Sequelize plain object
+
+      const userData = {
+          userId: req.user.id,
+          name: req.user.name,
+          avatar: req.user.avatar,
+          isAudioEnabled: true,
+          isVideoEnabled: call.call_type === 'video',
+          socketId: null
+      };
+
+      // Notify other joined participants
+      const joinedParticipants = callData.participants.filter(p =>
+          p.status === 'joined' && p.user_id.toString() !== userId
+      );
+
+      joinedParticipants.forEach(participant => {
+          io.to(`user_${participant.user_id}`).emit('call-accepted', {
+              callId,
+              userId: req.user.id,
+              user: userData
+          });
+      });
+
+      // Sync participants to the joining user (exclude self + special direct call rule)
+      const participantsForSync = callData.participants
+          .filter(p => {
+              if (p.status !== 'joined' || p.user_id.toString() === userId) return false;
+              if (call.call_mode === 'direct' && userId !== call.initiator_id.toString() && p.user_id.toString() === call.initiator_id.toString()) {
+                  return false;
+              }
+              return true;
+          })
+          .map(participant => ({
+              userId: participant.user_id.toString(),
+              socketId: null,
+              name: participant.user.name,
+              avatar: participant.user.avatar,
+              joinedAt: participant.joined_at,
+              isAudioEnabled: !participant.is_muted,
+              isVideoEnabled: participant.is_video_enabled,
+              isScreenSharing: participant.is_screen_sharing || false,
+          }));
+
+      io.to(`user_${userId}`).emit('call-participants-sync', {
+          callId,
+          participants: participantsForSync
+      });
+
+      console.log(`User ${userId} accepted call ${callId} (first acceptance: ${isFirstAcceptance})`);
+
+      res.json({ message: 'Call answered successfully', call: callData });
+
   } catch (error) {
-    console.error('Error in answerCall:', error);
-    res.status(500).json({ message: 'Internal Server Error' });
+      console.error('Error in answerCall:', error);
+      res.status(500).json({ message: 'Internal Server Error' });
   }
 };
 
