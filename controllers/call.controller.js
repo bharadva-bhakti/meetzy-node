@@ -92,127 +92,416 @@ const getFullCallData = async (callId) => {
   ]);
 };
 
+// exports.initiateCall = async (req, res) => {
+//   const { callType = 'audio', chatType, chatId } = req.body;
+//   const initiatorId = req.user._id;
+//   const io = req.app.get('io');
+
+//   try {
+//     if (!chatType || !['direct', 'group'].includes(chatType)) {
+//       return res.status(400).json({ message: 'Invalid chat type (direct | group) required' });
+//     }
+//     if (!chatId) return res.status(400).json({ message: 'chatId is required' });
+
+//     const initiatorBusy = await CallParticipant.findOne({ user_id: initiatorId, status: { $in: ['joined', 'invited'] }, });
+
+//     if (initiatorBusy) {
+//       const activeCall = await Call.findOne({ _id: initiatorBusy.call_id, status: 'active' });
+//       if (activeCall) {
+//         io.to(`user_${initiatorId}`).emit('call-busy', { userId: initiatorId.toString() });
+//         return res.status(409).json({ message: 'You are already in another active call.' });
+//       }
+//     }
+
+//     let targetUserIds = [];
+//     if (chatType === 'direct') {
+//       targetUserIds = [chatId];
+//     } else {
+//       const members = await GroupMember.find({ group_id: chatId }).select('user_id').lean();
+//       targetUserIds = members.map((m) => m.user_id.toString()).filter((id) => id !== initiatorId.toString());
+//     }
+
+//     const busyUsers = await CallParticipant.find({
+//       user_id: { $in: targetUserIds.map((id) => new mongoose.Types.ObjectId(id)) },
+//       status: { $in: ['joined', 'invited'] },
+//     });
+
+//     const busyCallIds = busyUsers.map((p) => p.call_id);
+//     const activeBusyCalls = await Call.find({ _id: { $in: busyCallIds }, status: 'active' });
+
+//     if (activeBusyCalls.length > 0) {
+//       const busyIds = busyUsers.map((u) => u.user_id.toString());
+//       console.log(`User(s) busy but we are allowing the call anyway:`, busyIds);
+//     }
+
+//     const setting = await Setting.findOne().select('call_timeout_seconds').lean();
+//     const UNANSWERED_TIMEOUT = (setting?.call_timeout_seconds || 20) * 1000;
+
+//     const call = await Call.create({
+//       initiator_id: initiatorId,
+//       receiver_id: chatType === 'direct' ? chatId : null,
+//       group_id: chatType === 'group' ? chatId : null,
+//       call_type: callType,
+//       call_mode: chatType,
+//       status: 'active',
+//       started_at: new Date(),
+//     });
+
+//     let participants = [];
+//     if (chatType === 'direct') {
+//       participants = [
+//         { call_id: call._id, user_id: initiatorId, status: 'joined', joined_at: new Date() },
+//         { call_id: call._id, user_id: chatId, status: 'invited' },
+//       ];
+//     } else {
+//       const members = await GroupMember.find({ group_id: chatId }).lean();
+//       participants = members.map((m) => ({
+//         call_id: call._id,
+//         user_id: m.user_id,
+//         status: m.user_id.toString() === initiatorId.toString() ? 'joined' : 'invited',
+//         joined_at: m.user_id.toString() === initiatorId.toString() ? new Date() : null,
+//       }));
+//     }
+
+//     await CallParticipant.insertMany(participants);
+
+//     const fullCall = await getFullCallData(call._id);
+//     const callData = fullCall[0];
+
+//     await createCallMessage(callData, 'initiated', req, null);
+
+//     if (chatType === 'direct') {
+//       io.to(`user_${chatId}`).emit('incoming-call', callData);
+//     } else {
+//       participants .filter((p) => p.user_id.toString() !== initiatorId.toString()) .forEach((p) => {
+//         io.to(`user_${p.user_id}`).emit('incoming-call', callData);
+//       });
+//     }
+
+//     // Unanswered timeout
+//     setTimeout(async () => {
+//       try {
+//         const activeCall = await Call.findById(call._id).lean();
+
+//         if (!activeCall || activeCall.status !== 'active') return;
+
+//         const answeredParticipants = await CallParticipant.find({
+//           call_id: call._id,
+//           status: 'joined',
+//           user_id: { $ne: initiatorId },
+//         }).lean();
+
+//         if (answeredParticipants.length === 0) {
+//           await Call.findByIdAndUpdate(call._id, { status: 'ended', ended_at: new Date(), duration: 0, });
+//           await CallParticipant.updateMany({ call_id: call._id, status: 'invited' }, { status: 'missed' });
+
+//           const missedCall = await getFullCallData(call._id);
+
+//           await createCallMessage(missedCall[0], 'missed', req);
+
+//           const participantIds = participants.map((p) => p.user_id.toString());
+//           participantIds.forEach((uid) => {
+//             io.to(`user_${uid}`).emit('call-ended', { callId: call._id.toString(), reason: 'no_answer' });
+//           });
+//         }
+//       } catch (err) {
+//         console.error('Error in unanswered call timeout:', err);
+//       }
+//     }, UNANSWERED_TIMEOUT);
+
+//     res.status(201).json({ message: 'Call initiated successfully.', call: callData });
+//   } catch (error) {
+//     console.error('Error in initiateCall:', error);
+//     res.status(500).json({ message: 'Internal Server Error' });
+//   }
+// };
+
 exports.initiateCall = async (req, res) => {
   const { callType = 'audio', chatType, chatId } = req.body;
-  const initiatorId = req.user._id;
+  const initiatorId = req.user.id; // string ObjectId
   const io = req.app.get('io');
 
   try {
-    if (!chatType || !['direct', 'group'].includes(chatType)) {
-      return res.status(400).json({ message: 'Invalid chat type (direct | group) required' });
-    }
-    if (!chatId) return res.status(400).json({ message: 'chatId is required' });
+      // Fetch call timeout from settings
+      const setting = await Setting.findOne({}).select('call_timeout_seconds').lean();
 
-    const initiatorBusy = await CallParticipant.findOne({ user_id: initiatorId, status: { $in: ['joined', 'invited'] }, });
-
-    if (initiatorBusy) {
-      const activeCall = await Call.findOne({ _id: initiatorBusy.call_id, status: 'active' });
-      if (activeCall) {
-        io.to(`user_${initiatorId}`).emit('call-busy', { userId: initiatorId.toString() });
-        return res.status(409).json({ message: 'You are already in another active call.' });
+      if (!chatType || !['direct', 'group'].includes(chatType)) {
+          return res.status(400).json({ message: 'Invalid chat type (direct | group) required' });
       }
-    }
 
-    let targetUserIds = [];
-    if (chatType === 'direct') {
-      targetUserIds = [chatId];
-    } else {
-      const members = await GroupMember.find({ group_id: chatId }).select('user_id').lean();
-      targetUserIds = members.map((m) => m.user_id.toString()).filter((id) => id !== initiatorId.toString());
-    }
+      if (!chatId) return res.status(400).json({ message: 'chatId is required' });
 
-    const busyUsers = await CallParticipant.find({
-      user_id: { $in: targetUserIds.map((id) => new mongoose.Types.ObjectId(id)) },
-      status: { $in: ['joined', 'invited'] },
-    });
+      // Check if initiator is already busy in an active call
+      const initiatorBusy = await CallParticipant.findOne({
+          user_id: new mongoose.Types.ObjectId(initiatorId),
+          status: { $in: ['joined', 'invited'] }
+      }).lean();
 
-    const busyCallIds = busyUsers.map((p) => p.call_id);
-    const activeBusyCalls = await Call.find({ _id: { $in: busyCallIds }, status: 'active' });
+      if (initiatorBusy) {
+          const busyCall = await Call.findOne({
+              _id: initiatorBusy.call_id,
+              status: 'active'
+          }).lean();
 
-    if (activeBusyCalls.length > 0) {
-      const busyIds = busyUsers.map((u) => u.user_id.toString());
-      console.log(`User(s) busy but we are allowing the call anyway:`, busyIds);
-    }
+          if (busyCall) {
+              io.to(`user_${initiatorId}`).emit('call-busy', { userId: initiatorId });
+              return res.status(409).json({ message: 'You are already in another active call.' });
+          }
+      }
 
-    const setting = await Setting.findOne().select('call_timeout_seconds').lean();
-    const UNANSWERED_TIMEOUT = (setting?.call_timeout_seconds || 20) * 1000;
+      // Determine target users
+      let targetUserIds = [];
+      if (chatType === 'direct') {
+          targetUserIds = [chatId];
+      } else {
+          const members = await GroupMember.find({ group_id: new mongoose.Types.ObjectId(chatId) })
+              .select('user_id')
+              .lean();
+          targetUserIds = members
+              .map(m => m.user_id.toString())
+              .filter(id => id !== initiatorId);
+      }
 
-    const call = await Call.create({
-      initiator_id: initiatorId,
-      receiver_id: chatType === 'direct' ? chatId : null,
-      group_id: chatType === 'group' ? chatId : null,
-      call_type: callType,
-      call_mode: chatType,
-      status: 'active',
-      started_at: new Date(),
-    });
+      // Check if any target users are busy (log but allow call anyway — same as original)
+      const busyUsers = await CallParticipant.find({
+          user_id: { $in: targetUserIds.map(id => new mongoose.Types.ObjectId(id)) },
+          status: { $in: ['joined', 'invited'] }
+      }).lean();
 
-    let participants = [];
-    if (chatType === 'direct') {
-      participants = [
-        { call_id: call._id, user_id: initiatorId, status: 'joined', joined_at: new Date() },
-        { call_id: call._id, user_id: chatId, status: 'invited' },
-      ];
-    } else {
-      const members = await GroupMember.find({ group_id: chatId }).lean();
-      participants = members.map((m) => ({
-        call_id: call._id,
-        user_id: m.user_id,
-        status: m.user_id.toString() === initiatorId.toString() ? 'joined' : 'invited',
-        joined_at: m.user_id.toString() === initiatorId.toString() ? new Date() : null,
-      }));
-    }
+      const busyCallIds = busyUsers.map(u => u.call_id);
+      const activeBusyCalls = await Call.find({
+          _id: { $in: busyCallIds },
+          status: 'active'
+      }).lean();
 
-    await CallParticipant.insertMany(participants);
+      if (activeBusyCalls.length > 0) {
+          const busyIds = busyUsers.map(u => u.user_id.toString());
+          console.log(`User(s) busy but we are allowing the call anyway:`, busyIds);
+      }
 
-    const fullCall = await getFullCallData(call._id);
-    const callData = fullCall[0];
-
-    await createCallMessage(callData, 'initiated', req, null);
-
-    if (chatType === 'direct') {
-      io.to(`user_${chatId}`).emit('incoming-call', callData);
-    } else {
-      participants .filter((p) => p.user_id.toString() !== initiatorId.toString()) .forEach((p) => {
-        io.to(`user_${p.user_id}`).emit('incoming-call', callData);
+      // Create the call
+      const call = await Call.create({
+          initiator_id: new mongoose.Types.ObjectId(initiatorId),
+          receiver_id: chatType === 'direct' ? new mongoose.Types.ObjectId(chatId) : null,
+          group_id: chatType === 'group' ? new mongoose.Types.ObjectId(chatId) : null,
+          call_type: callType,
+          call_mode: chatType,
+          status: 'active',
+          started_at: new Date(),
       });
-    }
 
-    // Unanswered timeout
-    setTimeout(async () => {
-      try {
-        const activeCall = await Call.findById(call._id).lean();
+      // Prepare participants
+      let participants = [];
+      if (chatType === 'direct') {
+          participants = [
+              {
+                  call_id: call._id,
+                  user_id: new mongoose.Types.ObjectId(initiatorId),
+                  status: 'joined',
+                  joined_at: new Date()
+              },
+              {
+                  call_id: call._id,
+                  user_id: new mongoose.Types.ObjectId(chatId),
+                  status: 'invited',
+                  joined_at: null
+              }
+          ];
+      } else {
+          const members = await GroupMember.find({ group_id: call.group_id })
+              .select('user_id')
+              .lean();
 
-        if (!activeCall || activeCall.status !== 'active') return;
-
-        const answeredParticipants = await CallParticipant.find({
-          call_id: call._id,
-          status: 'joined',
-          user_id: { $ne: initiatorId },
-        }).lean();
-
-        if (answeredParticipants.length === 0) {
-          await Call.findByIdAndUpdate(call._id, { status: 'ended', ended_at: new Date(), duration: 0, });
-          await CallParticipant.updateMany({ call_id: call._id, status: 'invited' }, { status: 'missed' });
-
-          const missedCall = await getFullCallData(call._id);
-
-          await createCallMessage(missedCall[0], 'missed', req);
-
-          const participantIds = participants.map((p) => p.user_id.toString());
-          participantIds.forEach((uid) => {
-            io.to(`user_${uid}`).emit('call-ended', { callId: call._id.toString(), reason: 'no_answer' });
-          });
-        }
-      } catch (err) {
-        console.error('Error in unanswered call timeout:', err);
+          participants = members.map(m => ({
+              call_id: call._id,
+              user_id: m.user_id,
+              status: m.user_id.toString() === initiatorId ? 'joined' : 'invited',
+              joined_at: m.user_id.toString() === initiatorId ? new Date() : null
+          }));
       }
-    }, UNANSWERED_TIMEOUT);
 
-    res.status(201).json({ message: 'Call initiated successfully.', call: callData });
+      await CallParticipant.insertMany(participants);
+
+      // Helper: Fetch full call with all nested data using aggregation + $lookup
+      const fetchFullCall = async (callId) => {
+          const result = await Call.aggregate([
+              { $match: { _id: new mongoose.Types.ObjectId(callId) } },
+              {
+                  $lookup: {
+                      from: 'users',
+                      localField: 'initiator_id',
+                      foreignField: '_id',
+                      as: 'initiator',
+                      pipeline: [{ $project: { _id: 1, name: 1, avatar: 1 } }]
+                  }
+              },
+              { $unwind: { path: '$initiator', preserveNullAndEmptyArrays: true } },
+              {
+                  $lookup: {
+                      from: 'users',
+                      localField: 'receiver_id',
+                      foreignField: '_id',
+                      as: 'receiver',
+                      pipeline: [{ $project: { _id: 1, name: 1, avatar: 1 } }]
+                  }
+              },
+              { $unwind: { path: '$receiver', preserveNullAndEmptyArrays: true } },
+              {
+                  $lookup: {
+                      from: 'groups',
+                      localField: 'group_id',
+                      foreignField: '_id',
+                      as: 'group',
+                      pipeline: [{ $project: { _id: 1, name: 1 } }]
+                  }
+              },
+              { $unwind: { path: '$group', preserveNullAndEmptyArrays: true } },
+              {
+                  $lookup: {
+                      from: 'call_participants',
+                      localField: '_id',
+                      foreignField: 'call_id',
+                      as: 'participants'
+                  }
+              },
+              {
+                  $unwind: { path: '$participants', preserveNullAndEmptyArrays: true }
+              },
+              {
+                  $lookup: {
+                      from: 'users',
+                      localField: 'participants.user_id',
+                      foreignField: '_id',
+                      as: 'participants.user',
+                      pipeline: [{ $project: { _id: 1, name: 1, avatar: 1 } }]
+                  }
+              },
+              { $unwind: { path: '$participants.user', preserveNullAndEmptyArrays: true } },
+              {
+                  $group: {
+                      _id: '$_id',
+                      doc: { $first: '$$ROOT' },
+                      participants: { $push: '$participants' }
+                  }
+              },
+              {
+                  $replaceRoot: {
+                      newRoot: {
+                          $mergeObjects: ['$doc', { participants: '$participants' }]
+                      }
+                  }
+              }
+          ]);
+
+          return result[0] || null;
+      };
+
+      const fullCall = await fetchFullCall(call._id);
+      const callData = fullCall;
+
+      await createCallMessage(fullCall, 'initiated', req, null);
+
+      // Emit incoming-call to recipients
+      if (chatType === 'direct') {
+          io.to(`user_${chatId}`).emit('incoming-call', callData);
+      } else {
+          participants
+              .filter(p => p.user_id.toString() !== initiatorId)
+              .forEach(p => {
+                  io.to(`user_${p.user_id}`).emit('incoming-call', callData);
+              });
+      }
+
+      // Unanswered call timeout
+      const UNANSWERED_TIMEOUT = (setting?.call_timeout_seconds || 20) * 1000;
+
+      setTimeout(async () => {
+          try {
+              const activeCall = await Call.findOne({
+                  _id: call._id,
+                  status: 'active'
+              }).lean();
+
+              if (!activeCall) return;
+
+              const callParticipants = await CallParticipant.find({
+                  call_id: call._id
+              }).lean();
+
+              const hasAnswer = callParticipants.some(p =>
+                  p.status === 'joined' && p.user_id.toString() !== initiatorId
+              );
+
+              if (!hasAnswer) {
+                  console.log(`Call ${call._id} unanswered — ending now.`);
+
+                  await Call.updateOne(
+                      { _id: call._id },
+                      { status: 'ended', ended_at: new Date(), duration: 0 }
+                  );
+
+                  await CallParticipant.updateMany(
+                      { call_id: call._id, status: 'invited' },
+                      { status: 'missed' }
+                  );
+
+                  // Fetch minimal data for missed call message
+                  const missedCallData = await Call.aggregate([
+                      { $match: { _id: call._id } },
+                      {
+                          $lookup: {
+                              from: 'users',
+                              localField: 'initiator_id',
+                              foreignField: '_id',
+                              as: 'initiator',
+                              pipeline: [{ $project: { _id: 1, name: 1, avatar: 1 } }]
+                          }
+                      },
+                      { $unwind: { path: '$initiator', preserveNullAndEmptyArrays: true } },
+                      {
+                          $lookup: {
+                              from: 'users',
+                              localField: 'receiver_id',
+                              foreignField: '_id',
+                              as: 'receiver',
+                              pipeline: [{ $project: { _id: 1, name: 1, avatar: 1 } }]
+                          }
+                      },
+                      { $unwind: { path: '$receiver', preserveNullAndEmptyArrays: true } },
+                      {
+                          $lookup: {
+                              from: 'groups',
+                              localField: 'group_id',
+                              foreignField: '_id',
+                              as: 'group',
+                              pipeline: [{ $project: { _id: 1, name: 1 } }]
+                          }
+                      },
+                      { $unwind: { path: '$group', preserveNullAndEmptyArrays: true } }
+                  ]);
+
+                  await createCallMessage(missedCallData[0], 'missed', req);
+
+                  // Notify all participants
+                  if (chatType === 'direct') {
+                      io.to(`user_${initiatorId}`).emit('call-ended', { callId: call._id.toString(), reason: 'no_answer' });
+                      io.to(`user_${chatId}`).emit('call-ended', { callId: call._id.toString(), reason: 'no_answer' });
+                  } else {
+                      participants.forEach(p => {
+                          io.to(`user_${p.user_id}`).emit('call-ended', { callId: call._id.toString(), reason: 'no_answer' });
+                      });
+                  }
+              }
+          } catch (error) {
+              console.error('Error handling unanswered call timeout:', error);
+          }
+      }, UNANSWERED_TIMEOUT);
+
+      res.status(201).json({ message: 'Call initiated successfully.', call: callData });
+
   } catch (error) {
-    console.error('Error in initiateCall:', error);
-    res.status(500).json({ message: 'Internal Server Error' });
+      console.error('Error in initiateCall:', error);
+      res.status(500).json({ message: 'Internal Server Error' });
   }
 };
 
