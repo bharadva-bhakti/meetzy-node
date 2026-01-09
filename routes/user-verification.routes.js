@@ -22,6 +22,8 @@ router.post('/admin/approve', authenticate, authorizeRoles(['super_admin']), res
 router.post('/request/approve', authenticate, authorizeRoles(['super_admin']), restrictImpersonationActions, userVerificationController.approveVerification);
 router.post('/request/reject', authenticate, authorizeRoles(['super_admin']), restrictImpersonationActions, userVerificationController.rejectVerification);
 
+router.delete('/delete', authenticate, authorizeRoles(['super_admin']), userVerificationController.deleteVerification);
+
 router.get('/request/all', authenticate, authorizeRoles(['super_admin']), userVerificationController.fetchAllVerificationRequests);
 
 module.exports = router;

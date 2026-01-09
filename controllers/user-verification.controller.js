@@ -851,6 +851,28 @@ exports.rejectVerification = async (req, res) => {
   }
 };
 
+exports.deleteVerification = async (req,res) => {
+  const { ids } = req.body;
+
+  try {
+    if (!ids || !Array.isArray(ids) || ids.length === 0) {
+      return res.status(400).json({ message: 'Request IDs array is required' });
+    }
+
+    const result = await VerificationRequest.deleteMany({ _id: { $in: ids } });
+    if (result.deletedCount === 0) {
+      return res.status(404).json({ message: 'No Requests found.' });
+    }
+
+    const response = { message: `${result.deletedCount} Request(s) deleted successfully`, deletedCount: result.deletedCount, };
+
+    return res.status(200).json(response);
+  } catch (error) {
+    console.error('Error in Request:', error);
+    return res.status(500).json({ message: 'Internal server error' });
+  }
+};
+
 exports.fetchAllVerificationRequests = async (req, res) => {
   let { page = 1, limit = 20, search = '', status = '', filter = 'subscription' } = req.query;
   page = parseInt(page);
