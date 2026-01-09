@@ -30,10 +30,10 @@ exports.updateUserSetting = async (req, res) => {
 
   try {
     const {
-      last_seen, profile_pic, display_bio, status_privacy, read_receipts, typing_indicator, hide_phone, chat_wallpaper, mode,
+      last_seen, profile_pic, display_bio, status_privacy, read_receipts, typing_indicator, hide_phone, chat_wallpaper, mode, shared_with,
       color, layout, sidebar, direction, auto_backup, doc_backup, video_backup, pin, new_pin, lock_chat, unlock_chat, chat_lock_enabled,
     } = req.body;
-
+    
     const userSetting = await UserSetting.findOne({ user_id: userId });
     if (!userSetting) {
       return res.status(404).json({ message: 'User setting not found' });
@@ -61,7 +61,7 @@ exports.updateUserSetting = async (req, res) => {
     }
 
     const updatePayload = { last_seen, profile_pic, display_bio, status_privacy, read_receipts, typing_indicator, hide_phone, 
-      chat_wallpaper, mode, color, layout, sidebar, direction, auto_backup, doc_backup, video_backup,
+      chat_wallpaper, mode, color, layout, sidebar, direction, auto_backup, doc_backup, video_backup, shared_with
     };
 
     if (!userSetting.pin_hash && isLocking) {
