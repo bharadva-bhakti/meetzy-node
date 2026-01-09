@@ -52,17 +52,12 @@ exports.restrictImpersonationActions = (req, res, next) => {
   }
 
   const sensitivePaths = [
-    'account/updatePassword',
-    'account/updateProfile',
-    '/user/change-email',
-    '/account',
-    '/setting',
-    '/subscription',
-    '/verification',
+    '/account', '/setting', '/subscription', '/verification', '/broadcast', '/status', '/call', '/group', '/friend', '/user-setting',
+    '/inquiry/create', '/group', '/notification', '/user-report'
   ];
 
   if (sensitivePaths.some(path => url.includes(path)) && ['POST', 'PUT', 'DELETE'].includes(method)) {
-    return res.status(403).json({ message: 'Account modifications are not allowed during impersonation' });
+    return res.status(403).json({ message: 'Modifications are not allowed during impersonation' });
   }
 
   if (url.includes('/subscription') || url.includes('/plan') || url.includes('/payment')) {
@@ -70,9 +65,22 @@ exports.restrictImpersonationActions = (req, res, next) => {
   }
 
   const blockedMessageActions = ['/pin', '/reaction', '/mute', '/favorite', '/unpin', '/unfavorite', '/unmute'];
-  if (url.includes('/message') && method === 'POST' && blockedMessageActions.some(act => url.includes(act))) {
+  const isBlocked = blockedMessageActions.some(act => {
+    return url.includes(act);
+  })
+
+  if (url.includes('/message') && method === 'POST' && isBlocked) {
     return res.status(403).json({ message: 'This message action is not allowed during impersonation' });
   }
+
+  const blockedChatActions = ['/pin', '/toggle-archive', '/archive/all', '/toggle-block', '/toggle-favorite', 
+    '/mute', '/unmute', '/delete', '/delete/all', '/clear', '/clear/all'];
+  if (url.includes('/chat') && method === 'POST' && blockedChatActions.some(act => {
+    return url.includes(act);
+  })) {
+    return res.status(403).json({ message: 'This chat action is not allowed during impersonation' });
+  }
+  
 
   next();
 };

@@ -11,6 +11,6 @@ router.get('/:id/profile', authenticate, accountController.getUserProfile);
 router.put('/updateProfile', authenticate, uploadSingle('avatars','avatar'), restrictImpersonationActions, accountController.updateProfile);
 router.put('/updatePassword', authenticate, restrictImpersonationActions, accountController.updatePassword);
 
-router.delete('/delete', authenticate, accountController.deleteAccount);
+router.delete('/delete', authenticate, restrictImpersonationActions, accountController.deleteAccount);
 
 module.exports = router
