@@ -524,82 +524,327 @@ exports.declineCall = async (req, res) => {
   }
 };
 
+// exports.endCall = async (req, res) => {
+//   const { callId } = req.body;
+//   const userId = req.user._id;
+//   const io = req.app.get('io');
+
+//   try {
+//     if (!callId) return res.status(400).json({ message: 'callId is required' });
+
+//     const callAggregation = await getFullCallData(callId);
+//     const call = callAggregation[0];
+//     if (!call) return res.status(404).json({ message: 'Call not found' });
+
+//     const participant = await CallParticipant.findOne({ call_id: call.id, user_id: userId, }).lean();
+//     if (!participant) {
+//       return res.status(403).json({ message: 'You are not part of this call' });
+//     }
+
+//     if (call.status === 'ended') {
+//       return res.json({ message: 'Call already ended', callEnded: true, duration: call.duration || 0, });
+//     }
+
+//     await CallParticipant.findOneAndUpdate({ call_id: call.id, user_id: userId }, { status: 'left', left_at: new Date() });
+
+//     const remainingJoined = await CallParticipant.find({ call_id: call.id, status: 'joined', }).lean();
+//     const shouldEndCall = remainingJoined.length < 2;
+
+//     let duration = 0;
+//     if (shouldEndCall) {
+//       let endTime;
+//       if (call.accepted_time) {
+//         endTime = new Date();
+//         duration = Math.max(1, Math.floor((endTime - new Date(call.accepted_time)) / 1000));
+//       } else {
+//         duration = 0;
+//       }
+
+//       await Call.findByIdAndUpdate(call.id, { status: 'ended', ended_at: new Date(), duration, });
+
+//       await CallParticipant.updateMany({ call_id: call.id, status: 'joined' }, { status: 'left', left_at: endTime });
+//       await CallParticipant.updateMany({ call_id: call.id, status: 'invited' }, { status: 'missed' });
+
+//       const finalCallAggregation = await getFullCallData(callId);
+//       const finalCall = finalCallAggregation[0];
+
+//       await createCallMessage(finalCall, 'ended', req, userId.toString());
+
+//       const participants = await CallParticipant.find({ call_id: call.id }).select('user_id').lean();
+//       const participantIds = participants.map((p) => p.user_id.toString());
+
+//       participantIds.forEach((uid) => {
+//         io.to(`user_${uid}`).emit('call-ended', { callId: call.id.toString(), reason: 'ended', duration, });
+//       });
+//     } else {
+//       const leftUser = await User.findById(userId).select('id name avatar').lean();
+
+//       remainingJoined.forEach((p) => {
+//         if (p.user_id.toString() !== userId.toString()) {
+//           io.to(`user_${p.user_id}`).emit('participant-left', {
+//             callId: call.id.toString(),
+//             userId: userId.toString(),
+//             user: { userId: userId.toString(), name: leftUser?.name || 'Unknown', avatar: leftUser?.avatar || null, },
+//           });
+//         }
+//       });
+
+//       await createCallMessage(call, 'ongoing', req, userId.toString());
+//     }
+
+//     res.json({
+//       message: shouldEndCall ? 'Call ended successfully' : 'Left call successfully',
+//       callEnded: shouldEndCall,
+//       duration: duration,
+//     });
+//   } catch (error) {
+//     console.error('Error in endCall:', error);
+//     res.status(500).json({ message: 'Internal Server Error' });
+//   }
+// };
+
 exports.endCall = async (req, res) => {
   const { callId } = req.body;
-  const userId = req.user._id;
+  const userId = req.user.id; // string ObjectId
   const io = req.app.get('io');
 
   try {
-    if (!callId) return res.status(400).json({ message: 'callId is required' });
-
-    const callAggregation = await getFullCallData(callId);
-    const call = callAggregation[0];
-    if (!call) return res.status(404).json({ message: 'Call not found' });
-
-    const participant = await CallParticipant.findOne({ call_id: call.id, user_id: userId, }).lean();
-    if (!participant) {
-      return res.status(403).json({ message: 'You are not part of this call' });
-    }
-
-    if (call.status === 'ended') {
-      return res.json({ message: 'Call already ended', callEnded: true, duration: call.duration || 0, });
-    }
-
-    await CallParticipant.findOneAndUpdate({ call_id: call.id, user_id: userId }, { status: 'left', left_at: new Date() });
-
-    const remainingJoined = await CallParticipant.find({ call_id: call.id, status: 'joined', }).lean();
-    const shouldEndCall = remainingJoined.length < 2;
-
-    let duration = 0;
-    if (shouldEndCall) {
-      let endTime;
-      if (call.accepted_time) {
-        endTime = new Date();
-        duration = Math.max(1, Math.floor((endTime - new Date(call.accepted_time)) / 1000));
-      } else {
-        duration = 0;
+      if (!callId) {
+          return res.status(400).json({ message: 'callId is required' });
       }
 
-      await Call.findByIdAndUpdate(call.id, { status: 'ended', ended_at: new Date(), duration, });
+      if (!mongoose.Types.ObjectId.isValid(callId)) {
+          return res.status(400).json({ message: 'Invalid callId' });
+      }
 
-      await CallParticipant.updateMany({ call_id: call.id, status: 'joined' }, { status: 'left', left_at: endTime });
-      await CallParticipant.updateMany({ call_id: call.id, status: 'invited' }, { status: 'missed' });
+      // Helper: Fetch full call with all nested data using aggregation + $lookup
+      const fetchCallWithDetails = async (callId, participantStatusFilter = null) => {
+          let pipeline = [
+              { $match: { _id: new mongoose.Types.ObjectId(callId) } },
+              {
+                  $lookup: {
+                      from: 'users',
+                      localField: 'initiator_id',
+                      foreignField: '_id',
+                      as: 'initiator',
+                      pipeline: [{ $project: { _id: 1, name: 1, avatar: 1 } }]
+                  }
+              },
+              { $unwind: { path: '$initiator', preserveNullAndEmptyArrays: true } },
+              {
+                  $lookup: {
+                      from: 'users',
+                      localField: 'receiver_id',
+                      foreignField: '_id',
+                      as: 'receiver',
+                      pipeline: [{ $project: { _id: 1, name: 1, avatar: 1 } }]
+                  }
+              },
+              { $unwind: { path: '$receiver', preserveNullAndEmptyArrays: true } },
+              {
+                  $lookup: {
+                      from: 'groups',
+                      localField: 'group_id',
+                      foreignField: '_id',
+                      as: 'group',
+                      pipeline: [{ $project: { _id: 1, name: 1 } }]
+                  }
+              },
+              { $unwind: { path: '$group', preserveNullAndEmptyArrays: true } },
+              {
+                  $lookup: {
+                      from: 'call_participants',
+                      localField: '_id',
+                      foreignField: 'call_id',
+                      as: 'participants'
+                  }
+              }
+          ];
 
-      const finalCallAggregation = await getFullCallData(callId);
-      const finalCall = finalCallAggregation[0];
+          // Optional: filter participants by status (used for final message)
+          if (participantStatusFilter) {
+              pipeline.splice(pipeline.length - 1, 0, {
+                  $match: { 'participants.status': { $in: participantStatusFilter } }
+              });
+          }
 
-      await createCallMessage(finalCall, 'ended', req, userId.toString());
+          pipeline.push(
+              { $unwind: { path: '$participants', preserveNullAndEmptyArrays: true } },
+              {
+                  $lookup: {
+                      from: 'users',
+                      localField: 'participants.user_id',
+                      foreignField: '_id',
+                      as: 'participants.user',
+                      pipeline: [{ $project: { _id: 1, name: 1, avatar: 1 } }]
+                  }
+              },
+              { $unwind: { path: '$participants.user', preserveNullAndEmptyArrays: true } },
+              {
+                  $group: {
+                      _id: '$_id',
+                      doc: { $first: '$$ROOT' },
+                      participants: { $push: '$participants' }
+                  }
+              },
+              {
+                  $replaceRoot: {
+                      newRoot: { $mergeObjects: ['$doc', { participants: '$participants' }] }
+                  }
+              }
+          );
 
-      const participants = await CallParticipant.find({ call_id: call.id }).select('user_id').lean();
-      const participantIds = participants.map((p) => p.user_id.toString());
+          const result = await Call.aggregate(pipeline);
+          return result[0] || null;
+      };
 
-      participantIds.forEach((uid) => {
-        io.to(`user_${uid}`).emit('call-ended', { callId: call.id.toString(), reason: 'ended', duration, });
-      });
-    } else {
-      const leftUser = await User.findById(userId).select('id name avatar').lean();
+      const call = await fetchCallWithDetails(callId);
 
-      remainingJoined.forEach((p) => {
-        if (p.user_id.toString() !== userId.toString()) {
-          io.to(`user_${p.user_id}`).emit('participant-left', {
-            callId: call.id.toString(),
-            userId: userId.toString(),
-            user: { userId: userId.toString(), name: leftUser?.name || 'Unknown', avatar: leftUser?.avatar || null, },
+      if (!call) {
+          return res.status(404).json({ message: 'Call not found' });
+      }
+
+      // Check if user is part of the call
+      const userParticipant = call.participants.find(
+          p => p.user_id.toString() === userId
+      );
+
+      if (!userParticipant) {
+          return res.status(403).json({ message: 'You are not part of this call' });
+      }
+
+      if (call.status === 'ended') {
+          return res.json({
+              message: 'Call already ended (timeout/no answer).',
+              callEnded: true,
+              duration: call.duration || 0
           });
-        }
+      }
+
+      if (call.status !== 'active') {
+          return res.json({ message: 'Call already ended', callEnded: true });
+      }
+
+      // Mark user as left
+      await CallParticipant.updateOne(
+          {
+              call_id: new mongoose.Types.ObjectId(callId),
+              user_id: new mongoose.Types.ObjectId(userId)
+          },
+          {
+              $set: {
+                  status: 'left',
+                  left_at: new Date()
+              }
+          }
+      );
+
+      // Get remaining joined participants
+      const remainingJoined = call.participants.filter(
+          p => p.status === 'joined' && p.user_id.toString() !== userId
+      );
+
+      const shouldEndCall = remainingJoined.length < 1; // less than 2 total joined (including initiator)
+
+      let duration = null;
+
+      if (shouldEndCall) {
+          const endTime = new Date();
+
+          const realJoiners = remainingJoined.filter(
+              p => p.user_id.toString() !== call.initiator_id.toString()
+          );
+
+          if (realJoiners.length === 0) {
+              duration = 0;
+          } else {
+              const startTime = call.accepted_time || call.started_at;
+              duration = Math.max(1, Math.floor((endTime - new Date(startTime)) / 1000));
+          }
+
+          // End the call completely
+          await Call.updateOne(
+              { _id: new mongoose.Types.ObjectId(callId) },
+              {
+                  $set: {
+                      status: 'ended',
+                      ended_at: endTime,
+                      duration: duration
+                  }
+              }
+          );
+
+          // Mark all remaining joined as left
+          await CallParticipant.updateMany(
+              { call_id: new mongoose.Types.ObjectId(callId), status: 'joined' },
+              { $set: { status: 'left', left_at: endTime } }
+          );
+
+          // Mark invited as missed
+          await CallParticipant.updateMany(
+              { call_id: new mongoose.Types.ObjectId(callId), status: 'invited' },
+              { $set: { status: 'missed' } }
+          );
+
+          // Fetch final call data for message (only joined/left participants)
+          const finalCall = await fetchCallWithDetails(callId, ['joined', 'left']);
+          await createCallMessage(finalCall, 'ended', req, userId);
+
+          // Notify all participants (joined/left + missed)
+          const allParticipants = await CallParticipant.find({
+              call_id: new mongoose.Types.ObjectId(callId)
+          }).lean();
+
+          allParticipants.forEach(participant => {
+              const userIdStr = participant.user_id.toString();
+              if (participant.status === 'missed') {
+                  io.to(`user_${userIdStr}`).emit('call-ended', {
+                      callId: callId,
+                      reason: 'ended'
+                  });
+              } else {
+                  io.to(`user_${userIdStr}`).emit('call-ended', {
+                      callId: callId,
+                      reason: 'ended',
+                      duration: duration
+                  });
+              }
+          });
+
+          console.log(`Call ${callId} completely ended by ${userId}`);
+      } else {
+          // User just left — notify remaining joined participants
+          const leftUser = await User.findById(userId)
+              .select('name avatar')
+              .lean();
+
+          remainingJoined.forEach(participant => {
+              io.to(`user_${participant.user_id}`).emit('participant-left', {
+                  callId,
+                  userId: userId,
+                  user: {
+                      userId: userId,
+                      name: leftUser?.name || 'Unknown',
+                      avatar: leftUser?.avatar || null,
+                  }
+              });
+          });
+
+          console.log(`User ${userId} left call ${callId}, ${remainingJoined.length + 1} were in call, now ${remainingJoined.length} remain`);
+
+          const updatedCall = await fetchCallWithDetails(callId);
+          await createCallMessage(updatedCall, 'ongoing', req, userId);
+      }
+
+      res.json({
+          message: shouldEndCall ? 'Call ended successfully' : 'Left call successfully',
+          callEnded: shouldEndCall,
+          duration: shouldEndCall ? duration : null
       });
 
-      await createCallMessage(call, 'ongoing', req, userId.toString());
-    }
-
-    res.json({
-      message: shouldEndCall ? 'Call ended successfully' : 'Left call successfully',
-      callEnded: shouldEndCall,
-      duration: duration,
-    });
   } catch (error) {
-    console.error('Error in endCall:', error);
-    res.status(500).json({ message: 'Internal Server Error' });
+      console.error('Error in endCall:', error);
+      res.status(500).json({ message: 'Internal Server Error' });
   }
 };
 
