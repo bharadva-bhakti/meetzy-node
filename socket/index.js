@@ -390,7 +390,7 @@ module.exports = function initSocket(io) {
         participants.forEach((participant) => {
           io.to(`user_${participant.user_id}`).emit('participant-toggle-audio', {
             callId,
-            userId: parseInt(userId, 10),
+            userId: userId,
             isAudioEnabled,
           });
         });
@@ -418,7 +418,7 @@ module.exports = function initSocket(io) {
         participants.forEach((participant) => {
           io.to(`user_${participant.user_id}`).emit('participant-toggle-video', {
             callId,
-            userId: parseInt(userId, 10),
+            userId: userId,
             isVideoEnabled,
           });
         });
@@ -449,7 +449,7 @@ module.exports = function initSocket(io) {
       const fromUserId = socket.userId;
       io.to(`user_${targetUserId}`).emit('webrtc-offer', {
         callId,
-        fromUserId: parseInt(fromUserId, 10),
+        fromUserId: fromUserId,
         offer,
       });
     });
@@ -459,7 +459,7 @@ module.exports = function initSocket(io) {
       const fromUserId = socket.userId;
       io.to(`user_${targetUserId}`).emit('webrtc-answer', {
         callId,
-        fromUserId: parseInt(fromUserId, 10),
+        fromUserId: fromUserId,
         answer,
       });
     });
@@ -469,7 +469,7 @@ module.exports = function initSocket(io) {
       const fromUserId = socket.userId;
       io.to(`user_${targetUserId}`).emit('ice-candidate', {
         callId,
-        fromUserId: parseInt(fromUserId, 10),
+        fromUserId: fromUserId,
         candidate,
       });
     });
