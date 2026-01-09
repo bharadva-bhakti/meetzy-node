@@ -9,225 +9,241 @@ const MessageStatus = db.MessageStatus;
 const mongoose = require('mongoose');
 
 async function createCallMessage(call, action, req, userId = null) {
-    try {
-      let content = '';
-      const duration = call.duration || 0;
-      const minutes = Math.floor(duration / 60);
-      const seconds = duration % 60;
-      const formattedDuration = duration ? `${minutes}:${seconds.toString().padStart(2, '0')}` : '';
-  
-      // Get joined participants count for group calls
-      let joinedCount = 0;
-      if (call.call_mode === 'group' && call.participants) {
-        joinedCount = call.participants.filter(p => p.status === 'joined').length;
-      } else if (call.call_mode === 'direct') {
-        joinedCount = call.participants?.filter(p => p.status === 'joined').length || 0;
+  try {
+    let content = '';
+    const duration = call.duration || 0;
+    const minutes = Math.floor(duration / 60);
+    const seconds = duration % 60;
+    const formattedDuration = duration ? `${minutes}:${seconds.toString().padStart(2, '0')}` : '';
+
+    // Get joined participants count
+    let joinedCount = 0;
+    if (call.call_mode === 'group' && call.participants) {
+      joinedCount = call.participants.filter(p => p.status === 'joined').length;
+    } else if (call.call_mode === 'direct') {
+      joinedCount = call.participants?.filter(p => p.status === 'joined').length || 0;
+    }
+
+    switch (action) {
+      case 'initiated':
+        content = call.call_mode === 'direct'
+          ? `📞 ${call.call_type === 'video' ? 'Video' : 'Voice'} call`
+          : `${call.initiator?.name || 'Someone'} started a group ${call.call_type === 'video' ? 'video' : 'voice'} call`;
+        break;
+      case 'accepted':
+      case 'ongoing':
+        content = call.call_mode === 'group'
+          ? `📞 Ongoing call • ${joinedCount} in call`
+          : `📞 Ongoing call`;
+        break;
+      case 'declined':
+        content = `❌ Declined call`;
+        break;
+      case 'ended':
+        content = formattedDuration ? `📞 Call ended • Duration: ${formattedDuration}` : `📞 Call ended`;
+        break;
+      case 'missed':
+        content = `📞 Missed call`;
+        break;
+    }
+
+    const metadata = {
+      call_id: call.id?.toString() || call._id?.toString(),
+      call_type: call.call_type,
+      call_mode: call.call_mode,
+      action,
+      duration: call.duration || 0,
+      joined_count: joinedCount,
+      accepted_time: call.accepted_time || null,
+    };
+
+    // === SEARCH FOR EXISTING CALL MESSAGE (like MySQL version) ===
+    const baseQuery = { message_type: 'call' };
+
+    if (call.call_mode === 'direct' && call.receiver_id) {
+      baseQuery.$or = [
+        { recipient_id: call.receiver_id },
+        { recipient_id: call.initiator_id }
+      ];
+    } else if (call.group_id) {
+      baseQuery.group_id = call.group_id;
+    }
+
+    // Get recent messages and scan metadata (MongoDB can't index inside metadata easily)
+    const candidateMessages = await Message.find(baseQuery)
+      .sort({ created_at: -1 })
+      .limit(20)
+      .lean();
+
+    let existingMessage = null;
+    for (const msg of candidateMessages) {
+      let msgMetadata = msg.metadata;
+      if (typeof msgMetadata === 'string') {
+        try {
+          msgMetadata = JSON.parse(msgMetadata);
+        } catch (e) {
+          continue;
+        }
       }
-  
-      switch (action) {
-        case 'initiated':
-          content = call.call_mode === 'direct'
-            ? `📞 ${call.call_type === 'video' ? 'Video' : 'Voice'} call`
-            : `${call.initiator?.name || 'Someone'} started a group ${call.call_type === 'video' ? 'video' : 'voice'} call`;
-          break;
-        case 'accepted':
-        case 'ongoing':
-          content = call.call_mode === 'group'
-            ? `📞 Ongoing call • ${joinedCount} in call`
-            : `📞 Ongoing call`;
-          break;
-        case 'declined':
-          content = `❌ Declined call`;
-          break;
-        case 'ended':
-          content = formattedDuration ? `📞 Call ended • Duration: ${formattedDuration}` : `📞 Call ended`;
-          break;
-        case 'missed':
-          content = `📞 Missed call`;
-          break;
+      if (msgMetadata && msgMetadata.call_id === metadata.call_id) {
+        existingMessage = msg;
+        break;
       }
-  
-      const metadata = {
-        call_id: call.id?.toString() || call._id?.toString(),
-        call_type: call.call_type,
-        call_mode: call.call_mode,
-        action,
-        duration: call.duration || 0,
-        joined_count: joinedCount,
-        accepted_time: call.accepted_time || null,
-      };
-  
-      // Search for existing call message
-      const query = {
-        message_type: 'call',
-        'metadata.call_id': metadata.call_id
-      };
-  
-      if (call.call_mode === 'direct') {
-        query.$or = [
-          { recipient_id: call.receiver_id },
-          { recipient_id: call.initiator_id }
-        ];
-      } else if (call.group_id) {
-        query.group_id = call.group_id;
-      }
-  
-      let message = await Message.findOne(query).lean();
-  
-      const messageData = {
+    }
+
+    let fullMessage;
+    const io = req.app.get('io');
+
+    if (existingMessage) {
+      // === UPDATE EXISTING MESSAGE ===
+      await Message.findByIdAndUpdate(existingMessage._id, {
         content,
         metadata,
         updated_at: new Date()
-      };
-  
-      let fullMessage;
-  
-      if (message) {
-        // Update existing message
-        await Message.findByIdAndUpdate(message._id, messageData);
-  
-        // Fetch updated message with aggregation
-        fullMessage = await Message.aggregate([
-          { $match: { _id: message._id } },
-          {
-            $lookup: { from: 'users', localField: 'sender_id', foreignField: '_id', as: 'sender_doc' }
-          },
-          { $unwind: { path: '$sender_doc', preserveNullAndEmptyArrays: true } },
-          {
-            $lookup: { from: 'users', localField: 'recipient_id', foreignField: '_id', as: 'recipient_doc' }
-          },
-          { $unwind: { path: '$recipient_doc', preserveNullAndEmptyArrays: true } },
-          {
-            $lookup: { from: 'groups', localField: 'group_id', foreignField: '_id', as: 'group_doc' }
-          },
-          { $unwind: { path: '$group_doc', preserveNullAndEmptyArrays: true } },
-          {
-            $addFields: {
-              id: '$_id',
-              sender: {
-                id: '$sender_doc._id',
-                name: '$sender_doc.name',
-                avatar: '$sender_doc.avatar'
-              },
-              recipient: call.receiver_id ? {
-                id: '$recipient_doc._id',
-                name: '$recipient_doc.name',
-                avatar: '$recipient_doc.avatar'
-              } : null,
-              group: call.group_id ? {
-                id: '$group_doc._id',
-                name: '$group_doc.name',
-                avatar: '$group_doc.avatar'
-              } : null
-            }
-          },
-          {
-            $project: {
-              _id: 0, id: 1, sender_id: 1, recipient_id: 1, group_id: 1,
-              content: 1, message_type: 1, metadata: 1, created_at: 1, updated_at: 1,
-              sender: 1, recipient: 1, group: 1
-            }
+      });
+
+      // Fetch updated version with lookups
+      fullMessage = await Message.aggregate([
+        { $match: { _id: existingMessage._id } },
+        { $lookup: { from: 'users', localField: 'sender_id', foreignField: '_id', as: 'sender_doc' } },
+        { $unwind: { path: '$sender_doc', preserveNullAndEmptyArrays: true } },
+        { $lookup: { from: 'users', localField: 'recipient_id', foreignField: '_id', as: 'recipient_doc' } },
+        { $unwind: { path: '$recipient_doc', preserveNullAndEmptyArrays: true } },
+        { $lookup: { from: 'groups', localField: 'group_id', foreignField: '_id', as: 'group_doc' } },
+        { $unwind: { path: '$group_doc', preserveNullAndEmptyArrays: true } },
+        {
+          $addFields: {
+            id: '$_id',
+            sender: {
+              id: '$sender_doc._id',
+              name: '$sender_doc.name',
+              avatar: '$sender_doc.avatar'
+            },
+            recipient: call.receiver_id ? {
+              id: '$recipient_doc._id',
+              name: '$recipient_doc.name',
+              avatar: '$recipient_doc.avatar'
+            } : null,
+            group: call.group_id ? {
+              id: '$group_doc._id',
+              name: '$group_doc.name',
+              avatar: '$group_doc.avatar'
+            } : null
           }
-        ]);
-  
-        fullMessage = fullMessage[0];
-      } else {
-        // Create new message
-        const newMessageData = {
-          sender_id: call.initiator_id,
-          recipient_id: call.receiver_id || null,
-          group_id: call.group_id || null,
-          content,
-          message_type: 'call',
-          metadata,
-        };
-  
-        const newMessage = await Message.create(newMessageData);
-  
-        // Create MessageStatus for recipients
-        let recipients = [];
+        },
+        {
+          $project: {
+            _id: 0, id: 1, sender_id: 1, recipient_id: 1, group_id: 1,
+            content: 1, message_type: 1, metadata: 1, created_at: 1, updated_at: 1,
+            sender: 1, recipient: 1, group: 1
+          }
+        }
+      ]);
+
+      fullMessage = fullMessage[0];
+
+      // === EMIT message-updated (CRITICAL!) ===
+      setTimeout(() => {
         if (call.call_mode === 'direct' && call.receiver_id) {
-          recipients.push(call.receiver_id);
+          io.to(`user_${call.initiator_id}`).emit('message-updated', fullMessage);
+          io.to(`user_${call.receiver_id}`).emit('message-updated', fullMessage);
         } else if (call.group_id) {
-          const members = await GroupMember.find({ group_id: call.group_id, user_id: { $ne: call.initiator_id } }).lean();
-          recipients = members.map(m => m.user_id);
+          io.to(`group_${call.group_id}`).emit('message-updated', fullMessage);
         }
-  
-        if (recipients.length > 0) {
-          await MessageStatus.insertMany(
-            recipients.map(uid => ({
-              message_id: newMessage._id,
-              user_id: uid,
-              status: 'sent'
-            }))
-          );
-        }
-  
-        // Populate new message
-        fullMessage = await Message.aggregate([
-          { $match: { _id: newMessage._id } },
-          // same lookup pipeline as above
-          {
-            $lookup: { from: 'users', localField: 'sender_id', foreignField: '_id', as: 'sender_doc' }
-          },
-          { $unwind: { path: '$sender_doc', preserveNullAndEmptyArrays: true } },
-          {
-            $lookup: { from: 'users', localField: 'recipient_id', foreignField: '_id', as: 'recipient_doc' }
-          },
-          { $unwind: { path: '$recipient_doc', preserveNullAndEmptyArrays: true } },
-          {
-            $lookup: { from: 'groups', localField: 'group_id', foreignField: '_id', as: 'group_doc' }
-          },
-          { $unwind: { path: '$group_doc', preserveNullAndEmptyArrays: true } },
-          {
-            $addFields: {
-              id: '$_id',
-              sender: {
-                id: '$sender_doc._id',
-                name: '$sender_doc.name',
-                avatar: '$sender_doc.avatar'
-              },
-              recipient: call.receiver_id ? {
-                id: '$recipient_doc._id',
-                name: '$recipient_doc.name',
-                avatar: '$recipient_doc.avatar'
-              } : null,
-              group: call.group_id ? {
-                id: '$group_doc._id',
-                name: '$group_doc.name',
-                avatar: '$group_doc.avatar'
-              } : null
-            }
-          },
-          {
-            $project: {
-              _id: 0, id: 1, sender_id: 1, recipient_id: 1, group_id: 1,
-              content: 1, message_type: 1, metadata: 1, created_at: 1, updated_at: 1,
-              sender: 1, recipient: 1, group: 1
-            }
-          }
-        ]);
-  
-        fullMessage = fullMessage[0];
+      }, 300);
+
+    } else {
+      // === CREATE NEW MESSAGE ===
+      const newMessageData = {
+        sender_id: call.initiator_id,
+        recipient_id: call.receiver_id || null,
+        group_id: call.group_id || null,
+        content,
+        message_type: 'call',
+        metadata,
+      };
+
+      const newMessage = await Message.create(newMessageData);
+
+      // Create MessageStatus entries
+      let recipients = [];
+      if (call.call_mode === 'direct' && call.receiver_id) {
+        recipients.push(call.receiver_id);
+      } else if (call.group_id) {
+        const members = await GroupMember.find(
+          { group_id: call.group_id, user_id: { $ne: call.initiator_id } },
+          { user_id: 1, _id: 0 }
+        ).lean();
+        recipients = members.map(m => m.user_id);
       }
-  
-      const io = req.app.get('io');
-  
+
+      if (recipients.length > 0) {
+        await MessageStatus.insertMany(
+          recipients.map(uid => ({
+            message_id: newMessage._id,
+            user_id: uid,
+            status: 'sent'
+          }))
+        );
+      }
+
+      // Fetch with aggregation
+      fullMessage = await Message.aggregate([
+        { $match: { _id: newMessage._id } },
+        { $lookup: { from: 'users', localField: 'sender_id', foreignField: '_id', as: 'sender_doc' } },
+        { $unwind: { path: '$sender_doc', preserveNullAndEmptyArrays: true } },
+        { $lookup: { from: 'users', localField: 'recipient_id', foreignField: '_id', as: 'recipient_doc' } },
+        { $unwind: { path: '$recipient_doc', preserveNullAndEmptyArrays: true } },
+        { $lookup: { from: 'groups', localField: 'group_id', foreignField: '_id', as: 'group_doc' } },
+        { $unwind: { path: '$group_doc', preserveNullAndEmptyArrays: true } },
+        {
+          $addFields: {
+            id: '$_id',
+            sender: {
+              id: '$sender_doc._id',
+              name: '$sender_doc.name',
+              avatar: '$sender_doc.avatar'
+            },
+            recipient: call.receiver_id ? {
+              id: '$recipient_doc._id',
+              name: '$recipient_doc.name',
+              avatar: '$recipient_doc.avatar'
+            } : null,
+            group: call.group_id ? {
+              id: '$group_doc._id',
+              name: '$group_doc.name',
+              avatar: '$group_doc.avatar'
+            } : null
+          }
+        },
+        {
+          $project: {
+            _id: 0, id: 1, sender_id: 1, recipient_id: 1, group_id: 1,
+            content: 1, message_type: 1, metadata: 1, created_at: 1, updated_at: 1,
+            sender: 1, recipient: 1, group: 1
+          }
+        }
+      ]);
+
+      fullMessage = fullMessage[0];
+
+      // === EMIT receive-message for new message ===
       setTimeout(() => {
         if (call.call_mode === 'direct' && call.receiver_id) {
           io.to(`user_${call.initiator_id}`).emit('receive-message', fullMessage);
           io.to(`user_${call.receiver_id}`).emit('receive-message', fullMessage);
         } else if (call.group_id) {
-          const memberIds = call.participants?.map(p => p.user_id?.toString()) || [];
-          memberIds.forEach(uid => io.to(`user_${uid}`).emit('receive-message', fullMessage));
+          io.to(`group_${call.group_id}`).emit('receive-message', fullMessage);
         }
       }, 300);
-  
-      return fullMessage;
-    } catch (error) {
-      console.error('Error in createCallMessage:', error);
-      return null;
     }
+
+    return fullMessage;
+
+  } catch (error) {
+    console.error('Error in createCallMessage:', error);
+    return null;
+  }
 }
 
 function matchesSearchCriteria(call, searchTerm, userId) {
