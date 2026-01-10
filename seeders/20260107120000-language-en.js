@@ -1,16 +1,4 @@
-const mongoose = require('mongoose');
-const { db } = require('../models');
-const Language = db.Language;
-
-const connectDB = async () => {
-  try {
-    await mongoose.connect(process.env.MONGODB_URI);
-    console.log('MongoDB connected for seeding');
-  } catch (err) {
-    console.error('MongoDB connection error:', err);
-    process.exit(1);
-  }
-};
+const Language = require('../models/language.model');
 
 const englishTranslations = {
   "already_have_an_account": "Already have an account?",
@@ -393,17 +381,17 @@ const englishTranslations = {
   "chat": "Chat"
 };
 
-const seedLanguage = async () => {
-  await connectDB();
-
+async function up(dbConnection, mongoose) {
   try {
-    const exists = await Language.findOne({ locale: 'en' });
+    const LanguageModel = dbConnection.db.Language || require('../models/language.model');
+    
+    const exists = await LanguageModel.findOne({ locale: 'en' });
     if (exists) {
       console.log('English language already exists. Skipping seed.');
-      process.exit(0);
+      return;
     }
 
-    await Language.create({
+    await LanguageModel.create({
       name: 'English',
       locale: 'en',
       is_active: true,
@@ -415,11 +403,22 @@ const seedLanguage = async () => {
     });
 
     console.log('English language seeded successfully on 2026-01-07!');
-    process.exit(0);
   } catch (error) {
     console.error('Error seeding language:', error);
-    process.exit(1);
+    throw error;
   }
-};
+}
 
-seedLanguage();
+async function down(dbConnection, mongoose) {
+  try {
+    const LanguageModel = dbConnection.db.Language || require('../models/language.model');
+    
+    await LanguageModel.deleteMany({ locale: 'en' });
+    console.log('English language removed successfully!');
+  } catch (error) {
+    console.error('Error removing language:', error);
+    throw error;
+  }
+}
+
+module.exports = { up, down };

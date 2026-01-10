@@ -1,13 +1,4 @@
-const mongoose = require('mongoose');
-const { db } = require('../models');
-const Setting = db.Setting;
-
-mongoose.connect(process.env.MONGODB_URI )
-  .then(() => console.log('MongoDB connected for seeding'))
-  .catch(err => {
-    console.error('MongoDB connection error:', err);
-    process.exit(1);
-  });
+const Setting = require('../models/setting.model');
 
 const defaultSettings = {
   app_name: 'My Application',
@@ -84,20 +75,32 @@ const defaultSettings = {
   default_language: 'en',
 };
 
-async function seed() {
+async function up(dbConnection, mongoose) {
   try {
-    await Setting.deleteMany({});
-
-    const setting = new Setting(defaultSettings);
+    const SettingModel = dbConnection.db.Setting || require('../models/setting.model');
+    
+    await SettingModel.deleteMany({});
+    
+    const setting = new SettingModel(defaultSettings);
     await setting.save();
 
     console.log('Settings seeded successfully!');
-
-    process.exit(0);
   } catch (error) {
     console.error('Error seeding settings:', error);
-    process.exit(1);
+    throw error;
   }
 }
 
-seed();
+async function down(dbConnection, mongoose) {
+  try {
+    const SettingModel = dbConnection.db.Setting || require('../models/setting.model');
+    
+    await SettingModel.deleteMany({});
+    console.log('Settings removed successfully!');
+  } catch (error) {
+    console.error('Error removing settings:', error);
+    throw error;
+  }
+}
+
+module.exports = { up, down };

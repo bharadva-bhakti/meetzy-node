@@ -15,7 +15,7 @@
         <div class="form-group form-row">
           <label>Port<span class="required-fill">*</span></label>
           <div>
-            <input type="number" name="database[DB_PORT]" value="<%= process.env.DB_PORT || '3306' %>" class="form-control" placeholder="3306" autocomplete="off">
+            <input type="number" name="database[DB_PORT]" value="<%= process.env.DB_PORT || '27017' %>" class="form-control" placeholder="27017" autocomplete="off">
             <% if (errors['database.DB_PORT']) { %><span class="text-danger"><%= errors['database.DB_PORT'] %></span><% } %>
           </div>
         </div>

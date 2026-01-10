@@ -98,27 +98,38 @@ async function getDatabase(req, res) {
 }
 
 const postDatabaseConfig = [
-  // Step 1: Validate admin input
-  async (req, res, next) => {
-    try {
-      const validators = getAdminValidators();
-      for (const v of validators) {
-        await v.run(req);
-      }
-      return next();
-    } catch (e) {
-      return next(e);
-    }
-  },
-
-  // Step 2: DB body validation middleware
-  ...validateDbBody,
-
-  // Step 3: Main handler
+  // Main handler with combined validation
   async (req, res) => {
-    const errors = validationResult(req);
-    if (!errors.isEmpty()) {
-      req.session._errors = mapErrors(errors, true);
+    // Validate database data
+    const dbValidators = validateDbBody;
+    for (const validator of dbValidators) {
+      await validator.run(req);
+    }
+    
+    // Check database validation errors
+    let allErrors = {};
+    const dbErrors = validationResult(req);
+    if (!dbErrors.isEmpty()) {
+      allErrors = { ...allErrors, ...mapErrors(dbErrors, false) };
+    }
+    
+    // Then validate admin data if it exists
+    if (req.body.admin) {
+      const adminValidators = getAdminValidators();
+      for (const validator of adminValidators) {
+        await validator.run(req);
+      }
+      
+      const adminErrors = validationResult(req);
+      if (!adminErrors.isEmpty()) {
+        const adminErrorMap = mapErrors(adminErrors, false);
+        allErrors = { ...allErrors, ...adminErrorMap };
+      }
+    }
+    
+    // If there are any errors, redirect back
+    if (Object.keys(allErrors).length > 0) {
+      req.session._errors = allErrors;
       req.session._old = req.body;
       return res.redirect('database');
     }
@@ -126,8 +137,14 @@ const postDatabaseConfig = [
     const { database, admin } = req.body;
 
     try {
+      // Save environment variables first
+      if (process.env.DOTENV_EDIT === 'true') {
+        await writeEnv(database, admin);
+      }
+      
+      // Then configure and connect to database
       await configureDb(database);
-      await connectDb(database);
+      await connectDb();
       await runMigrations();
     } catch (e) {
       const dbFieldErrors = mapDbConnectionError(e);
@@ -137,9 +154,6 @@ const postDatabaseConfig = [
     }
 
     await fs.writeFile(publicPath('_migZip.xml'), '');
-    if (process.env.DOTENV_EDIT === 'true') {
-      await writeEnv(database, admin);
-    }
     return res.redirect('completed');
   }
 ];
@@ -151,22 +165,22 @@ async function getCompleted(req, res) {
 
   await new Promise(resolve => setTimeout(resolve, 5000));
 
-  const { sequelize } = require('./../../../models');
+  const { connectDB } = require('./../../../models');
 
-  if (sequelize) {
+  if (process.env.MONGODB_URI) {
     try {
       console.log('🔄 Connecting to database...');
-      await sequelize.authenticate();
+      const db = await connectDB();
       console.log('✅ Connection established');
 
       console.log('⏳ Syncing models. Please wait...');
       console.time('⏳ Sync duration');
-      await sequelize.sync();
+      // In MongoDB, models are registered when connecting
       console.timeEnd('⏳ Sync duration');
       console.log('✅ All models synced successfully');
 
       // Optional delay to let the DB settle
-      console.log('⌛ Waiting briefly to ensure all tables are ready...');
+      console.log('⌛ Waiting briefly to ensure all collections are ready...');
       await new Promise(resolve => setTimeout(resolve, 5000));
       console.log('✅ Wait complete. Proceeding to seeders');
 
@@ -189,9 +203,9 @@ async function runSeeder(req, res) {
   const instFile = publicPath('installation.json');
   if (!(await fs.pathExists(instFile))) await fs.writeFile(instFile, '');
 
-  const { sequelize } = require('./../../../models');
+  const { connectDB } = require('./../../../models');
 
-  if (sequelize) {
+  if (process.env.MONGODB_URI) {
 
     // Seeder execution
     const seedersPath = path.join(__dirname, './../../../seeders');
@@ -203,7 +217,7 @@ async function runSeeder(req, res) {
       const seeder = require(seederPath);
       if (typeof seeder.up === 'function') {
         console.log(`🌱 Running seeder: ${file}`);
-        await seeder.up(sequelize.getQueryInterface(), sequelize.Sequelize);
+        await seeder.up(connectDB, require('mongoose'));
         console.log(`✅ Seeder completed: ${file}`);
       } else {
         console.warn(`⚠️ Skipping: ${file} — no 'up' function`);
@@ -284,26 +298,37 @@ function mapErrors(result, firstOnly = false) {
 
 function mapDbConnectionError(err) {
   const out = {};
-  const code = err?.parent?.code || err?.original?.code || err?.code || '';
-  const message = (err?.message || err?.parent?.sqlMessage || '').toString();
-  if (message.match(/Access denied/i) || /ER_ACCESS_DENIED_ERROR/.test(code)) {
-    out['database.DB_USERNAME'] = 'Access denied: invalid username or password';
-    out['database.DB_PASSWORD'] = 'Access denied: invalid username or password';
+  const code = err?.code || '';
+  const message = (err?.message || '').toString();
+  
+  // MongoDB specific error patterns
+  if (message.match(/ECONNREFUSED|failed to connect|connection/)) {
+    out['database.DB_HOST'] = 'Failed to connect to database';
+    out['database.DB_PORT'] = 'Check host and port';
     return out;
   }
-  if (message.match(/Unknown database/i) || /ER_BAD_DB_ERROR/.test(code)) {
-    out['database.DB_DATABASE'] = 'Unknown database or insufficient privileges';
+  
+  if (message.match(/Authentication failed|auth|authenticate|EAUTH/i)) {
+    out['database.DB_USERNAME'] = 'Authentication failed: invalid username or password';
+    out['database.DB_PASSWORD'] = 'Authentication failed: invalid username or password';
     return out;
   }
-  if (/ENOTFOUND|EAI_AGAIN/i.test(code) || message.match(/getaddrinfo|not known/i)) {
-    out['database.DB_HOST'] = 'Unable to resolve host';
+  
+  if (message.match(/getaddrinfo ENOTFOUND|ENOTFOUND|EAI_AGAIN|ENODATA/i)) {
+    out['database.DB_HOST'] = 'Unable to resolve host - check your hostname';
     return out;
   }
-  if (/ECONNREFUSED|EHOSTUNREACH|ETIMEDOUT/i.test(code) || message.match(/connect ECONNREFUSED|timeout/i)) {
-    out['database.DB_HOST'] = 'Connection refused/unreachable';
-    out['database.DB_PORT'] = 'Check port and firewall';
+  
+  if (message.match(/wrong password|incorrect password|Authentication failed/i)) {
+    out['database.DB_PASSWORD'] = 'Incorrect password';
     return out;
   }
+  
+  if (message.match(/invalid username|user not found|Authentication failed/i)) {
+    out['database.DB_USERNAME'] = 'Invalid username';
+    return out;
+  }
+  
   // Default generic mapping
   out['database.DB_HOST'] = message || 'Database connection error';
   return out;
@@ -329,4 +354,3 @@ module.exports = {
   postResetLicense,
   getBlockProject
 };
-

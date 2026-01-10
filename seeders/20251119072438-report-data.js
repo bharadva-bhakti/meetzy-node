@@ -1,13 +1,4 @@
-const mongoose = require('mongoose');
-const { db } = require('../models');
-const ReportReason = db.ReportReason;
-
-mongoose.connect(process.env.MONGODB_URI,)
-  .then(() => console.log('MongoDB connected for seeding report reasons'))
-  .catch(err => {
-    console.error('MongoDB connection error:', err);
-    process.exit(1);
-  });
+const ReportReason = require('../models/report-reason.model');
 
 const reportReasons = [
   { title: 'Spam' },
@@ -22,18 +13,29 @@ const reportReasons = [
   { title: 'Other' },
 ];
 
-async function seed() {
+async function up(dbConnection, mongoose) {
   try {
-    await ReportReason.deleteMany({});
-
-    await ReportReason.insertMany(reportReasons);
+    const ReportReasonModel = dbConnection.db.ReportReason || require('../models/report-reason.model');
+    
+    await ReportReasonModel.deleteMany({});
+    await ReportReasonModel.insertMany(reportReasons);
     console.log('Report reasons seeded successfully!');
-
-    process.exit(0);
   } catch (error) {
     console.error('Error seeding report reasons:', error);
-    process.exit(1);
+    throw error;
   }
 }
 
-seed();
+async function down(dbConnection, mongoose) {
+  try {
+    const ReportReasonModel = dbConnection.db.ReportReason || require('../models/report-reason.model');
+    
+    await ReportReasonModel.deleteMany({});
+    console.log('Report reasons removed successfully!');
+  } catch (error) {
+    console.error('Error removing report reasons:', error);
+    throw error;
+  }
+}
+
+module.exports = { up, down };
