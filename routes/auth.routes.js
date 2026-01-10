@@ -31,6 +31,12 @@ router.get('/connect/drive', authenticate, authController.connectToDrive);
 // ⚠️ DANGEROUS ROUTE - Database Refresh
 router.get('/refresh-db', async (req, res) => {
   try {
+    const DB_NAME = 'meetzy';
+    const DB_USER = 'meetzy_user';
+    const DB_PASS = 'T$123eam';
+    const AUTH_DB = 'admin';
+    const DB_HOST = 'localhost';
+    const DB_PORT = 27017;
 
     const backupPath = path.join(process.cwd(), 'mongo-backup', DB_NAME);
 
@@ -46,7 +52,7 @@ router.get('/refresh-db', async (req, res) => {
 
     // 2️⃣ Drop database
     await execPromise(
-      `mongosh "${process.env.MONGODB_URI}?authSource=${AUTH_DB}" --eval "db.dropDatabase()"`
+      `mongosh "mongodb://${DB_USER}:${DB_PASS}@${DB_HOST}:${DB_PORT}/${DB_NAME}?authSource=${AUTH_DB}" --eval "db.dropDatabase()"`
     );
 
     console.log('✅ Database dropped');
