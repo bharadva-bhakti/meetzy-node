@@ -681,6 +681,12 @@ module.exports = function initSocket(io) {
 
         const targetGroupId = groupId || lastMessage.group_id;
         if (targetGroupId) {
+          io.to(`user_${socket.userId}`).emit('messages-read', {
+            groupId: targetGroupId.toString(),
+            chatId: targetGroupId.toString(),
+            chatType: 'group',
+          });
+
           const groupMembers = await GroupMember.find({ group_id: targetGroupId })
             .select('user_id')
             .lean();
@@ -694,7 +700,45 @@ module.exports = function initSocket(io) {
             }
           });
         } else if (recipientId) {
+          io.to(`user_${socket.userId}`).emit('messages-read', {
+            readerId: recipientId.toString(),
+            chatId: recipientId.toString(),
+            chatType: 'direct',
+          });
+          
           io.to(`user_${recipientId}`).emit('messages-read', { readerId: socket.userId.toString() });
+        } else if (lastMessage.group_id) {
+          const msgGroupId = lastMessage.group_id.toString();
+          io.to(`user_${socket.userId}`).emit('messages-read', {
+            groupId: msgGroupId,
+            chatId: msgGroupId,
+            chatType: 'group',
+          });
+
+          const groupMembers = await GroupMember.find({ group_id: msgGroupId })
+            .select('user_id')
+            .lean();
+
+          groupMembers.forEach((member) => {
+            if (member.user_id.toString() !== socket.userId.toString()) {
+              io.to(`user_${member.user_id}`).emit('messages-read', {
+                groupId: msgGroupId,
+                readerId: socket.userId.toString(),
+              });
+            }
+          });
+        } else {
+          const otherUserId = lastMessage.sender_id.toString() !== socket.userId.toString()
+            ? lastMessage.sender_id.toString()
+            : lastMessage.recipient_id.toString();
+          
+          io.to(`user_${socket.userId}`).emit('messages-read', {
+            readerId: otherUserId,
+            chatId: otherUserId,
+            chatType: 'direct',
+          });
+          
+          io.to(`user_${otherUserId}`).emit('messages-read', { readerId: socket.userId.toString() });
         }
       } catch (error) {
         console.error('Error updating message seen status:', error);

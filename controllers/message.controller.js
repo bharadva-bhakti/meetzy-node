@@ -1013,6 +1013,23 @@ exports.markMessagesAsRead = async (req, res) => {
 
     await Message.updateMany({ ...match, has_unread_mentions: true },{ has_unread_mentions: false });
 
+    const io = req.app.get('io');
+    if (io) {
+      if (chat_type === 'group') {
+        io.to(`user_${userId}`).emit('messages-read', {
+          groupId: chat_id.toString(),
+          chatId: chat_id.toString(),
+          chatType: 'group',
+        });
+      } else {
+        io.to(`user_${userId}`).emit('messages-read', {
+          readerId: chat_id.toString(),
+          chatId: chat_id.toString(),
+          chatType: 'direct',
+        });
+      }
+    }
+
     return res.status(200).json({ message: 'Messages marked as read successfully.' });
   } catch (error) {
     console.error('Error in markMessagesAsRead:', error);

@@ -759,13 +759,54 @@ async function getLatestMessage(conv, currentUserId, pinnedSet, pinnedTimeMap, m
     }
   }
 
-  const unreadCount = !isAnnouncement
-    ? await MessageStatus.countDocuments({
+  // Calculate unread count for all messages in the conversation, not just the last message
+  let unreadCount = 0;
+  if (!isAnnouncement && latest) {
+    let unreadMatch = {};
+    if (isDM) {
+      unreadMatch = {
+        group_id: null,
+        $or: [
+          { sender_id: currentUserId, recipient_id: conv.id },
+          { sender_id: conv.id, recipient_id: currentUserId },
+        ],
+        message_type: { $ne: 'system' },
+      };
+    } else if (isGroup) {
+      unreadMatch = { group_id: new mongoose.Types.ObjectId(conv.id) };
+    }
+
+    if (clearEntry) {
+      unreadMatch.created_at = { $gt: clearEntry.cleared_at };
+    }
+    if (leftAt) {
+      if (unreadMatch.created_at) {
+        unreadMatch.created_at = {
+          ...unreadMatch.created_at,
+          $lte: leftAt,
+        };
+      } else {
+        unreadMatch.created_at = { $lte: leftAt };
+      }
+    }
+    if (deletedIds && deletedIds.length > 0) {
+      unreadMatch._id = { $nin: deletedIds };
+    }
+
+    // Get all message IDs in this conversation
+    const conversationMessageIds = await Message.find(unreadMatch)
+      .select('_id')
+      .lean()
+      .then(messages => messages.map(m => m._id));
+
+    if (conversationMessageIds.length > 0) {
+      unreadCount = await MessageStatus.countDocuments({
         user_id: currentUserId,
         status: { $ne: 'seen' },
-        message_id: latest.id,
-      })
-    : 0;
+        message_id: { $in: conversationMessageIds },
+      });
+    }
+  }
 
   const avatar = isAnnouncement
     ? latest.sender?.avatar
