@@ -125,9 +125,17 @@ exports.updateUserSetting = async (req, res) => {
     }
 
     const updatedSetting = await UserSetting.findOne({ user_id: userId });
+    const friends = await Friend.find({ status: 'accepted', $or: [{ user_id: userId }, { friend_id: userId }]});
+
+    const friendIds = friends.map(f =>
+      f.user_id.toString() === userId.toString() ? f.friend_id : f.user_id
+    );
 
     if (io) {
       io.to(`user_${userId}`).emit('user-settings-updated', { userId, settings: updatedSetting });
+      friendIds.forEach(friendId => {
+        io.to(`user_${friendId}`).emit('friend-user-settings-updated', { userId, settings: updatedSetting, });
+      });
     }
 
     return res.status(200).json({
