@@ -1,0 +1,10 @@
+<% if (session.success) { %>
+  <p class="alert alert-success"><%= session.success %></p>
+<% } %>
+<% if (session.error) { %>
+  <p class="alert alert-danger"><%= session.error %></p>
+<% } %>
+<% if (session.warning) { %>
+  <p class="alert alert-warning"><%= session.warning %></p>
+<% } %>
+

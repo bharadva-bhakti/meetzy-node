@@ -1,0 +1,32 @@
+<% layout('layouts/stms', { title: 'Verify' }) %>
+<div>
+  <form action="/install/verify" method="POST">
+    <div class="row">
+      <div class="database-field col-md-12">
+        <h6>Please verify license & enter your administration details below.</h6>
+        <div class="form-group form-row">
+          <label>Envato Username<span class="required-fill">*</span></label>
+          <div>
+            <input type="text" name="envato_username" value="<%= old('envato_username','') %>" class="form-control" autocomplete="off">
+            <% if (errors.envato_username) { %><span class="text-danger"><%= errors.envato_username %></span><% } %>
+          </div>
+        </div>
+        <div class="form-group form-row">
+          <label>Purchase Code<span class="required-fill">*</span></label>
+          <div>
+            <input type="text" name="license" value="<%= old('license','') %>" class="form-control" autocomplete="off">
+            <% if (errors.license) { %><span class="text-danger"><%= errors.license %></span><% } %>
+          </div>
+        </div>
+        <div>
+          If you don't know how to get purchase code, click here: <a href="https://help.market.envato.com/hc/en-us/articles/202822600-Where-Is-My-Purchase-Code">where is my purchase code</a>
+        </div>
+      </div>
+    </div>
+    <div class="next-btn d-flex">
+      <a href="javascript:void(0)" class="btn btn-primary submit-form">Submit <i class="far fa-hand-point-right ms-2"></i></a>
+    </div>
+  </form>
+</div>
+<% scripts = `<script>$(".submit-form").click(function(){ $("form").submit(); });</script>` %>
+
