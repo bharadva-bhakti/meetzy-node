@@ -94,6 +94,10 @@ exports.markAsRead = async (req, res) => {
 exports.markAllAsRead = async (req, res) => {
   const user_id = req.user._id;
 
+  if (req.isImpersonating) {
+    return res.status(200).json({ message: 'Admin is Impersonating. No messages mark as read.' });
+  }
+
   try {
     await Notification.updateMany( { user_id, is_read: false }, { is_read: true, read_at: new Date() });
 
