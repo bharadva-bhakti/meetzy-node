@@ -5,16 +5,31 @@ function groupMessagesByChat(messages, userId) {
 
   for (const msg of messages) {
     const isGroup = !!msg.group_id;
-    const chatKey = isGroup ? `group_${msg.group_id}` : [msg.sender_id, msg.recipient_id].sort().join('_');
+    
+    const senderId = msg.sender_id?._id?.toString() || msg.sender_id?.toString() || null;
+    const recipientId = msg.recipient_id?._id?.toString() || msg.recipient_id?.toString() || null;
+    
+    if (!isGroup && !senderId && !recipientId) {
+      console.warn('Skipping message with null sender and recipient:', msg.id);
+      continue;
+    }
+    
+    const chatKey = isGroup 
+      ? `group_${msg.group_id._id || msg.group_id}` 
+      : [senderId, recipientId].filter(Boolean).sort().join('_');
 
     if (!chats[chatKey]) {
+      const userIdStr = userId.toString();
+      
       chats[chatKey] = {
         type: isGroup ? 'group' : 'private',
         title: isGroup
           ? `Group Chat: ${msg.group?.name || 'Unnamed Group'}`
           : `Chat between ${
-              msg.sender_id.toString() === userId.toString() ? msg.sender?.name : msg.recipient?.name
-            } and ${msg.sender_id.toString() === userId.toString() ? msg.recipient?.name : msg.sender?.name}`,
+              senderId === userIdStr ? (msg.sender?.name || 'Unknown') : (msg.recipient?.name || 'Unknown')
+            } and ${
+              senderId === userIdStr ? (msg.recipient?.name || 'Unknown') : (msg.sender?.name || 'Unknown')
+            }`,
         messages: [],
       };
     }
@@ -50,6 +65,7 @@ function formatChatText(chats, userId) {
 
     let currentDate = '';
     let lastTime = '';
+    const userIdStr = userId.toString();
 
     for (const msg of chat.messages) {
       const msgDate = new Date(msg.created_at);
@@ -67,8 +83,11 @@ function formatChatText(chats, userId) {
       }
 
       const msgTime = format(msgDate, 'hh:mm a');
-      const isYou = msg.sender_id.toString() === userId.toString();
-      const sender = isYou ? 'You' : msg.sender?.name || 'Unknown';
+      
+      // Handle sender identification with null checks
+      const senderId = msg.sender_id?._id?.toString() || msg.sender_id?.toString() || null;
+      const isYou = senderId === userIdStr;
+      const sender = isYou ? 'You' : (msg.sender?.name || 'Unknown');
       const content = msg.content?.trim() || '';
 
       if (msgTime !== lastTime) {

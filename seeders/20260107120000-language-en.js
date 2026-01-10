@@ -409,7 +409,9 @@ const seedLanguage = async () => {
       is_active: true,
       translation_json: englishTranslations,
       flag: null,
-      metadata: {},
+      metadata: {
+        fileName: 'EnglishLan.json'
+      }
     });
 
     console.log('English language seeded successfully on 2026-01-07!');
