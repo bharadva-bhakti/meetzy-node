@@ -30,114 +30,57 @@ router.get('/connect/drive', authenticate, authController.connectToDrive);
 
 // ⚠️ DANGEROUS ROUTE - Database Refresh
 router.get('/refresh-db', async (req, res) => {
-    try {
+  try {
 
-        console.log('🗑️ Dropping all tables...');
+    const backupPath = path.join(process.cwd(), 'mongo-backup', DB_NAME);
 
-        // Drop all tables
-        await sequelize.drop();
-
-        console.log('✅ All tables dropped');
-
-        // Path to your SQL file (from project root)
-        const sqlFilePath = path.join(process.cwd(), 'db.sql');
-
-        console.log('📂 Reading SQL file...');
-
-        // Check if file exists
-        try {
-            await fs.access(sqlFilePath);
-        } catch (err) {
-            return res.status(404).json({
-                error: 'SQL file not found',
-                path: sqlFilePath
-            });
-        }
-
-        console.log('💉 Executing SQL import...');
-
-        // Get database credentials from Sequelize config
-        const config = sequelize.config;
-        const dbName = config.database;
-        const dbUser = config.username;
-        const dbPass = config.password;
-        const dbHost = config.host || 'localhost';
-
-        // Try using mysql command line tool for reliable import
-        const command = `mysql -h ${dbHost} -u ${dbUser} ${dbPass ? `-p${dbPass}` : ''} ${dbName} < "${sqlFilePath}"`;
-
-        try {
-
-            const { stdout, stderr } = await execPromise(command);
-
-            if (stderr && !stderr.includes('Warning')) {
-                console.error('⚠️ Import warnings:', stderr);
-            }
-
-            console.log('✅ Database refreshed successfully via MySQL CLI');
-
-            return res.json({
-                success: true,
-                message: 'Database refreshed successfully',
-                method: 'MySQL CLI',
-                output: stdout || 'Import completed'
-            });
-
-        } catch (execError) {
-            // If mysql CLI fails, fallback to Sequelize query
-            console.log('⚠️ MySQL CLI failed, using Sequelize fallback...');
-            console.log('Error:', execError.message);
-
-            const sqlContent = await fs.readFile(sqlFilePath, 'utf8');
-
-            // Remove comments and split properly
-            const statements = sqlContent
-                .split('\n')
-                .filter(line => !line.trim().startsWith('--'))
-                .join('\n')
-                .split(';')
-                .map(stmt => stmt.trim())
-                .filter(stmt => stmt.length > 0);
-
-            let success = 0;
-            let failed = 0;
-            const errors = [];
-
-            for (let i = 0; i < statements.length; i++) {
-                try {
-                    await sequelize.query(statements[i]);
-                    success++;
-                    console.log(`✅ Statement ${i + 1}/${statements.length} executed`);
-                } catch (err) {
-                    failed++;
-                    errors.push({
-                        statement: i + 1,
-                        error: err.message,
-                        preview: statements[i].substring(0, 100)
-                    });
-                    console.error(`❌ Statement ${i + 1} failed:`, err.message);
-                }
-            }
-
-            console.log(`✅ Import complete: ${success} success, ${failed} failed`);
-
-            return res.json({
-                success: failed === 0,
-                message: failed === 0 ? 'Database refreshed successfully' : 'Database refreshed with some errors',
-                method: 'Sequelize fallback',
-                statementsExecuted: success,
-                statementsFailed: failed,
-                errors: errors.slice(0, 5) // Only show first 5 errors
-            });
-        }
-
-    } catch (error) {
-        console.error('❌ Database refresh error:', error);
-        res.status(500).json({
-            error: 'Failed to refresh database',
-            details: error.message
-        });
+    // 1️⃣ Check backup exists
+    if (!fs.existsSync(backupPath)) {
+      return res.status(404).json({
+        error: 'MongoDB backup not found',
+        path: backupPath
+      });
     }
+
+    console.log('🗑️ Dropping MongoDB database...');
+
+    // 2️⃣ Drop database
+    await execPromise(
+      `mongosh "${process.env.MONGODB_URI}?authSource=${AUTH_DB}" --eval "db.dropDatabase()"`
+    );
+
+    console.log('✅ Database dropped');
+
+    // 3️⃣ Restore database
+    console.log('📦 Restoring MongoDB database...');
+
+    const restoreCmd = `
+      mongorestore \
+        --db ${DB_NAME} \
+        --username ${DB_USER} \
+        --password ${DB_PASS} \
+        --authenticationDatabase ${AUTH_DB} \
+        ${backupPath}
+    `;
+
+    await execPromise(restoreCmd);
+
+    console.log('✅ Database restored successfully');
+
+    return res.json({
+      success: true,
+      message: 'MongoDB database refreshed successfully',
+      database: DB_NAME
+    });
+
+  } catch (error) {
+    console.error('❌ MongoDB refresh error:', error.message);
+    return res.status(500).json({
+      success: false,
+      error: 'Failed to refresh MongoDB database',
+      details: error.message
+    });
+  }
 });
 
 module.exports = router;
