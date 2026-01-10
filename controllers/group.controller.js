@@ -12,7 +12,7 @@ const Favorite = db.Favorite;
 const Setting = db.Setting;
 const { getEffectiveLimits } = require('../utils/userLimits');
 
-const createSystemMessage = async (req, groupId, action, metadata = {}) => {
+const createSystemMessage = async (req, groupId, action, metadata = {}, skipEmit = false) => {
   try {
     let content = '';
     let systemMetadata = { system_action: action, ...metadata };
@@ -101,8 +101,14 @@ const createSystemMessage = async (req, groupId, action, metadata = {}) => {
       recipient_id: populatedMessage.recipient_id || null,
       parent_id: populatedMessage.parent_id || null,
     };
-    const io = req.app.get('io');
-    io.to(`group_${groupId}`).emit('receive-message', transformedMessage);
+    
+    // Only emit if not explicitly skipped (e.g., when called from createGroup which handles its own emit)
+    if (!skipEmit) {
+      const io = req.app.get('io');
+      if (io) {
+        io.to(`group_${groupId}`).emit('receive-message', transformedMessage);
+      }
+    }
 
     return systemMessage;
   } catch (error) {
@@ -493,30 +499,88 @@ exports.createGroup = async (req, res) => {
     await GroupMember.insertMany(membersToAdd);
     await GroupSetting.create({ group_id: group._id });
 
-    const systemMessage = await createSystemMessage(req, group._id, 'group_created', {
-      creator_user_id: userId,
-    });
-
-    const allMembers = new Set([...members, userId.toString()]);
+    const allMembers = new Set([...members.map(m => m.toString()), userId.toString()]);
     const io = req.app.get('io');
 
-    if (systemMessage && io) {
-      const fullSystemMessage = await Message.findById(systemMessage._id)
-        .populate('sender_id', 'id name avatar').populate('group_id', 'id name avatar');
+    const groupPayload = {
+      id: group._id,
+      name: group.name,
+      description: group.description,
+      avatar: group.avatar,
+      created_by: group.created_by,
+      created_at: group.created_at,
+      updated_at: group.updated_at,
+    };
 
-      allMembers.forEach(memberId => {
-        io.to(`user_${memberId}`).emit('receive-message', fullSystemMessage);
-        const userRoom = io.sockets.adapter.rooms.get(`user_${memberId}`);
-        if (userRoom) {
-          userRoom.forEach(socketId => {
-            const socket = io.sockets.sockets.get(socketId);
-            if (socket) socket.join(`group_${group._id}`);
-          });
+    const systemMessage = await createSystemMessage(req, group._id, 'group_created', {
+      creator_user_id: userId,
+    }, true);
+
+    if (systemMessage && io) {
+      const fullSystemMessages = await Message.aggregate([
+        { $match: { _id: systemMessage._id } },
+        { $lookup: { from: 'users', localField: 'sender_id', foreignField: '_id', as: 'sender_doc' } },
+        { $unwind: { path: '$sender_doc', preserveNullAndEmptyArrays: true } },
+        { $lookup: { from: 'groups', localField: 'group_id', foreignField: '_id', as: 'group_doc' } },
+        { $unwind: { path: '$group_doc', preserveNullAndEmptyArrays: true } },
+        {
+          $addFields: {
+            id: '$_id',
+            sender: {
+              id: '$sender_doc._id',
+              name: '$sender_doc.name',
+              avatar: '$sender_doc.avatar'
+            },
+            group: {
+              id: '$group_doc._id',
+              name: '$group_doc.name',
+              avatar: '$group_doc.avatar'
+            },
+          }
+        },
+        {
+          $project: {
+            _id: 0,
+            id: 1,
+            sender_id: 1,
+            recipient_id: 1,
+            group_id: 1,
+            parent_id: 1,
+            content: 1,
+            message_type: 1,
+            file_url: 1,
+            file_type: 1,
+            mentions: 1,
+            has_unread_mentions: 1,
+            metadata: 1,
+            is_encrypted: 1,
+            created_at: 1,
+            updated_at: 1,
+            deleted_at: 1,
+            sender: 1,
+            recipient: 1,
+            group: 1,
+          }
         }
-      });
+      ]);
+
+      const fullSystemMessage = fullSystemMessages[0];
+
+      if (fullSystemMessage) {
+        allMembers.forEach(memberId => {
+          io.to(`user_${memberId}`).emit('receive-message', fullSystemMessage);
+          const userRoom = io.sockets.adapter.rooms.get(`user_${memberId}`);
+          if (userRoom) {
+            userRoom.forEach(socketId => {
+              const socket = io.sockets.sockets.get(socketId);
+              if (socket) socket.join(`group_${group._id}`);
+            });
+          }
+        });
+      }
     }
 
-    allMembers.forEach(memberId => io.to(`user_${memberId}`).emit('new-group', group));
+    allMembers.forEach(memberId => io.to(`user_${memberId}`).emit('new-group', groupPayload));
 
     return res.status(201).json({ message: 'Group created successfully.', group });
   } catch (error) {
