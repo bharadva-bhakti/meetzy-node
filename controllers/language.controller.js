@@ -4,6 +4,14 @@ const Setting = db.Setting;
 const fs = require('fs');
 const mongoose = require('mongoose');
 
+const isFilePath = (flag) => {
+  if (!flag || typeof flag !== 'string') return false;
+  return (flag.includes('/') || flag.includes('\\')) && 
+         (flag.includes('.png') || flag.includes('.jpg') || flag.includes('.jpeg') || 
+          flag.includes('.svg') || flag.includes('.gif') || flag.includes('.webp') ||
+          flag.startsWith('uploads/') || flag.startsWith('./uploads/'));
+};
+
 exports.fetchLanguages = async (req, res) => {
   const { search, page = 1, limit = 10 } = req.query;
   const skip = (parseInt(page) - 1) * parseInt(limit);
@@ -99,7 +107,7 @@ exports.fetchActiveLanguages = async (req, res) => {
 };
 
 exports.createLanguage = async (req, res) => {
-  const { locale, name, isActive } = req.body;
+  const { locale, name, isActive, flag } = req.body;
 
   try {
     if (!locale || !name) {
@@ -113,7 +121,7 @@ exports.createLanguage = async (req, res) => {
 
     let translationJson = null;
     let metadata = {};
-    let flagPath = null;
+    let flagValue = null;
     
     if (req.files?.translation?.[0]) {
       const file = req.files.translation[0];
@@ -135,7 +143,9 @@ exports.createLanguage = async (req, res) => {
     }
 
     if (req.files?.flag?.[0]) {
-      flagPath = req.files.flag[0].path;
+      flagValue = req.files.flag[0].path;
+    } else if (flag && typeof flag === 'string') {
+      flagValue = flag.trim();
     }
 
     const language = await Language.create({
@@ -143,7 +153,7 @@ exports.createLanguage = async (req, res) => {
       locale: locale.trim().toLowerCase(),
       is_active: isActive ?? true,
       translation_json: translationJson,
-      flag: flagPath,
+      flag: flagValue,
       metadata,
     });
 
@@ -170,7 +180,7 @@ exports.createLanguage = async (req, res) => {
 
 exports.updateLanguage = async (req, res) => {
   const { id } = req.params;
-  const { name, locale, is_active, remove_flag = false } = req.body;
+  const { name, locale, is_active, remove_flag = false, flag } = req.body;
 
   try {
     const language = await Language.findById(id);
@@ -192,7 +202,7 @@ exports.updateLanguage = async (req, res) => {
 
     let translationJson = language.translation_json;
     let metadata = language.metadata || {};
-    let flagPath = language.flag;
+    let flagValue = language.flag;
 
     if (req.files?.translation?.[0]) {
       const file = req.files.translation[0];
@@ -208,17 +218,36 @@ exports.updateLanguage = async (req, res) => {
     }
 
     if (remove_flag === true || remove_flag === 'true') {
-      if (flagPath && fs.existsSync(flagPath)) {
-        fs.unlinkSync(flagPath);
+      if (isFilePath(flagValue) && fs.existsSync(flagValue)) {
+        try {
+          fs.unlinkSync(flagValue);
+        } catch (err) {
+          console.error('Error deleting flag file:', err);
+        }
       }
-      flagPath = null;
-    }
-
-    if (req.files?.flag?.[0]) {
-      if (flagPath && fs.existsSync(flagPath)) {
-        fs.unlinkSync(flagPath);
+      flagValue = null;
+    } else if (req.files?.flag?.[0]) {
+      if (isFilePath(flagValue) && fs.existsSync(flagValue)) {
+        try {
+          fs.unlinkSync(flagValue);
+        } catch (err) {
+          console.error('Error deleting old flag file:', err);
+        }
       }
-      flagPath = req.files.flag[0].path;
+      flagValue = req.files.flag[0].path;
+    } else if (flag !== undefined) {
+      if (flag && typeof flag === 'string') {
+        if (isFilePath(flagValue) && fs.existsSync(flagValue)) {
+          try {
+            fs.unlinkSync(flagValue);
+          } catch (err) {
+            console.error('Error deleting old flag file:', err);
+          }
+        }
+        flagValue = flag.trim();
+      } else {
+        flagValue = null;
+      }
     }
 
     await Language.updateOne(
@@ -229,7 +258,7 @@ exports.updateLanguage = async (req, res) => {
           locale: locale ? locale.trim().toLowerCase() : language.locale,
           is_active: is_active !== undefined ? is_active : language.is_active,
           translation_json: translationJson,
-          flag: flagPath,
+          flag: flagValue,
           metadata,
         },
       }
@@ -296,8 +325,12 @@ exports.deleteLanguages = async (req, res) => {
         });
       }
 
-      if (lang.flag && fs.existsSync(lang.flag)) {
-        fs.unlinkSync(lang.flag);
+      if (isFilePath(lang.flag) && fs.existsSync(lang.flag)) {
+        try {
+          fs.unlinkSync(lang.flag);
+        } catch (err) {
+          console.error('Error deleting flag file:', err);
+        }
       }
     }
 
