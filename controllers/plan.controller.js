@@ -23,12 +23,26 @@ exports.getAllPlans = async (req, res) => {
     const total = await Plan.countDocuments(query);
 
     const plans = await Plan.find(query)
-      .sort({ [sort_by]: sort_order.toUpperCase() === 'DESC' ? -1 : 1 }).skip(skip).limit(parseInt(limit));
-
+    .sort({ [sort_by]: sort_order.toUpperCase() === 'DESC' ? -1 : 1 })
+    .skip(skip)
+    .limit(parseInt(limit))
+    .lean();
+  
+    const formattedPlans = plans.map(plan => {
+      const obj = { ...plan };
+      if (obj.createdAt) obj.created_at = obj.createdAt;
+      if (obj.updatedAt) obj.updated_at = obj.updatedAt;
+      if(obj._id) obj.id = obj._id.toString();
+      delete obj.createdAt;
+      delete obj.updatedAt;
+      delete obj._id;
+      return obj;
+    });
+  
     return res.status(200).json({
       message: 'Plans retrieved successfully',
       data: {
-        plans,
+        plans: formattedPlans,
         total,
         page: parseInt(page),
         limit: parseInt(limit),
