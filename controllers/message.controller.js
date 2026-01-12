@@ -732,6 +732,7 @@ exports.getMessages = async (req, res) => {
           {
             $project: {
               _id: 1,
+              status: 1,
               duration: 1,
               participants: { user_id: 1, status: 1, 'user.id': 1, 'user.name': 1, 'user.avatar': 1 }
             }
@@ -763,10 +764,13 @@ exports.getMessages = async (req, res) => {
     
         const participant = call.participants.find(p => p.user_id.toString() === userId.toString());
         const userStatus = participant?.status || 'missed';
+        
+        const joinedCount = call.participants.filter(p => p.status === 'joined').length;
+        const isCallOngoing = call.status !== 'ended' && joinedCount >= 2;
     
         let displayText = '📞 Group call';
     
-        if (call.duration === 0) {
+        if (call.duration === 0 && !isCallOngoing) {
           displayText = '📞 Missed call';
         }
     
@@ -775,7 +779,18 @@ exports.getMessages = async (req, res) => {
         } else if (userStatus === 'missed') {
           displayText = '📞 Missed group call';
         } else if (userStatus === 'joined' || userStatus === 'left') {
-          displayText = `✅ Call ended ${call.duration ? `(${call.duration}s)` : ''}`;
+          if (isCallOngoing) {
+            displayText = msg.content || `📞 Ongoing call • ${joinedCount} in call`;
+            if (msg.metadata) {
+              msg.metadata.action = 'ongoing';
+              msg.metadata.joined_count = joinedCount;
+            }
+          } else {
+            displayText = `✅ Call ended ${call.duration ? `(${call.duration}s)` : ''}`;
+            if (msg.metadata) {
+              msg.metadata.action = 'ended';
+            }
+          }
         }
     
         msg.content = displayText;

@@ -143,14 +143,12 @@ async function createCallMessage(call, action, req, userId = null) {
       fullMessage = fullMessage[0];
 
       // === EMIT message-updated (CRITICAL!) ===
-      setTimeout(() => {
         if (call.call_mode === 'direct' && call.receiver_id) {
           io.to(`user_${call.initiator_id}`).emit('message-updated', fullMessage);
           io.to(`user_${call.receiver_id}`).emit('message-updated', fullMessage);
         } else if (call.group_id) {
           io.to(`group_${call.group_id}`).emit('message-updated', fullMessage);
         }
-      }, 300);
 
     } else {
       // === CREATE NEW MESSAGE ===
@@ -228,14 +226,12 @@ async function createCallMessage(call, action, req, userId = null) {
       fullMessage = fullMessage[0];
 
       // === EMIT receive-message for new message ===
-      setTimeout(() => {
-        if (call.call_mode === 'direct' && call.receiver_id) {
-          io.to(`user_${call.initiator_id}`).emit('receive-message', fullMessage);
-          io.to(`user_${call.receiver_id}`).emit('receive-message', fullMessage);
-        } else if (call.group_id) {
-          io.to(`group_${call.group_id}`).emit('receive-message', fullMessage);
-        }
-      }, 300);
+      if (call.call_mode === 'direct' && call.receiver_id) {
+        io.to(`user_${call.initiator_id}`).emit('receive-message', fullMessage);
+        io.to(`user_${call.receiver_id}`).emit('receive-message', fullMessage);
+      } else if (call.group_id) {
+        io.to(`group_${call.group_id}`).emit('receive-message', fullMessage);
+      }
     }
 
     return fullMessage;

@@ -536,6 +536,14 @@ exports.endCall = async (req, res) => {
     } else {
       const leftUser = await User.findById(userId).select('id name avatar').lean();
 
+      const updatedCallAggregation = await getFullCallData(callId);
+      const updatedCall = updatedCallAggregation[0];
+
+      if (updatedCall.status !== 'active' && updatedCall.status !== 'ongoing') {
+        await Call.findByIdAndUpdate(call.id, { status: 'active' });
+        updatedCall.status = 'active';
+      }
+
       remainingJoined.forEach((p) => {
         if (p.user_id.toString() !== userId.toString()) {
           io.to(`user_${p.user_id}`).emit('participant-left', {
@@ -546,7 +554,9 @@ exports.endCall = async (req, res) => {
         }
       });
 
-      await createCallMessage(call, 'ongoing', req, userId.toString());
+      // Use updated call data so joinedCount is accurate
+      // This will update the message with action='ongoing' and correct joinedCount
+      await createCallMessage(updatedCall, 'ongoing', req, userId.toString());
     }
 
     res.json({
