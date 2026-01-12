@@ -138,6 +138,16 @@ async function resolveChatObject(conv, currentUserId, relations) {
 
     if (!info) return null;
 
+    let avatar = info.avatar || null;
+    if (conv.type === 'direct') {
+      const userSetting = await UserSetting.findOne({ user_id: conv.id })
+        .select('profile_pic')
+        .lean();
+      if (userSetting?.profile_pic === false) {
+        avatar = null;
+      }
+    }
+
     chat = {
       chat_type: conv.type === 'announcement' ? 'direct' : conv.type,
       chat_id: conv.id,
@@ -145,7 +155,7 @@ async function resolveChatObject(conv, currentUserId, relations) {
       email: info.email || null,
       phone: info.phone || null,
       bio: info.bio || null,
-      avatar: info.avatar || null,
+      avatar: avatar,
       is_verified: info.is_verified || false,
       lastMessage: null,
       unreadCount: 0,
@@ -614,7 +624,7 @@ async function getLatestMessage(conv, currentUserId, pinnedSet, pinnedTimeMap, m
         },
         recipient: {
           id: { $toString: '$recipient_doc._id' },
-          name: '$recipient_doc.name',
+          name: '$recipient_doc.name',  
           avatar: '$recipient_doc.avatar',
           phone: '$recipient_doc.phone',
         },
@@ -726,6 +736,10 @@ async function getLatestMessage(conv, currentUserId, pinnedSet, pinnedTimeMap, m
     : await Group.findById(conv.id).select('id name avatar').lean();
 
   if (!latest && clearEntry && !isAnnouncement) {
+    const avatar = isAnnouncement
+      ? null
+      : (userSetting?.profile_pic === false ? null : info?.avatar || null);
+    
     return {
       chat_type: isAnnouncement ? 'direct' : conv.type,
       chat_id: conv.id,
@@ -733,7 +747,7 @@ async function getLatestMessage(conv, currentUserId, pinnedSet, pinnedTimeMap, m
       phone: info?.phone || null,
       email: info?.email || null,
       bio: info?.bio || null,
-      avatar: info?.avatar || null,
+      avatar: avatar,
       status: info?.status || null,
       is_verified: info?.is_verified || false,
       lastMessage: null,
@@ -1024,7 +1038,11 @@ async function fetchContacts(currentUserId, { search = '', page = 1, limit = 20 
     { $limit: limit },
     { $lookup: { from: 'user_settings', localField: '_id', foreignField: 'user_id', as: 'setting_doc' }},
     { $unwind: { path: '$setting_doc', preserveNullAndEmptyArrays: true } },
-    { $addFields: { id: { $toString: '$_id' }, setting: { profile_pic: '$setting_doc.profile_pic' }}},
+    { $addFields: { 
+      id: { $toString: '$_id' }, 
+      setting: { profile_pic: '$setting_doc.profile_pic' },
+      avatar: { $cond: [{ $eq: ['$setting_doc.profile_pic', false] }, null, '$avatar'] }
+    }},
     { $project: { _id: 0, id: 1, name: 1, phone: 1, avatar: 1, email: 1, setting: 1 }},
   ]);
 
