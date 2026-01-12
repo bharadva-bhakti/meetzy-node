@@ -694,7 +694,18 @@ exports.saveToken = async (req, res) => {
       { upsert: true }
     );
 
-    return res.redirect(process.env.FRONT_REDIRECT_URL);
+    // Enable auto_backup when Google account is successfully linked
+    const userSetting = await UserSetting.findOne({ user_id: userId });
+    if (userSetting && !userSetting.auto_backup) {
+      await UserSetting.updateOne(
+        { user_id: userId },
+        { $set: { auto_backup: true } }
+      );
+    }
+
+    // Redirect with success parameter
+    const redirectUrl = process.env.FRONT_REDIRECT_URL || 'http://localhost:5173/messenger';
+    return res.redirect(`${redirectUrl}?google_connected=true`);
   } catch (error) {
     console.error('Error in saveToken:', error);
     return res.status(500).json({ message: 'Internal server error' });
