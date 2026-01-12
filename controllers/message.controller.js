@@ -53,7 +53,7 @@ exports.sendMessage = async (req, res) => {
     const settings = await Setting.findOne().lean();
     const maxLen = settings?.maximum_message_length || 50000;
 
-    if (content?.length > maxLen) {
+    if (content?.length > maxLen && (!is_encrypted || is_encrypted === 'false')) {
       return res.status(400).json({ message: `Max ${maxLen} characters allowed` });
     }
 
