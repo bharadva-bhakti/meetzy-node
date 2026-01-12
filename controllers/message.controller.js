@@ -258,7 +258,7 @@ exports.sendMessage = async (req, res) => {
         $addFields: {
           id: '$_id',
           sender: { id: '$sender_doc._id', name: '$sender_doc.name', avatar: '$sender_doc.avatar', is_verified: '$sender_doc.is_verified'},
-          recipient: { id: '$recipient_doc._id', name: '$recipient_doc.name', avatar: '$recipient_doc.avatar', is_verified: '$sender_doc.is_verified'},
+          recipient: { id: '$recipient_doc._id', name: '$recipient_doc.name', avatar: '$recipient_doc.avatar', is_verified: '$recipient_doc.is_verified'},
           group: null,
         },
       },
