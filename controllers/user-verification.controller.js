@@ -1,12 +1,20 @@
 const mongoose = require('mongoose');
-const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
-const paypal = require('@paypal/checkout-server-sdk');
 const { db } = require('../models');
 const VerificationRequest = db.VerificationRequest;
 const User = db.User;
 const Payment = db.Payment;
 const Plan = db.Plan;
 const Subscription = db.Subscription;
+const isEnvPresent = (val) => typeof val === "string" && val.trim().length > 0;
+let stripe = null;
+if (isEnvPresent(process.env.STRIPE_SECRET_KEY)) {
+  try {
+    stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
+  } catch (error) {
+    console.error("Stripe initialization failed:", error.message);
+    stripe = null;
+  }
+}
 
 const { 
   initiateGatewayPayment, verifyGatewayPayment, createStripeSubscription, createPayPalSubscription,calculateNextBillingDate

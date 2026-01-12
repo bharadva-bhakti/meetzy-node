@@ -1,25 +1,48 @@
 const mongoose = require('mongoose');
-const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
-const paypal = require('@paypal/checkout-server-sdk');
 const { db } = require('../models');
 const VerificationRequest = db.VerificationRequest;
 const User = db.User;
 const Payment = db.Payment;
 const Plan = db.Plan;
 const Subscription = db.Subscription;
+const isEnvPresent = (val) => typeof val === "string" && val.trim().length > 0;
+let stripe = null;
+if (isEnvPresent(process.env.STRIPE_SECRET_KEY)) {
+  try {
+    stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
+  } catch (error) {
+    console.error("Stripe initialization failed:", error.message);
+    stripe = null;
+  }
+}
 
-// PayPal setup
-const paypalEnvironment = process.env.PAYPAL_MODE === 'live'
-  ? new paypal.core.LiveEnvironment(
-      process.env.PAYPAL_CLIENT_ID,
-      process.env.PAYPAL_CLIENT_SECRET
-    )
-  : new paypal.core.SandboxEnvironment(
-      process.env.PAYPAL_CLIENT_ID,
-      process.env.PAYPAL_CLIENT_SECRET
-    );
+let paypal = null;
+let paypalClient = null;
 
-const paypalClient = new paypal.core.PayPalHttpClient(paypalEnvironment);
+if (
+  isEnvPresent(process.env.PAYPAL_CLIENT_ID) &&
+  isEnvPresent(process.env.PAYPAL_CLIENT_SECRET)
+) {
+  try {
+    paypal = require('@paypal/checkout-server-sdk');
+
+    const paypalEnvironment = process.env.PAYPAL_MODE === 'live'
+      ? new paypal.core.LiveEnvironment(
+        process.env.PAYPAL_CLIENT_ID,
+        process.env.PAYPAL_CLIENT_SECRET
+      )
+      : new paypal.core.SandboxEnvironment(
+        process.env.PAYPAL_CLIENT_ID,
+        process.env.PAYPAL_CLIENT_SECRET
+      );
+
+    paypalClient = new paypal.core.PayPalHttpClient(paypalEnvironment);
+  } catch (error) {
+    console.error('PayPal initialization failed:', error.message);
+    paypal = null;
+    paypalClient = null;
+  }
+}
 
 // initialize payment
 async function initiateGatewayPayment(payment, amount, user) {

@@ -1,6 +1,5 @@
 const mongoose = require('mongoose');
 const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
-const paypal = require('@paypal/checkout-server-sdk');
 const fetch = require('node-fetch');
 const { getEffectiveLimits } = require('../utils/userLimits');
 const { db } = require('../models');
@@ -9,17 +8,6 @@ const User = db.User;
 const Payment = db.Payment;
 const Plan = db.Plan;
 const Subscription = db.Subscription;
-
-const paypalEnvironment = process.env.PAYPAL_MODE === 'live'
-  ? new paypal.core.LiveEnvironment(
-      process.env.PAYPAL_CLIENT_ID,
-      process.env.PAYPAL_CLIENT_SECRET
-    )
-  : new paypal.core.SandboxEnvironment(
-      process.env.PAYPAL_CLIENT_ID,
-      process.env.PAYPAL_CLIENT_SECRET
-    );
-const paypalClient = new paypal.core.PayPalHttpClient(paypalEnvironment);
 
 exports.getMySubscription = async (req, res) => {
   const userId = req.user._id;
