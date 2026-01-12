@@ -289,10 +289,7 @@ module.exports = function initSocket(io) {
       const userId = socket.userId;
 
       try {
-        await CallParticipant.updateOne(
-          { call_id: callId, user_id: userId },
-          { peer_id: socket.id }
-        );
+        await CallParticipant.updateOne({ call_id: callId, user_id: userId },{ peer_id: socket.id });
 
         console.log(`User ${userId} socket registered for decline call ${callId}`);
       } catch (error) {
@@ -305,10 +302,7 @@ module.exports = function initSocket(io) {
       const userId = socket.userId;
 
       try {
-        await CallParticipant.updateOne(
-          { call_id: callId, user_id: userId },
-          { is_muted: !isAudioEnabled }
-        );
+        await CallParticipant.updateOne({ call_id: callId, user_id: userId },{ is_muted: !isAudioEnabled });
 
         const participants = await CallParticipant.find({
           call_id: callId,
@@ -333,10 +327,7 @@ module.exports = function initSocket(io) {
       const userId = socket.userId;
 
       try {
-        await CallParticipant.updateOne(
-          { call_id: callId, user_id: userId },
-          { is_video_enabled: isVideoEnabled }
-        );
+        await CallParticipant.updateOne({ call_id: callId, user_id: userId },{ is_video_enabled: isVideoEnabled });
 
         const participants = await CallParticipant.find({
           call_id: callId,
@@ -361,10 +352,7 @@ module.exports = function initSocket(io) {
       const userId = socket.userId;
 
       try {
-        await CallParticipant.updateOne(
-          { call_id: callId, user_id: userId },
-          { peer_id: null }
-        );
+        await CallParticipant.updateOne({ call_id: callId, user_id: userId },{ peer_id: null });
 
         userCalls.delete(userId);
         console.log(`User ${userId} left call ${callId}`);
@@ -376,31 +364,21 @@ module.exports = function initSocket(io) {
     socket.on('webrtc-offer', (data) => {
       const { callId, targetUserId, offer } = data;
       const fromUserId = socket.userId;
-      io.to(`user_${targetUserId}`).emit('webrtc-offer', {
-        callId,
-        fromUserId: fromUserId,
-        offer,
-      });
+      io.to(`user_${targetUserId}`).emit('webrtc-offer', { callId, fromUserId: fromUserId, offer, });
     });
 
     socket.on('webrtc-answer', (data) => {
       const { callId, targetUserId, answer } = data;
       const fromUserId = socket.userId;
-      io.to(`user_${targetUserId}`).emit('webrtc-answer', {
-        callId,
-        fromUserId: fromUserId,
-        answer,
-      });
+
+      io.to(`user_${targetUserId}`).emit('webrtc-answer', { callId, fromUserId: fromUserId, answer, });
     });
 
     socket.on('ice-candidate', (data) => {
       const { callId, targetUserId, candidate } = data;
       const fromUserId = socket.userId;
-      io.to(`user_${targetUserId}`).emit('ice-candidate', {
-        callId,
-        fromUserId: fromUserId,
-        candidate,
-      });
+
+      io.to(`user_${targetUserId}`).emit('ice-candidate', { callId, fromUserId: fromUserId, candidate, });
     });
 
     async function notifyFriends(userId, isOnline) {
@@ -473,24 +451,18 @@ module.exports = function initSocket(io) {
         }
       });
 
-      io.to(`group_${groupId}`).emit('member-added-to-group', {
-        groupId,
-        newMemberIds: userIds,
-        group,
-      });
+      io.to(`group_${groupId}`).emit('member-added-to-group', { groupId, newMemberIds: userIds, group, });
     });
 
     socket.on('message-delivered', async ({ messageId, senderId }) => {
       const userId = socket.userId;
       if (!userId || !messageId) return;
     
-      // Safely extract the actual ID string
       let senderIdStr = senderId;
       if (typeof senderId === 'object' && senderId !== null) {
         senderIdStr = senderId.id || senderId._id || senderId.userId;
       }
     
-      // Validate it's a proper ObjectId string
       if (!senderIdStr || !mongoose.Types.ObjectId.isValid(senderIdStr)) {
         console.warn('Invalid or missing senderId in message-delivered:', senderId);
         return;
@@ -499,7 +471,7 @@ module.exports = function initSocket(io) {
       try {
         const message = await Message.findOne({
           _id: messageId,
-          sender_id: senderIdStr,  // now a valid string/ObjectId
+          sender_id: senderIdStr,
         }).select('sender_id recipient_id group_id').lean();
     
         if (!message) {
@@ -529,9 +501,7 @@ module.exports = function initSocket(io) {
       if (!lastMessageId || !socket.userId) return;
 
       try {
-        const lastMessage = await Message.findById(lastMessageId)
-          .select('id created_at group_id sender_id recipient_id')
-          .lean();
+        const lastMessage = await Message.findById(lastMessageId).select('id created_at group_id sender_id recipient_id').lean();
 
         if (!lastMessage) return;
 
@@ -561,7 +531,6 @@ module.exports = function initSocket(io) {
         }
 
         const messagesToMark = await Message.find(query).select('id sender_id group_id').lean();
-
         if (messagesToMark.length === 0) return;
 
         const messageIds = messagesToMark.map((m) => m._id);
@@ -584,10 +553,7 @@ module.exports = function initSocket(io) {
           if (!disappearing || !disappearing.enabled || disappearing.expire_at) continue;
 
           if (disappearing.expire_after_seconds === null) {
-            await MessageDisappearing.updateOne(
-              { message_id: msg._id },
-              { expire_at: now, metadata: { immediate_disappear: true } }
-            );
+            await MessageDisappearing.updateOne({ message_id: msg._id },{ expire_at: now, metadata: { immediate_disappear: true } });
           } else {
             const expireAt = new Date(now.getTime() + disappearing.expire_after_seconds * 1000);
             await MessageDisappearing.updateOne(
