@@ -6,7 +6,7 @@ const OTPLog = db.OTPLog;
 const UserSetting = db.UserSetting;
 const GoogleToken = db.GoogleToken;
 const Friend = db.Friend;
-const { generateOTP, getSettings, findUserByIdentifier, isEmailIdentifier, isPhoneIdentifier} = require('../helper/authHelpers');
+const { generateOTP, getSettings } = require('../helper/authHelpers');
 const { sendMail } = require('../utils/mail');
 const { sendTwilioSMS } = require('../services/twilioService');
 const { sendSMS } = require('../services/customSMSService');
@@ -150,27 +150,32 @@ exports.updateUserSetting = async (req, res) => {
 
 exports.forgetChatLockPin = async (req, res) => {
   const { identifier } = req.body;
+  const userId = req.user.id;
 
   try {
-    if (!identifier) return res.status(400).json({ message: 'Identifier is required' });
+    if (!['email','phone'].includes(identifier)){
+      return res.status(400).json({ message: 'Identifier is either email or phone' });
+    } 
 
-    const user = await findUserByIdentifier(identifier);
+    const user = await User.findOne({_id: userId});
     if (!user) return res.status(404).json({ message: 'User not found' });
 
     const settings = await getSettings();
-    const isEmail = isEmailIdentifier(identifier.trim());
-    const isPhone = isPhoneIdentifier(identifier.trim());
 
-    if (!isEmail && !isPhone) return res.status(400).json({ message: 'Invalid identifier' });
+    if(identifier === 'email' && !user.email){
+      return res.status(400).json({message: 'Please link your email or use phone number.'});
+    }else if(identifier === 'phone' && !user.phone){
+      return res.status(400).json({message: 'Please link your phone number or use email.'});
+    }
 
     const otp = generateOTP();
 
     if (process.env.DEMO !== 'true') {
       let sent = false;
-      if (isEmail) {
+      if (user.email && identifier === 'email') {
         sent = await sendMail(user.email.trim(), 'Chat Lock Reset OTP', `Your chat lock reset OTP is ${otp}`);
       }
-      if (isPhone) {
+      if (user.phone && user.country_code && identifier === 'phone') {
         const gateway = settings.sms_gateway?.toLowerCase();
         if (gateway === 'custom') sent = await sendSMS(`${user.country_code}${user.phone}`, `Your chat lock reset OTP is ${otp}`);
         else if (gateway === 'twilio') sent = await sendTwilioSMS(`${user.country_code}${user.phone}`, `Your chat lock reset OTP is ${otp}`);
@@ -179,15 +184,15 @@ exports.forgetChatLockPin = async (req, res) => {
     }
 
     await OTPLog.create({
-      phone: isPhone ? identifier.trim() : null,
-      email: isEmail ? identifier.trim() : null,
+      phone: user.phone ? identifier.trim() : null,
+      email: user.email ? identifier.trim() : null,
       otp,
       expires_at: new Date(Date.now() + 5 * 60 * 1000),
       verified: false,
     });
 
     return res.json({
-      type: isEmail ? 'email' : 'phone',
+      type: identifier,
       message: 'OTP sent successfully',
       demo_otp: process.env.DEMO !== 'false' ? otp : undefined,
     });
@@ -199,11 +204,12 @@ exports.forgetChatLockPin = async (req, res) => {
 
 exports.verifyChatLockPinOtp = async (req, res) => {
   const { identifier, otp } = req.body;
+  const userId = req.user.id;
 
   try {
     if (!identifier || !otp) return res.status(400).json({ message: 'Identifier and OTP are required' });
 
-    const user = await findUserByIdentifier(identifier.trim());
+    const user = await User.findOne({_id: userId});
     if (!user) return res.status(404).json({ message: 'User not found' });
 
     const otpLog = await OTPLog.findOne({
@@ -225,13 +231,14 @@ exports.verifyChatLockPinOtp = async (req, res) => {
 
 exports.resetChatLockPin = async (req, res) => {
   const { identifier, new_pin, digit } = req.body;
+  const userId = req.user.id;
 
   try {
     if (!identifier || !new_pin) return res.status(400).json({ message: 'Identifier and new PIN are required' });
 
     if (!/^\d{4,6}$/.test(new_pin)) return res.status(400).json({ message: 'PIN must be 4-6 digits' });
 
-    const user = await findUserByIdentifier(identifier.trim());
+    const user = await User.findOne({_id: userId});
     if (!user) return res.status(404).json({ message: 'User not found' });
 
     const hashedPin = await bcrypt.hash(new_pin.toString(), 10);
