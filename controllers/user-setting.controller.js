@@ -81,6 +81,15 @@ exports.updateUserSetting = async (req, res) => {
       updatePayload.chat_lock_digit = new_pin.length;
     }
 
+    if(auto_backup === 'false' || auto_backup === false){
+      updatePayload.doc_backup = false;
+      updatePayload.video_backup = false;
+    }
+
+    if((doc_backup || video_backup) && !userSetting.auto_backup){
+      return res.status(404).json({ message: 'Please turn on auto backup first.' });
+    }
+
     await UserSetting.updateOne({ user_id: userId }, { $set: updatePayload });
 
     if (isLocking) {
