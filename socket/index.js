@@ -55,11 +55,7 @@ module.exports = function initSocket(io) {
           const userGroups = await GroupMember.find({ user_id: userId }).select('group_id').lean();
 
           for (const gm of userGroups) {
-            const isBlocked = await Block.findOne({
-              blocker_id: userId,
-              group_id: gm.group_id,
-              block_type: 'group',
-            }).lean();
+            const isBlocked = await Block.findOne({ blocker_id: userId, group_id: gm.group_id, block_type: 'group', }).lean();
 
             if (!isBlocked) {
               socket.join(`group_${gm.group_id}`);
@@ -76,23 +72,9 @@ module.exports = function initSocket(io) {
           await updateUserStatus(userId, 'online');
 
           const allUsersFromDb = await User.aggregate([
-            {
-              $lookup: {
-                from: 'user_settings',
-                localField: '_id',
-                foreignField: 'user_id',
-                as: 'setting',
-              },
-            },
+            { $lookup: { from: 'user_settings', localField: '_id', foreignField: 'user_id', as: 'setting', }, },
             { $unwind: { path: '$setting', preserveNullAndEmptyArrays: true } },
-            {
-              $project: {
-                id: '$_id',
-                is_online: 1,
-                last_seen: 1,
-                'setting.last_seen': 1,
-              },
-            },
+            { $project: { id: '$_id', is_online: 1, last_seen: 1, 'setting.last_seen': 1, }, },
           ]).exec();
 
           const allUsers = allUsersFromDb
@@ -103,8 +85,7 @@ module.exports = function initSocket(io) {
                 status: user.is_online ? 'online' : 'offline',
                 lastSeen: shouldShowLastSeen && user.last_seen ? user.last_seen.toISOString() : null,
               };
-            })
-            .filter((u) => u.userId !== userId.toString());
+            }).filter((u) => u.userId !== userId.toString());
 
           if (allUsers.length > 0) {
             socket.emit('bulk-user-status-update', allUsers);
@@ -122,12 +103,7 @@ module.exports = function initSocket(io) {
         const undeliveredStatuses = await MessageStatus.find({
           user_id: userId,
           status: 'sent',
-        })
-          .populate({
-            path: 'message_id',                    // ← Correct field name
-            select: 'sender_id',                   // Only need sender_id
-          })
-          .lean();
+        }).populate({path: 'message_id', select: 'sender_id',}).lean();
         
         const messageIds = undeliveredStatuses.map((ms) => ms.message_id?._id || ms.message_id);
         
@@ -138,12 +114,11 @@ module.exports = function initSocket(io) {
           );
         
           for (const status of undeliveredStatuses) {
-            // After population, message_id is now the full Message document
             const senderId = status.message_id?.sender_id?.toString();
             
             if (senderId) {
               io.to(`user_${senderId}`).emit('message-status-updated', {
-                messageId: status.message_id._id.toString(),  // or status.message_id.id if using virtuals
+                messageId: status.message_id._id.toString(),
                 userId: userId.toString(),
                 status: 'delivered',
               });
@@ -155,45 +130,40 @@ module.exports = function initSocket(io) {
       }
     });
 
-    socket.on("request-status-update", async () => {
+    socket.on('request-status-update', async () => {
       const userId = socket.userId;
       if (!userId) {
-        console.error("No userId for request-status-update");
+        console.error('No userId for request-status-update');
         return;
       }
 
       try {
-        // Fetch all users with only needed fields
-        const allUsersFromDb = await User.find({})
-          .select("_id is_online last_seen setting.last_seen") // Use _id instead of id
-          .lean();
+        const allUsersFromDb = await User.find({}).select('_id is_online last_seen setting.last_seen').lean();
 
         const allUsers = allUsersFromDb
           .map((user) => {
-            // Safely get userId from _id (handles cases where _id might be missing)
             const userIdStr = user._id ? user._id.toString() : null;
 
             if (!userIdStr) {
               console.warn(`User document missing _id:`, user);
-              return null; // Skip invalid users
+              return null;
             }
 
-            // Check if user has setting and if last_seen is allowed
             const shouldShowLastSeen = !user.setting || user.setting.last_seen !== false;
 
             return {
               userId: userIdStr,
-              status: user.is_online ? "online" : "offline",
+              status: user.is_online ? 'online' : 'offline',
               lastSeen: shouldShowLastSeen && user.last_seen ? user.last_seen.toISOString() : null,
             };
           })
-          .filter((u) => u !== null && u.userId !== userId.toString()); // Remove nulls and exclude self
+          .filter((u) => u !== null && u.userId !== userId.toString());
 
-        socket.emit("bulk-user-status-update", allUsers);
+        socket.emit('bulk-user-status-update', allUsers);
         console.log(`Sent status update to user ${userId} (${allUsers.length} users)`);
       } catch (error) {
         console.error(`Error fetching status update for user ${userId}:`, error);
-        socket.emit("bulk-user-status-update-error", { message: "Failed to fetch user statuses" });
+        socket.emit('bulk-user-status-update-error', { message: 'Failed to fetch user statuses' });
       }
     });
 
@@ -203,11 +173,7 @@ module.exports = function initSocket(io) {
         try {
           await updateUserStatus(userId, 'online');
 
-          socket.broadcast.emit('user-status-update', {
-            userId: userId.toString(),
-            status: 'online',
-            lastSeen: null,
-          });
+          socket.broadcast.emit('user-status-update', { userId: userId.toString(), status: 'online', lastSeen: null, });
         } catch (error) {
           console.error(`Error setting user ${userId} to online`, error);
         }
@@ -216,7 +182,7 @@ module.exports = function initSocket(io) {
     
     socket.on('join-call', async (data) => {
       const { callId, user } = data;
-      const userId = socket.userId; // string ObjectId
+      const userId = socket.userId;
     
       try {
         if (!mongoose.Types.ObjectId.isValid(callId)) {
@@ -224,42 +190,22 @@ module.exports = function initSocket(io) {
           return;
         }
     
-        // Update peer_id and media states
         await CallParticipant.updateOne(
-          {
-            call_id: new mongoose.Types.ObjectId(callId),
-            user_id: new mongoose.Types.ObjectId(userId)
-          },
-          {
-            $set: {
-              peer_id: socket.id,
-              is_video_enabled: user.isVideoEnabled || false,
-              is_muted: !user.isAudioEnabled
-            }
-          }
+          { call_id: new mongoose.Types.ObjectId(callId), user_id: new mongoose.Types.ObjectId(userId) },
+          { $set: { peer_id: socket.id, is_video_enabled: user.isVideoEnabled || false, is_muted: !user.isAudioEnabled }}
         );
     
         userCalls.set(userId, callId);
     
-        // Fetch only needed call fields: initiator_id and call_mode
-        const call = await Call.findById(callId)
-          .select('initiator_id call_mode')
-          .lean();
+        const call = await Call.findById(callId).select('initiator_id call_mode').lean();
     
         if (!call) {
           console.error(`Call ${callId} not found`);
           return;
         }
     
-        // === Fetch joined participants EXCEPT current user (to notify them) ===
         const participantsForNotify = await CallParticipant.aggregate([
-          {
-            $match: {
-              call_id: new mongoose.Types.ObjectId(callId),
-              status: 'joined',
-              user_id: { $ne: new mongoose.Types.ObjectId(userId) }
-            }
-          },
+          { $match: { call_id: new mongoose.Types.ObjectId(callId), status: 'joined', user_id: { $ne: new mongoose.Types.ObjectId(userId) }}},
           {
             $lookup: {
               from: 'users',
@@ -273,37 +219,26 @@ module.exports = function initSocket(io) {
           { $project: { user_id: 1, user: 1 } }
         ]);
     
-        // Notify each other participant
         participantsForNotify.forEach(participant => {
           io.to(`user_${participant.user_id}`).emit('participant-joined', {
             callId,
             userId: userId,
-            user: {
-              ...user,
-              socketId: socket.id,
-              userId: userId
-            }
+            user: { ...user, socketId: socket.id, userId: userId }
           });
         });
     
-        // === Build match condition for participants to sync back to joining user ===
         let matchCondition = {
           call_id: new mongoose.Types.ObjectId(callId),
           status: 'joined',
           user_id: { $ne: new mongoose.Types.ObjectId(userId) }
         };
     
-        // Special direct call rule: if joiner is not initiator, exclude initiator from sync list
         if (call.call_mode === 'direct' && userId !== call.initiator_id.toString()) {
           matchCondition.user_id = {
-            $nin: [
-              new mongoose.Types.ObjectId(userId),
-              call.initiator_id
-            ]
+            $nin: [ new mongoose.Types.ObjectId(userId), call.initiator_id ]
           };
         }
     
-        // === Fetch participants for sync using aggregation + lookup ===
         const allParticipants = await CallParticipant.aggregate([
           { $match: matchCondition },
           {
@@ -330,7 +265,6 @@ module.exports = function initSocket(io) {
           }
         ]);
     
-        // Map to exact same format as original Sequelize code
         const participantsWithSocket = allParticipants.map(participant => ({
           userId: participant.user_id.toString(),
           socketId: participant.peer_id || null,
@@ -342,14 +276,9 @@ module.exports = function initSocket(io) {
           isScreenSharing: participant.is_screen_sharing || false,
         }));
     
-        // Send sync to the joining user
-        socket.emit('call-participants-sync', {
-          callId,
-          participants: participantsWithSocket
-        });
+        socket.emit('call-participants-sync', { callId, participants: participantsWithSocket });
     
         console.log(`User ${userId} joined call ${callId}`);
-    
       } catch (error) {
         console.error('Error in join-call:', error);
       }

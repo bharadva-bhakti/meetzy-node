@@ -2,6 +2,7 @@ const { db } = require('../models');
 const Message = db.Message;
 const Announcement = db.Announcement;
 const User = db.User;
+const UserSetting = db.UserSetting;
 const mongoose = require('mongoose');
 const fs = require('fs');
 const path = require('path');
@@ -83,12 +84,30 @@ exports.sendAnnouncement = async (req, res) => {
       },
     ]);
 
-    const fullMessage = fullMessageResult[0];
+    const baseFullMessage = fullMessageResult[0];
 
-    const users = await User.find().select('id').lean({ virtuals: true });
-    users.forEach(user => {
-      io.to(`user_${user._id}`).emit('receive-message', fullMessage);
-    });
+    const userIds = await User.find().distinct('_id');
+    const settings = await UserSetting.find( { user_id: { $in: userIds } }, 'user_id chat_lock_enabled locked_chat_ids' ).lean();
+
+    const settingsMap = new Map( settings.map(s => [s.user_id.toString(), s]) );
+
+    for (const userIdObj of userIds) {
+      const userId = userIdObj.toString();
+      const userSetting = settingsMap.get(userId) || {};
+
+      const isLocked = !!userSetting.chat_lock_enabled   
+        && Array.isArray(userSetting.locked_chat_ids)
+        && userSetting.locked_chat_ids.some(chat => {
+          
+          return chat.type === 'announcement' && 
+            chat.id.toString() === adminId.toString();
+        }
+      );
+
+      const messageForUser = { ...baseFullMessage, isLocked: isLocked };
+
+      io.to(`user_${userId}`).emit('receive-message', messageForUser);
+    }
 
     const announcementData = {
       id: announcement.id,
