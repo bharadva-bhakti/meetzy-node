@@ -1648,11 +1648,30 @@ exports.toggleDisappearingMessages = async (req, res) => {
 
     const io = req.app.get('io');
 
+    const chatSettingUpdate = {
+      chatId: recipientId || groupId,
+      chatType: recipientId ? 'direct' : 'group',
+      disappearing: {
+        enabled: enabled,
+        duration: enabled ? duration : null,
+        expire_after_seconds: expireSeconds,
+      },
+    };
+
     if (recipientId) {
       io.to(`user_${recipientId}`).emit('receive-message', systemMessage);
       io.to(`user_${userId}`).emit('receive-message', systemMessage);
+      io.to(`user_${recipientId}`).emit('chat-setting-updated', {
+        ...chatSettingUpdate,
+        chatId: userId,
+      });
+      io.to(`user_${userId}`).emit('chat-setting-updated', {
+        ...chatSettingUpdate,
+        chatId: recipientId,
+      });
     } else if (groupId) {
       io.to(`group_${groupId}`).emit('receive-message', systemMessage);
+      io.to(`group_${groupId}`).emit('chat-setting-updated', chatSettingUpdate);
     }
 
     return res.json({
