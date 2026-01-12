@@ -112,12 +112,12 @@ async function formatMessageForDisplay(message, currentUserId) {
   }
 
   if(message.sender?.avatar){
-    const userSetting = await UserSetting.findOne({_id: message})
+    const userSetting = await UserSetting.findOne({user_id: message.sender.id})
     message.sender.avatar = userSetting?.profile_pic === false ? null : message?.sender?.avatar || null
   }
 
   if(message.recipient?.avatar){
-    const userSetting = await UserSetting.findOne({_id: message})
+    const userSetting = await UserSetting.findOne({user_id: message.recipient.id})
     message.recipient.avatar = userSetting?.profile_pic === false ? null : message?.recipient?.avatar || null
   }
 

@@ -636,6 +636,11 @@ exports.getCallHistory = async (req, res) => {
       { $unwind: { path: '$group_doc', preserveNullAndEmptyArrays: true } },
       { $lookup: { from: 'call_participants', localField: '_id', foreignField: 'call_id', as: 'participants' } },
       { $lookup: { from: 'users', localField: 'participants.user_id', foreignField: '_id', as: 'participant_users' } },
+      { $lookup: { from: 'user_settings', localField: 'initiator_id', foreignField: 'user_id', as: 'initiator_setting' } },
+      { $unwind: { path: '$initiator_setting', preserveNullAndEmptyArrays: true } },
+      { $lookup: { from: 'user_settings', localField: 'receiver_id', foreignField: 'user_id', as: 'receiver_setting' } },
+      { $unwind: { path: '$receiver_setting', preserveNullAndEmptyArrays: true } },
+      { $lookup: { from: 'user_settings', localField: 'participants.user_id', foreignField: 'user_id', as: 'participant_settings' } },
       {
         $addFields: {
           participants: {
@@ -661,9 +666,18 @@ exports.getCallHistory = async (req, res) => {
                     vars: {
                       u: {
                         $arrayElemAt: [{ $filter: { input: '$participant_users', cond: { $eq: ['$$this._id', '$$p.user_id']}}}, 0 ]
+                      },
+                      setting: {
+                        $arrayElemAt: [{ $filter: { input: '$participant_settings', cond: { $eq: ['$$this.user_id', '$$p.user_id']}}}, 0 ]
                       }
                     },
-                    in: { id: { $toString: '$$u._id' }, name: '$$u.name', avatar: '$$u.avatar', email: '$$u.email', bio: '$$u.bio' }
+                    in: { 
+                      id: { $toString: '$$u._id' }, 
+                      name: '$$u.name', 
+                      avatar: { $cond: [{ $eq: ['$$setting.profile_pic', false] }, null, '$$u.avatar'] },
+                      email: '$$u.email', 
+                      bio: '$$u.bio' 
+                    }
                   }
                 }
               }
@@ -673,11 +687,21 @@ exports.getCallHistory = async (req, res) => {
       },
       {
         $addFields: {
-          initiator: { id: '$initiator_doc._id', name: '$initiator_doc.name', avatar: '$initiator_doc.avatar', email: '$initiator_doc.email' },
+          initiator: { 
+            id: '$initiator_doc._id', 
+            name: '$initiator_doc.name', 
+            avatar: { $cond: [{ $eq: ['$initiator_setting.profile_pic', false] }, null, '$initiator_doc.avatar'] },
+            email: '$initiator_doc.email' 
+          },
           receiver: {
             $cond: [
               { $ifNull: ['$receiver_doc', false] },
-              { id: '$receiver_doc._id', name: '$receiver_doc.name', avatar: '$receiver_doc.avatar', email: '$receiver_doc.email' },
+              { 
+                id: '$receiver_doc._id', 
+                name: '$receiver_doc.name', 
+                avatar: { $cond: [{ $eq: ['$receiver_setting.profile_pic', false] }, null, '$receiver_doc.avatar'] },
+                email: '$receiver_doc.email' 
+              },
               null
             ]
           },

@@ -239,11 +239,15 @@ exports.getGroupMembers = async (req, res) => {
       { $unwind: '$user' },
       { $lookup: { from: 'groups', localField: 'group_id', foreignField: '_id', as: 'Group'},},
       { $unwind: '$Group' },
+      { $lookup: { from: 'user_settings', localField: 'user_id', foreignField: 'user_id', as: 'user_setting'}},
+      { $unwind: { path: '$user_setting', preserveNullAndEmptyArrays: true }},
       { $sort: sortObj },
       { $skip: skip },
       { $limit: parseInt(limit) },
       { $project: {
-        id: '$user._id', name: '$user.name', email: '$user.email', avatar: '$user.avatar', group_role: '$role',
+        id: '$user._id', name: '$user.name', email: '$user.email', 
+        avatar: { $cond: [{ $eq: ['$user_setting.profile_pic', false] }, null, '$user.avatar'] },
+        group_role: '$role',
         joined_at: '$created_at', updated_at: '$updated_at',
       }},
     ]);

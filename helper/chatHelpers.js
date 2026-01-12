@@ -447,10 +447,16 @@ async function getLatestMessage(conv, currentUserId, pinnedSet, pinnedTimeMap, m
       { $limit: 1 },
       { $lookup: { from: 'users', localField: 'sender_id', foreignField: '_id', as: 'sender_doc' } },
       { $unwind: { path: '$sender_doc', preserveNullAndEmptyArrays: true } },
+      { $lookup: { from: 'user_settings', localField: 'sender_id', foreignField: 'user_id', as: 'sender_setting' } },
+      { $unwind: { path: '$sender_setting', preserveNullAndEmptyArrays: true } },
       {
         $addFields: {
           id: { $toString: '$_id' },
-          sender: { id: { $toString: '$sender_doc._id' }, name: '$sender_doc.name', avatar: '$sender_doc.avatar' },
+          sender: { 
+            id: { $toString: '$sender_doc._id' }, 
+            name: '$sender_doc.name', 
+            avatar: { $cond: [{ $eq: ['$sender_setting.profile_pic', false] }, null, '$sender_doc.avatar'] }
+          },
         },
       },
       {
@@ -595,10 +601,17 @@ async function getLatestMessage(conv, currentUserId, pinnedSet, pinnedTimeMap, m
     { $unwind: { path: '$recipient_doc', preserveNullAndEmptyArrays: true } },
     { $lookup: { from: 'groups', localField: 'group_id', foreignField: '_id', as: 'group_doc' } },
     { $unwind: { path: '$group_doc', preserveNullAndEmptyArrays: true } },
+    { $lookup: { from: 'user_settings', localField: 'sender_id', foreignField: 'user_id', as: 'sender_setting' } },
+    { $unwind: { path: '$sender_setting', preserveNullAndEmptyArrays: true } },
     {
       $addFields: {
         id: { $toString: '$_id' },
-        sender: { id: { $toString: '$sender_doc._id' }, name: '$sender_doc.name', avatar: '$sender_doc.avatar', phone: '$sender_doc.phone', },
+        sender: { 
+          id: { $toString: '$sender_doc._id' }, 
+          name: '$sender_doc.name', 
+          avatar: { $cond: [{ $eq: ['$sender_setting.profile_pic', false] }, null, '$sender_doc.avatar'] },
+          phone: '$sender_doc.phone', 
+        },
         recipient: {
           id: { $toString: '$recipient_doc._id' },
           name: '$recipient_doc.name',
