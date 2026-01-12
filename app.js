@@ -77,9 +77,6 @@ module.exports = (async () => {
     app.set('view engine', 'ejs');
     app.set('views', path.join(__dirname, 'views'));
 
-    app.get('/', (req, res) => {
-        res.render('welcome');
-    });
     // Session handling middleware
     app.use((req, res, next) => {
         // Ensure session object exists
@@ -176,6 +173,10 @@ module.exports = (async () => {
     });
 
 
+    app.get('/', (req, res) => {
+        res.render('welcome');
+    });
+    
     const authRoutes = require('./routes/auth.routes');
     const authController = require('./controllers/auth.controller');
     const accountRoutes = require('./routes/account.routes');

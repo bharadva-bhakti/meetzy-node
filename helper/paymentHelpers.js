@@ -103,7 +103,7 @@ async function createStripeSubscription(subscription, payment, user, plan) {
       const customer = await stripe.customers.create({
         email: user.email,
         name: user.name,
-        metadata: { user_id: user._id.toString(), app_user_id: user._id.toString(), },
+        metadata: { user_id: user._id.toString(), app_user_id: user._id.toString() },
       });
       stripeCustomerId = customer.id;
 

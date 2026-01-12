@@ -5,7 +5,7 @@ const { validationResult, body } = require('express-validator');
 const { ensureInstallAssets, publicPath, basePath } = require('../lib/paths.js');
 const { strPrp, strAlPbFls, strFlExs, strFilRM, liSync, migSync, datSync, strSync, scDotPkS, scSpatPkS, imIMgDuy, getC, conF, chWr, iDconF } = require('../lib/helpers.js');
 const { validateLicenseBody, validateLicenseWithAdminBody, validateDbBody, getAdminValidators } = require('../validators/index.js');
-const { configureDb, connectDb, runMigrations, writeEnv } = require('../lib/db.js');
+const { configureDb, connectDb, runMigrations, writeEnv, reloadAndReconnect } = require('../lib/db.js');
 const { exec } = require('child_process');
 
 async function getRequirements(req, res) {
@@ -142,10 +142,21 @@ const postDatabaseConfig = [
         await writeEnv(database, admin);
       }
       
-      // Then configure and connect to database
+      // Configure database and run migrations
       await configureDb(database);
       await connectDb();
       await runMigrations();
+      
+      // After writing the .env file and configuring the database,
+      // reload the environment variables and reconnect to ensure
+      // the application picks up the new configuration without restart
+      const reconnectResult = await reloadAndReconnect();
+      if (!reconnectResult.success) {
+        console.error('Failed to reconnect to database after configuration:', reconnectResult.error);
+        req.session._errors = { 'database.DB_HOST': 'Failed to reconnect to database after configuration' };
+        req.session._old = req.body;
+        return res.redirect('database');
+      }
     } catch (e) {
       const dbFieldErrors = mapDbConnectionError(e);
       req.session._errors = dbFieldErrors;
@@ -203,29 +214,24 @@ async function runSeeder(req, res) {
   const instFile = publicPath('installation.json');
   if (!(await fs.pathExists(instFile))) await fs.writeFile(instFile, '');
 
-  const { connectDB } = require('./../../../models');
-
   if (process.env.MONGODB_URI) {
-
-    // Seeder execution
-    const seedersPath = path.join(__dirname, './../../../seeders');
-    const files = await fs.readdir(seedersPath);
-    const sortedFiles = files.filter(f => f.endsWith('.js')).sort();
-
-    for (const file of sortedFiles) {
-      const seederPath = path.join(seedersPath, file);
-      const seeder = require(seederPath);
-      if (typeof seeder.up === 'function') {
-        console.log(`🌱 Running seeder: ${file}`);
-        await seeder.up(connectDB, require('mongoose'));
-        console.log(`✅ Seeder completed: ${file}`);
-      } else {
-        console.warn(`⚠️ Skipping: ${file} — no 'up' function`);
+    // Execute npm run seed command
+    const { exec } = require('child_process');
+    
+    exec('npm run seed', (error, stdout, stderr) => {
+      if (error) {
+        console.error('❌ Error running seeders:', error);
+        return res.status(500).send('Error running seeders');
       }
-    }
-
-    console.log('✅ All seeders executed successfully');
-    return res.redirect('/');
+      
+      console.log('✅ Seeders executed successfully');
+      console.log('Output:', stdout);
+      if (stderr) {
+        console.warn('Warnings:', stderr);
+      }
+      
+      return res.redirect('/');
+    });
   }
 }
 

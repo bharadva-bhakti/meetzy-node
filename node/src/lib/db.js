@@ -1,9 +1,30 @@
 const mongoose = require('mongoose');
 const bcrypt = require('bcryptjs');
 const fs = require('fs-extra');
+const path = require('path');
+const dotenv = require('dotenv');
 
 let dbConnection = null;
 let User = null;
+
+// Load environment variables from .env file
+function reloadEnvVariables() {
+  try {
+    // Parse the .env file and assign to process.env
+    const envConfig = dotenv.parse(fs.readFileSync('.env'));
+    
+    // Update process.env with new values
+    for (const key in envConfig) {
+      process.env[key] = envConfig[key];
+    }
+    
+    console.log('Environment variables reloaded from .env file');
+    return true;
+  } catch (error) {
+    console.error('Error reloading environment variables:', error);
+    return false;
+  }
+}
 
 async function configureDb(cfg) {
   // Construct MongoDB URI
@@ -23,10 +44,9 @@ async function configureDb(cfg) {
   // Store the config for later use
   process.env.MONGODB_URI = mongoUri;
   
-  // Connect to MongoDB
+  // Connect to MongoDB with modern options
   dbConnection = await mongoose.connect(mongoUri, {
-    useNewUrlParser: true,
-    useUnifiedTopology: true
+    // Remove deprecated options
   });
 }
 
@@ -117,6 +137,38 @@ async function writeEnv(cfg, admin) {
   }
 }
 
+// New function to reload environment and reconnect database
+async function reloadAndReconnect() {
+  try {
+    // Disconnect existing connections
+    if (mongoose.connection.readyState === 1) {
+      await mongoose.disconnect();
+      console.log('Disconnected from MongoDB');
+    }
+    
+    // Reload environment variables to get updated MONGODB_URI
+    reloadEnvVariables();
+    
+    // Connect with new URI from reloaded environment
+    const mongoUri = process.env.MONGODB_URI;
+    
+    if (!mongoUri) {
+      throw new Error('MONGODB_URI not found in environment variables after reload');
+    }
+    
+    dbConnection = await mongoose.connect(mongoUri, {
+      // Use modern connection options only
+    });
+    
+    console.log('Reconnected to MongoDB successfully with reloaded environment');
+    
+    return { success: true, message: 'Database reconnected successfully after environment reload' };
+  } catch (error) {
+    console.error('Error reloading environment and reconnecting to database:', error);
+    return { success: false, message: 'Failed to reload environment and reconnect to database', error: error.message };
+  }
+}
+
 // MongoDB doesn't need explicit database creation like SQL databases
 // The database will be created when first document is inserted
 async function ensureDatabase(cfg) {
@@ -129,5 +181,6 @@ module.exports = {
   configureDb,
   connectDb,
   runMigrations,
-  writeEnv
+  writeEnv,
+  reloadAndReconnect
 };
