@@ -694,7 +694,6 @@ exports.saveToken = async (req, res) => {
       { upsert: true }
     );
 
-    // Enable auto_backup when Google account is successfully linked
     const userSetting = await UserSetting.findOne({ user_id: userId });
     if (userSetting && !userSetting.auto_backup) {
       await UserSetting.updateOne(
@@ -703,8 +702,7 @@ exports.saveToken = async (req, res) => {
       );
     }
 
-    // Redirect with success parameter
-    const redirectUrl = process.env.FRONT_REDIRECT_URL || 'http://localhost:5173/messenger';
+    const redirectUrl = process.env.FRONT_REDIRECT_URL;
     return res.redirect(`${redirectUrl}?google_connected=true`);
   } catch (error) {
     console.error('Error in saveToken:', error);

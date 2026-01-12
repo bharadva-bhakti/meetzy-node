@@ -526,6 +526,20 @@ exports.getMessages = async (req, res) => {
     if (isAnnouncement === 'true' || isAnnouncement === true) {
       if (!announcementId) return res.status(404).json({ message: 'Announcement Id is required.' });
 
+      isChatLocked = checkLockedChat('announcement', announcementId);
+
+      if (isChatLocked) {
+        const pin = req.query.pin;
+        if (!pin) return res.status(400).json({ message: 'PIN_REQUIRED' });
+    
+        if (!userSetting.pin_hash) {
+          return res.status(400).json({ message: 'Set Your Pin first.' });
+        }
+    
+        const match = await bcrypt.compare(pin, userSetting.pin_hash);
+        if (!match) return res.status(400).json({ message: 'INVALID_PIN' });
+      }
+
       const pipeline = [
         { $match: { message_type: 'announcement', recipient_id: null, group_id: null } },
         ...(clearFilter ? [{ $match: clearFilter }] : []),
