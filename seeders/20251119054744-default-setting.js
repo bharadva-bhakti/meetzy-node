@@ -80,7 +80,7 @@ const defaultSettings = {
   status_limit: 3,
   sms_gateway: null,
   e2e_encryption_enabled: false,
-  svg_color: null,
+  svg_color: '#FFFFFF',
   default_language: 'en',
 };
 

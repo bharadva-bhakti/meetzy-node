@@ -279,7 +279,7 @@ const SettingSchema = new Schema(
     },
     svg_color: { 
       type: String, 
-      default: null 
+      default: '#FFFFFF'
     },
     default_language: { 
       type: String, 
