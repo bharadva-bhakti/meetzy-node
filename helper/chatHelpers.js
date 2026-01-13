@@ -101,21 +101,42 @@ async function fetchBlockedUsers(userId, { page = 1, limit = 20, search = '' }) 
       })
     : blockedData;
 
+  // Collect all blocked user IDs to check profile_pic settings
+  const blockedUserIds = filtered
+    .filter(b => b.block_type === 'user' && b.blocked?._id)
+    .map(b => b.blocked._id);
+
+  // Fetch user settings for profile_pic check
+  const userSettings = blockedUserIds.length > 0
+    ? await UserSetting.find({
+        user_id: { $in: blockedUserIds.map(id => new mongoose.Types.ObjectId(id)) }
+      }).select('user_id profile_pic').lean()
+    : [];
+
+  const profilePicMap = new Map(
+    userSettings.map(s => [s.user_id.toString(), s.profile_pic === false])
+  );
+
   return {
     count: total,
-    blocked: filtered.map(b => ({
-      id: b._id,
-      type: b.block_type,
-      user: b.blocked ? {
-        id: b.blocked._id,
-        name: b.blocked.role !== 'user' ? settings.app_name : b.blocked.name,
-        avatar: b.blocked.avatar,
-        email: b.blocked.email,
-        bio: b.blocked.bio || null,
-      } : null,
-      group: b.blockedGroup || null,
-      created_at: b.created_at,
-    })),
+    blocked: filtered.map(b => {
+      const blockedUserId = b.blocked?._id?.toString();
+      const shouldHideAvatar = profilePicMap.get(blockedUserId) === true;
+      
+      return {
+        id: b._id,
+        type: b.block_type,
+        user: b.blocked ? {
+          id: b.blocked._id,
+          name: b.blocked.role !== 'user' ? settings.app_name : b.blocked.name,
+          avatar: shouldHideAvatar ? null : b.blocked.avatar,
+            email: b.blocked.email,
+          bio: b.blocked.bio || null,
+        } : null,
+        group: b.blockedGroup || null,
+        created_at: b.created_at,
+      };
+    }),
     hasMore: page * limit < total,
     totalPages: Math.ceil(total / limit),
   };

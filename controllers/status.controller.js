@@ -181,7 +181,63 @@ exports.getStatusFeed = async (req, res) => {
       });
     }
 
-    const sortedFeed = Object.values(feed).sort((a, b) => {
+    // Collect all unique user IDs (status owners and viewers) to check profile_pic settings
+    const allUserIds = new Set();
+    Object.values(feed).forEach(feedItem => {
+      if (feedItem.user?.id) {
+        allUserIds.add(feedItem.user.id.toString());
+      }
+      feedItem.statuses?.forEach(status => {
+        status.views?.forEach(view => {
+          if (view.id) {
+            allUserIds.add(view.id.toString());
+          }
+        });
+      });
+    });
+
+    // Fetch user settings for profile_pic check
+    const userSettings = await UserSetting.find({
+      user_id: { $in: Array.from(allUserIds).map(id => new mongoose.Types.ObjectId(id)) }
+    }).select('user_id profile_pic').lean();
+
+    const profilePicMap = new Map(
+      userSettings.map(s => [s.user_id.toString(), s.profile_pic === false])
+    );
+
+    // Apply profile_pic condition to status users and viewers
+    const processedFeed = Object.values(feed).map(feedItem => {
+      const userIdStr = feedItem.user?.id?.toString();
+      const shouldHideUserAvatar = profilePicMap.get(userIdStr) === true;
+      
+      const processedStatuses = feedItem.statuses.map(status => {
+        const processedViews = status.views.map(view => {
+          const viewerIdStr = view.id?.toString();
+          const shouldHideViewerAvatar = profilePicMap.get(viewerIdStr) === true;
+          
+          return {
+            ...view,
+            avatar: shouldHideViewerAvatar ? null : view.avatar,
+          };
+        });
+
+        return {
+          ...status,
+          views: processedViews,
+        };
+      });
+
+      return {
+        ...feedItem,
+        user: {
+          ...feedItem.user,
+          avatar: shouldHideUserAvatar ? null : feedItem.user.avatar,
+        },
+        statuses: processedStatuses,
+      };
+    });
+
+    const sortedFeed = processedFeed.sort((a, b) => {
       if (a.is_sponsored !== b.is_sponsored) return b.is_sponsored - a.is_sponsored;
 
       if (a.user.id.toString() === user_id) return -1;

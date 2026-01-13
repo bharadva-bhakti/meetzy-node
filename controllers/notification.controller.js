@@ -1,6 +1,8 @@
 const { db } = require('../models');
 const Notification = db.Notification;
 const Friend = db.Friend;
+const UserSetting = db.UserSetting;
+const mongoose = require('mongoose');
 
 async function isFriendWith(userId1, userId2) {
   const friendship = await Friend.findOne({
@@ -22,6 +24,22 @@ exports.fetchNotifications = async (req, res) => {
       Notification.countDocuments({ user_id: currentUserId }),
     ]);
 
+    // Collect all from_user IDs to check profile_pic settings
+    const fromUserIds = notifications
+      .filter(not => not.from_user_id?._id)
+      .map(not => not.from_user_id._id);
+
+    // Fetch user settings for profile_pic check
+    const userSettings = fromUserIds.length > 0
+      ? await UserSetting.find({
+          user_id: { $in: fromUserIds.map(id => new mongoose.Types.ObjectId(id)) }
+        }).select('user_id profile_pic').lean()
+      : [];
+
+    const profilePicMap = new Map(
+      userSettings.map(s => [s.user_id.toString(), s.profile_pic === false])
+    );
+
     const enriched = await Promise.all(
       notifications.map(async (not) => {
         if (!not.from_user_id) {
@@ -33,10 +51,14 @@ exports.fetchNotifications = async (req, res) => {
           not.from_user_id.id
         );
 
+        const fromUserIdStr = not.from_user_id._id?.toString();
+        const shouldHideAvatar = profilePicMap.get(fromUserIdStr) === true;
+
         return {
           ...not.toObject(),
           from_user: {
             ...not.from_user_id.toObject(),
+            avatar: shouldHideAvatar ? null : not.from_user_id.avatar,
             is_friend: isFriend,
           },
         };
