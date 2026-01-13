@@ -217,6 +217,35 @@ exports.sendMessage = async (req, res) => {
 
       const groupMembers = await GroupMember.find({ group_id: groupId }).select('user_id').lean();
 
+      const unreadCountPromises = groupMembers.map(async (member) => {
+        const memberIdStr = member.user_id.toString();
+        const isSender = memberIdStr === senderId.toString();
+        
+        const groupMessageIds = await Message.find({ group_id: groupId, message_type: { $ne: 'system' } })
+          .select('_id')
+          .lean()
+          .then(messages => messages.map(m => m._id));
+
+        if (groupMessageIds.length === 0) {
+          return { memberId: memberIdStr, unreadCount: 0 };
+        }
+
+        // Count unread messages (status !== 'seen')
+        const unreadCount = await MessageStatus.countDocuments({
+          user_id: member.user_id,
+          status: { $ne: 'seen' },
+          message_id: { $in: groupMessageIds },
+        });
+
+        return { memberId: memberIdStr, unreadCount: isSender ? 0 : unreadCount };
+      });
+
+      const unreadCountsMap = new Map();
+      const unreadCountResults = await Promise.all(unreadCountPromises);
+      unreadCountResults.forEach(({ memberId, unreadCount }) => {
+        unreadCountsMap.set(memberId, unreadCount);
+      });
+
       groupMembers.forEach((member) => {
         const memberIdStr = member.user_id.toString();
         const memberSetting = settingsMap.get(memberIdStr) || {};
@@ -225,7 +254,9 @@ exports.sendMessage = async (req, res) => {
           Array.isArray(memberSetting.locked_chat_ids) &&
           memberSetting.locked_chat_ids.some(chat => chat.type === 'group' && chat.id.toString() === groupId.toString() );
 
-        const messageForMember = fullMessages.map(msg => ({ ...msg, isLocked }));
+        const unreadCount = unreadCountsMap.get(memberIdStr) || 0;
+
+        const messageForMember = fullMessages.map(msg => ({ ...msg, isLocked, unreadCount }));
 
         io.to(`user_${memberIdStr}`).emit('receive-message', messageForMember);
       });
@@ -310,7 +341,31 @@ exports.sendMessage = async (req, res) => {
           Array.isArray(senderSetting.locked_chat_ids) &&
           senderSetting.locked_chat_ids.some(chat => chat.type === 'broadcast' && chat.id.toString() === broadcastId );
 
-        io.to(`user_${senderId}`).emit('receive-message', {...mergedMessages[0],isLocked: isLockedForSender});
+        io.to(`user_${senderId}`).emit('receive-message', {...mergedMessages[0], isLocked: isLockedForSender, unreadCount: 0});
+      }
+
+      const broadcastUnreadCountsMap = new Map();
+      
+      for (const recipientId of recipientIds) {
+        const ridStr = recipientId.toString();
+        if (!blockedRecipients.has(ridStr)) {
+          const broadcastMessageIds = await Message.find({
+            'metadata.is_broadcast': true,
+            'metadata.broadcast_id': broadcastId,
+            message_type: { $ne: 'system' }
+          }).select('_id').lean().then(messages => messages.map(m => m._id));
+
+          if (broadcastMessageIds.length > 0) {
+            const unreadCount = await MessageStatus.countDocuments({
+              user_id: recipientId,
+              status: { $ne: 'seen' },
+              message_id: { $in: broadcastMessageIds },
+            });
+            broadcastUnreadCountsMap.set(ridStr, unreadCount);
+          } else {
+            broadcastUnreadCountsMap.set(ridStr, 0);
+          }
+        }
       }
 
       const recipientMessageMap = new Map();
@@ -322,7 +377,8 @@ exports.sendMessage = async (req, res) => {
             Array.isArray(recipientSetting.locked_chat_ids) &&
             recipientSetting.locked_chat_ids.some(chat => chat.type === 'broadcast' && chat.id.toString() === broadcastId );
 
-          recipientMessageMap.set(ridStr, { ...msg, isLocked });
+          const unreadCount = broadcastUnreadCountsMap.get(ridStr) || 0;
+          recipientMessageMap.set(ridStr, { ...msg, isLocked, unreadCount });
         }
       });
 
@@ -336,6 +392,33 @@ exports.sendMessage = async (req, res) => {
       return res.status(201).json({ messages: fullMessages });
     }
 
+    const directUnreadCountsMap = new Map();
+    const uniqueRecipients = [...new Set(fullMessages.map(msg => msg.recipient_id?.toString()).filter(Boolean))];
+    
+    for (const targetUserId of uniqueRecipients) {
+      if (!blockedRecipients.has(targetUserId)) {
+        const conversationMessageIds = await Message.find({
+          group_id: null,
+          message_type: { $ne: 'system' },
+          $or: [
+            { sender_id: senderId, recipient_id: new mongoose.Types.ObjectId(targetUserId) },
+            { sender_id: new mongoose.Types.ObjectId(targetUserId), recipient_id: senderId }
+          ]
+        }).select('_id').lean().then(messages => messages.map(m => m._id));
+
+        if (conversationMessageIds.length > 0) {
+          const unreadCount = await MessageStatus.countDocuments({
+            user_id: new mongoose.Types.ObjectId(targetUserId),
+            status: { $ne: 'seen' },
+            message_id: { $in: conversationMessageIds },
+          });
+          directUnreadCountsMap.set(targetUserId, unreadCount);
+        } else {
+          directUnreadCountsMap.set(targetUserId, 0);
+        }
+      }
+    }
+
     fullMessages.forEach((msg) => {
       const targetUserId = msg.recipient_id?.toString();
 
@@ -345,7 +428,8 @@ exports.sendMessage = async (req, res) => {
           Array.isArray(recipientSetting.locked_chat_ids) &&
           recipientSetting.locked_chat_ids.some(chat => chat.type === 'user' && chat.id.toString() === senderId.toString() );
 
-        const messageForRecipient = { ...msg, isLocked: isLockedForRecipient };
+        const unreadCount = directUnreadCountsMap.get(targetUserId) || 0;
+        const messageForRecipient = { ...msg, isLocked: isLockedForRecipient, unreadCount };
 
         if (!blockedRecipients.has(targetUserId)) {
           io.to(`user_${targetUserId}`).emit('receive-message', messageForRecipient);
@@ -360,7 +444,7 @@ exports.sendMessage = async (req, res) => {
           chat.id.toString() === (targetUserId || senderId.toString())
         );
 
-      const messageForSender = { ...msg, isLocked: isLockedForSender };
+      const messageForSender = { ...msg, isLocked: isLockedForSender, unreadCount: 0 };
 
       io.to(`user_${senderId}`).emit('receive-message', messageForSender);
     });
