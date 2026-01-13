@@ -1430,6 +1430,9 @@ exports.forwardMessage = async (req, res) => {
     ];
 
     for (const existing of originals) {
+      if(existing.message_type === 'system'){
+        continue;
+      }
       const fileMetadata = {};
       const fileKeys = [
         'file_size', 'mime_type', 'file_index', 'is_multiple', 'original_filename', 'title', 'redirect_url', 'sent_by_admin', 'announcement_type'
