@@ -86,6 +86,9 @@ exports.sendMessage = async (req, res) => {
       if (blockEntry) {
         return res.status(403).json({ message: 'Cannot send message to blocked contact' });
       }
+      
+      await UserDelete.deleteOne({ user_id: recipientId, target_id: senderId, target_type: 'user' });
+      await UserDelete.deleteOne({ user_id: senderId, target_id: recipientId, target_type: 'user' });
     }
 
     if (groupId) {
@@ -118,33 +121,12 @@ exports.sendMessage = async (req, res) => {
       const member = await GroupMember.findOne({ group_id: groupId, user_id: senderId });
       if (!member) return res.status(403).json({ message: 'Not a group member' });
 
-      const groupMemberIds = await GroupMember.find({ group_id: groupId })
-        .select('user_id')
-        .lean()
-        .then(members => members.map(m => m.user_id));
+      const groupMemberIds = await GroupMember.find({ group_id: groupId }).select('user_id').lean().then(members => members.map(m => m.user_id));
 
       if (groupMemberIds.length > 0) {
-        await UserDelete.deleteMany({
-          target_id: new mongoose.Types.ObjectId(groupId),
-          target_type: 'group',
-          user_id: { $in: groupMemberIds }
-        });
+        await UserDelete.deleteMany({ target_id: groupId, target_type: 'group', user_id: { $in: groupMemberIds } });
       }
     }
-
-    if (recipientId) {
-      const targetId = recipientId ? recipientId :  groupId;
-
-      const deleteChat = await UserDelete.findOne({
-        user_id: senderId,
-        target_id: new mongoose.Types.ObjectId(targetId),
-        target_type: recipientId ? 'user' : 'group',
-      });
-    
-      if (deleteChat) {
-        await UserDelete.deleteOne({ _id: deleteChat._id });
-      }
-    }    
 
     const payloads = await buildMessagePayloads({ content, message_type, metadata, files, singleFile, file_url, parent_id});
 
@@ -216,15 +198,10 @@ exports.sendMessage = async (req, res) => {
     }
 
     const blockedRecipients = new Set();
-
     const broadcastMessageId = new mongoose.Types.ObjectId().toString();
 
     for (const rid of recipientIds) {
-      const recipientBlockedSender = await Block.findOne({
-        blocker_id: rid,
-        blocked_id: senderId,
-      }).lean();
-
+      const recipientBlockedSender = await Block.findOne({ blocker_id: rid, blocked_id: senderId, }).lean();
       if (recipientBlockedSender) {
         blockedRecipients.add(rid.toString());
       }
@@ -310,17 +287,43 @@ exports.sendMessage = async (req, res) => {
         }
       });
     } else {
-      fullMessages.forEach(msg => {
-        io.to(`user_${senderId}`).emit('receive-message', msg);
+      const relevantUserIds = [senderId, ...recipientIds];
+      const settings = await UserSetting.find( { user_id: { $in: relevantUserIds } }, 'user_id chat_lock_enabled locked_chat_ids' ).lean();
 
-        if (msg.recipient_id) {
-          const recipientIdStr = msg.recipient_id.toString();
-          if (blockedRecipients.has(recipientIdStr)) {
-            return;
+      const settingsMap = new Map(settings.map(s => [s.user_id.toString(), s]));
+
+      if (!groupId) {
+        fullMessages.forEach((msg) => {
+          const targetUserId = msg.recipient_id?.toString();
+
+          if (targetUserId) {
+            const recipientSetting = settingsMap.get(targetUserId) || {};
+            const isLockedForRecipient = !!recipientSetting.chat_lock_enabled &&
+              Array.isArray(recipientSetting.locked_chat_ids) &&
+              recipientSetting.locked_chat_ids.some(chat =>  chat.type === 'user' && chat.id.toString() === senderId.toString() );
+
+            const messageForRecipient = { ...msg, isLocked: isLockedForRecipient };
+
+            if (!blockedRecipients.has(targetUserId)) {
+              io.to(`user_${targetUserId}`).emit('receive-message', messageForRecipient);
+            }
           }
-          io.to(`user_${msg.recipient_id}`).emit('receive-message', msg);
-        }
-      });
+
+          const senderSetting = settingsMap.get(senderId.toString()) || {};
+          const isLockedForSender = !!senderSetting.chat_lock_enabled &&
+            Array.isArray(senderSetting.locked_chat_ids) &&
+            senderSetting.locked_chat_ids.some(chat => 
+              chat.type === 'user' &&
+              chat.id.toString() === (targetUserId || senderId.toString())
+            );
+
+          const messageForSender = { ...msg, isLocked: isLockedForSender };
+
+          io.to(`user_${senderId}`).emit('receive-message', messageForSender);
+        });
+
+        return res.status(201).json({ messages: fullMessages });
+      }
     }
 
     return res.status(201).json({ messages: fullMessages });
