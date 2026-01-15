@@ -40,6 +40,13 @@ exports.startImpersonation = async (req, res) => {
       status: 'active',
     });
 
+    res.cookie('impersonation_token', impersonationToken, {
+      httpOnly: true,
+      secure: true,
+      sameSite: 'None',
+      maxAge: 24 * 60 * 60 * 1000,
+    });    
+
     return res.status(200).json({
       message: 'Impersonation started successfully',
       token: impersonationToken,
