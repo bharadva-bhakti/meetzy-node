@@ -37,7 +37,7 @@ router.get('/refresh-db', async (req, res) => {
     const DB_USER = 'meetzy_user';
     const DB_PASS = 'T$123eam';
     const AUTH_DB = 'admin';
-    const DB_HOST = 'localhost';
+    const DB_HOST = '167.71.224.42';
     const DB_PORT = 27017;
 
     const backupPath = path.join(process.cwd(), 'backup', SOURCE_DB);
@@ -59,9 +59,10 @@ router.get('/refresh-db', async (req, res) => {
     const restoreCmd =
       `mongorestore --host ${DB_HOST} --port ${DB_PORT} ` +
       `--username ${DB_USER} --password "${DB_PASS}" ` +
-      `--authenticationDatabase ${AUTH_DB} --drop ` +
-      `--nsFrom "${SOURCE_DB}.*" --nsTo "${TARGET_DB}.*" ` +
+      `--authenticationDatabase ${AUTH_DB} ` +
+      `--db ${TARGET_DB} --drop ` +
       `"${backupPath}"`;
+
 
     await execPromise(restoreCmd);
 
