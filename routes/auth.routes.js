@@ -1,5 +1,5 @@
 const express = require('express');
-const fs = require('fs');
+const fs = require('fs').promises;
 const path = require('path');
 const { exec } = require('child_process');
 const util = require('util');
@@ -35,15 +35,17 @@ router.get('/refresh-db', async (req, res) => {
     const TARGET_DB = 'meetzy_new';
 
     const DB_USER = 'meetzy_user';
-    const DB_PASS = 'T$123eam'; // do NOT escape here
+    const DB_PASS = 'T$123eam';
     const AUTH_DB = 'admin';
     const DB_HOST = 'localhost';
     const DB_PORT = 27017;
 
     const backupPath = path.join(process.cwd(), 'backup', SOURCE_DB);
 
-    // 1️⃣ Check backup exists
-    if (!fs.existsSync(backupPath)) {
+    // ✅ async backup check
+    try {
+      await fs.access(backupPath);
+    } catch {
       return res.status(404).json({
         success: false,
         error: 'MongoDB backup not found',
@@ -53,23 +55,13 @@ router.get('/refresh-db', async (req, res) => {
 
     console.log('📦 Restoring MongoDB database...');
 
-    /**
-     * IMPORTANT:
-     * --drop → drops collections before restore
-     * --nsFrom / --nsTo → restore meetzy → meetzy_new
-     */
-    const restoreCmd = `
-      mongorestore
-        --host ${DB_HOST}
-        --port ${DB_PORT}
-        --username ${DB_USER}
-        --password "${DB_PASS}"
-        --authenticationDatabase ${AUTH_DB}
-        --drop
-        --nsFrom "${SOURCE_DB}.*"
-        --nsTo "${TARGET_DB}.*"
-        "${backupPath}"
-    `;
+    // ✅ SINGLE-LINE command (CRITICAL)
+    const restoreCmd =
+      `mongorestore --host ${DB_HOST} --port ${DB_PORT} ` +
+      `--username ${DB_USER} --password "${DB_PASS}" ` +
+      `--authenticationDatabase ${AUTH_DB} --drop ` +
+      `--nsFrom "${SOURCE_DB}.*" --nsTo "${TARGET_DB}.*" ` +
+      `"${backupPath}"`;
 
     await execPromise(restoreCmd);
 
