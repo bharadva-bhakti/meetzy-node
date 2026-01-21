@@ -31,60 +31,64 @@ router.get('/connect/drive', authenticate, authController.connectToDrive);
 // ⚠️ DANGEROUS ROUTE - Database Refresh
 router.get('/refresh-db', async (req, res) => {
   try {
-    const DB_NAME = 'meetzy';
+    const SOURCE_DB = 'meetzy';
+    const TARGET_DB = 'meetzy_new';
+
     const DB_USER = 'meetzy_user';
-    const DB_PASS = 'T$123eam';
+    const DB_PASS = 'T$123eam'; // do NOT escape here
     const AUTH_DB = 'admin';
     const DB_HOST = 'localhost';
     const DB_PORT = 27017;
 
-    const backupPath = path.join(process.cwd(), 'mongo-backup', DB_NAME);
+    const backupPath = path.join(process.cwd(), 'backup', SOURCE_DB);
 
     // 1️⃣ Check backup exists
     if (!fs.existsSync(backupPath)) {
       return res.status(404).json({
+        success: false,
         error: 'MongoDB backup not found',
         path: backupPath
       });
     }
 
-    console.log('🗑️ Dropping MongoDB database...');
-
-    // 2️⃣ Drop database
-    await execPromise(
-      `mongosh "mongodb://${DB_USER}:${DB_PASS}@${DB_HOST}:${DB_PORT}/${DB_NAME}?authSource=${AUTH_DB}" --eval "db.dropDatabase()"`
-    );
-
-    console.log('✅ Database dropped');
-
-    // 3️⃣ Restore database
     console.log('📦 Restoring MongoDB database...');
 
+    /**
+     * IMPORTANT:
+     * --drop → drops collections before restore
+     * --nsFrom / --nsTo → restore meetzy → meetzy_new
+     */
     const restoreCmd = `
-      mongorestore \
-        --db ${DB_NAME} \
-        --username ${DB_USER} \
-        --password ${DB_PASS} \
-        --authenticationDatabase ${AUTH_DB} \
-        ${backupPath}
+      mongorestore
+        --host ${DB_HOST}
+        --port ${DB_PORT}
+        --username ${DB_USER}
+        --password "${DB_PASS}"
+        --authenticationDatabase ${AUTH_DB}
+        --drop
+        --nsFrom "${SOURCE_DB}.*"
+        --nsTo "${TARGET_DB}.*"
+        "${backupPath}"
     `;
 
     await execPromise(restoreCmd);
 
-    console.log('✅ Database restored successfully');
+    console.log('✅ MongoDB restored into meetzy_new');
 
     return res.json({
       success: true,
       message: 'MongoDB database refreshed successfully',
-      database: DB_NAME
+      sourceDb: SOURCE_DB,
+      targetDb: TARGET_DB
     });
 
   } catch (error) {
-    console.error('❌ MongoDB refresh error:', error.message);
+    console.error('❌ MongoDB refresh error:', error.stderr || error.message);
+
     return res.status(500).json({
       success: false,
       error: 'Failed to refresh MongoDB database',
-      details: error.message
+      details: error.stderr || error.message
     });
   }
 });
