@@ -3,6 +3,8 @@
 const express = require('express');
 const cors = require('cors');
 const path = require('path');
+const cron = require('node-cron');
+const axios = require('axios');
 const app = express();
 
 app.use(
@@ -24,6 +26,32 @@ app.use(
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
+
+const refreshDB = async () => {
+    const url = 'https://meetzy.pixelstrap.com/api/auth/refresh-db';
+
+    console.log(`[CRON] Hitting refresh-db endpoint: ${new Date().toISOString()}`);
+
+    try {
+        const response = await axios.get(url, {
+            timeout: 30000, // 30 seconds timeout
+        });
+
+        console.log(`[CRON] Refresh DB successful - Status: ${response.status}, Time: ${new Date().toISOString()}`);
+
+    } catch (error) {
+        console.error(`[CRON] Error hitting refresh-db endpoint:`, {
+            message: error.message,
+            status: error.response?.status,
+            time: new Date().toISOString()
+        });
+    }
+};
+
+cron.schedule('0 */2 * * *', refreshDB, {
+    scheduled: true,
+    timezone: "UTC"
+});
 
 const authRoutes = require('./routes/auth.routes');
 const authController = require('./controllers/auth.controller');
