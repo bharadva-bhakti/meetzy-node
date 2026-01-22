@@ -33,16 +33,13 @@ router.get('/refresh-db', async (req, res) => {
   try {
     const SOURCE_DB = 'meetzy';
     const TARGET_DB = 'meetzy_new';
-
     const DB_USER = 'meetzy_user';
     const DB_PASS = 'T$123eam';
-    const AUTH_DB = 'admin';
     const DB_HOST = '167.71.224.42';
     const DB_PORT = 27017;
-
     const backupPath = path.join(process.cwd(), 'backup', SOURCE_DB);
 
-    // ✅ async backup check
+    // Check backup exists
     try {
       await fs.access(backupPath);
     } catch {
@@ -55,33 +52,47 @@ router.get('/refresh-db', async (req, res) => {
 
     console.log('📦 Restoring MongoDB database...');
 
-    // ✅ SINGLE-LINE command (CRITICAL)
-    const restoreCmd =
-      `mongorestore --host ${DB_HOST} --port ${DB_PORT} ` +
-      `--username ${DB_USER} --password "${DB_PASS}" ` +
-      `--authenticationDatabase ${AUTH_DB} ` +
-      `--db ${TARGET_DB} --drop ` +
-      `"${backupPath}"`;
+    // Try different auth approaches
+    const commands = [
+      // Try 1: With authSource
+      `mongorestore --uri "mongodb://${DB_USER}:${encodeURIComponent(DB_PASS)}@${DB_HOST}:${DB_PORT}/${TARGET_DB}?authSource=admin" --drop "${backupPath}"`,
+      
+      // Try 2: With authSource=meetzy
+      `mongorestore --uri "mongodb://${DB_USER}:${encodeURIComponent(DB_PASS)}@${DB_HOST}:${DB_PORT}/${TARGET_DB}?authSource=meetzy" --drop "${backupPath}"`,
+      
+      // Try 3: Original format with meetzy as auth DB
+      `mongorestore --host ${DB_HOST} --port ${DB_PORT} --username ${DB_USER} --password "${DB_PASS}" --authenticationDatabase meetzy --db ${TARGET_DB} --drop "${backupPath}"`
+    ];
 
+    let lastError;
+    for (let i = 0; i < commands.length; i++) {
+      try {
+        console.log(`Attempting restore method ${i + 1}...`);
+        await execPromise(commands[i]);
+        console.log('✅ MongoDB restored successfully');
+        
+        return res.json({
+          success: true,
+          message: 'MongoDB database refreshed successfully',
+          sourceDb: SOURCE_DB,
+          targetDb: TARGET_DB,
+          method: i + 1
+        });
+      } catch (error) {
+        lastError = error;
+        console.log(`Method ${i + 1} failed, trying next...`);
+      }
+    }
 
-    await execPromise(restoreCmd);
-
-    console.log('✅ MongoDB restored into meetzy_new');
-
-    return res.json({
-      success: true,
-      message: 'MongoDB database refreshed successfully',
-      sourceDb: SOURCE_DB,
-      targetDb: TARGET_DB
-    });
+    throw lastError;
 
   } catch (error) {
     console.error('❌ MongoDB refresh error:', error.stderr || error.message);
-
     return res.status(500).json({
       success: false,
       error: 'Failed to refresh MongoDB database',
-      details: error.stderr || error.message
+      details: error.stderr || error.message,
+      suggestion: 'Check MongoDB user credentials and permissions'
     });
   }
 });
