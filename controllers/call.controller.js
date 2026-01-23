@@ -576,11 +576,52 @@ exports.getCallHistory = async (req, res) => {
   const skip = (parseInt(page) - 1) * parseInt(limit);
 
   try {
-    const [initiated, received, participated] = await Promise.all([
-      Call.find({ initiator_id: userId }).select('_id').lean(),
-      Call.find({ receiver_id: userId }).select('_id').lean(),
-      CallParticipant.find({ user_id: userId }).select('call_id').lean(),
+    const appSetting = await Setting.findOne().lean();
+
+    const allowedCallTypes = [];
+    if (appSetting?.audio_calls_enabled !== false) allowedCallTypes.push('audio');
+    if (appSetting?.video_calls_enabled !== false) allowedCallTypes.push('video');
+    if (allowedCallTypes.length === 0) {
+      return res.json({
+        calls: {},
+        sectionCounts: { all: 0, incoming: 0, outgoing: 0, missed: 0 },
+        pagination: {
+          currentPage: parseInt(page),
+          totalPages: 0,
+          totalCalls: 0,
+          hasNext: false,
+          hasPrev: false
+        }
+      });
+    }    
+
+    const [initiated, received] = await Promise.all([
+      Call.find({ initiator_id: userId, call_type: { $in: allowedCallTypes } }).select('_id').lean(),
+      Call.find({ receiver_id: userId, call_type: { $in: allowedCallTypes } }).select('_id').lean(),
     ]);
+
+    const participated = await CallParticipant.aggregate([
+      {
+        $match: { user_id: userId }
+      },
+      {
+        $lookup: {
+          from: 'calls',
+          localField: 'call_id',
+          foreignField: '_id',
+          as: 'call'
+        }
+      },
+      { $unwind: '$call' },
+      {
+        $match: {
+          'call.call_type': { $in: allowedCallTypes }
+        }
+      },
+      {
+        $project: { call_id: 1, _id: 0 }
+      }
+    ]).exec();
 
     const callIds = [
       ...initiated.map((c) => c._id),
@@ -597,14 +638,24 @@ exports.getCallHistory = async (req, res) => {
       });
     }
 
-    let filteredCallIds = uniqueCallIds;
+    const allowedCallIds = await Call.distinct('_id', {
+      $or: [
+        { initiator_id: userId },
+        { receiver_id: userId },
+        { _id: { $in: await CallParticipant.distinct('call_id', { user_id: userId }) } }
+      ],
+      call_type: { $in: allowedCallTypes }
+    });
+    
+    let filteredCallIds = allowedCallIds;
+
     if (filter === 'incoming') {
-      const incoming = await Call.find({ _id: { $in: uniqueCallIds }, initiator_id: { $ne: userId } })
+      const incoming = await Call.find({ _id: { $in: uniqueCallIds }, initiator_id: { $ne: userId }, call_type: { $in: allowedCallTypes } })
         .select('_id').lean();
         
       filteredCallIds = incoming.map((c) => c._id);
     } else if (filter === 'outgoing') {
-      const outgoing = await Call.find({ _id: { $in: uniqueCallIds }, initiator_id: userId }).select('_id').lean();
+      const outgoing = await Call.find({ _id: { $in: uniqueCallIds }, initiator_id: userId, call_type: { $in: allowedCallTypes } }).select('_id').lean();
       filteredCallIds = outgoing.map((c) => c._id);
       
     } else if (filter === 'missed') {
