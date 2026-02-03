@@ -67,14 +67,17 @@ exports.register = async (req, res) => {
 
     const hashed = password ? await bcrypt.hash(password, 10) : null;
 
-    const user = await User.create({
+    const userData = {
       name: name.trim(),
-      email: email ? email.toLowerCase().trim() : null,
-      country_code: countryCode || null,
-      phone: phone || null,
       password: hashed,
       country: country || null,
-    });
+    };
+    
+    if (email) userData.email = email.toLowerCase().trim();
+    if (phone) userData.phone = phone;
+    if (countryCode) userData.country_code = countryCode;
+    
+    const user = await User.create(userData);
 
     await UserSetting.create({ user_id: user._id });
 
