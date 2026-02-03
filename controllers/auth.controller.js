@@ -61,9 +61,6 @@ exports.register = async (req, res) => {
     }
 
     if (phone) {
-      if (!isPhoneIdentifier(phone)) {
-        return res.status(400).json({ message: 'Phone number must be 7-15 digits' });
-      }
       const existingPhone = await User.findOne({ country_code: countryCode, phone, role: 'user' });
       if (existingPhone) return res.status(409).json({ message: 'Phone number already registered' });
     }
