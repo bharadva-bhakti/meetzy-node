@@ -148,6 +148,7 @@ exports.archiveAllChats = async (req, res) => {
     const directPartners = await Message.aggregate([
       { $match: { group_id: null, $or: [{ sender_id: userId }, { recipient_id: userId }] }},
       { $project: { partner_id: { $cond: [{ $eq: ['$sender_id', userId] }, '$recipient_id', '$sender_id'] }}},
+      { $match: { partner_id: { $ne: null } }},
       { $group: { _id: '$partner_id' } },
       { $project: { _id: 0, partner_id: '$_id' } }
     ]);
