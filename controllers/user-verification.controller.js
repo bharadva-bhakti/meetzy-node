@@ -16,7 +16,8 @@ exports.initiateVerification = async (req, res) => {
   const userId = req.user._id;
   const { full_name, category, currency = 'USD', payment_gateway, plan_slug, billing_cycle = 'monthly' } = req.body;
   let amount = req.body.amount;
-
+  const clientType = req.headers['x-client-type'];
+  
   try {
     if (!full_name || !category || !payment_gateway) {
       return res.status(400).json({ message: 'full_name, category, and payment_gateway are required' });
@@ -122,7 +123,7 @@ exports.initiateVerification = async (req, res) => {
     try {
       if (subscription) {
         if (payment_gateway.toLowerCase() === 'stripe') {
-          paymentData = await createStripeSubscription(subscription, payment, user, plan);
+          paymentData = await createStripeSubscription(subscription, payment, user, plan, clientType);
           await Payment.updateOne(
             { _id: payment._id },
             { gateway_order_id: paymentData.gateway_order_id || paymentData.checkout_session_id }
@@ -372,6 +373,113 @@ exports.syncStripeSubscription = async (req, res) => {
       success: false,
       message: 'Failed to sync subscription',
       error: error.message || 'Unknown error',
+    });
+  }
+};
+
+exports.handlePaymentSuccess = async (req, res) => {
+  const { session_id, payment = 'success' } = req.query;
+
+  if (payment !== 'success' || !session_id) {
+    return res.status(400).json({
+      success: false,
+      message: 'Invalid payment status or session ID',
+    });
+  }
+
+  try {
+    const sessionData = await stripe.checkout.sessions.retrieve(session_id, {
+      expand: ['subscription'],
+    });
+
+    if (!sessionData) {
+      return res.status(404).json({
+        success: false,
+        message: 'Checkout session not found',
+      });
+    }
+
+    const subscriptionId = sessionData.metadata?.subscription_id;
+    const paymentId = sessionData.metadata?.payment_id;
+    const userId = sessionData.metadata?.user_id;
+
+    if (!subscriptionId || !paymentId || !userId) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid session metadata',
+      });
+    }
+
+    const subscription = await Subscription.findOne({ _id: subscriptionId, user_id: userId });
+    const paymentRecord = await Payment.findById(paymentId);
+
+    if (!subscription || !paymentRecord) {
+      return res.status(404).json({
+        success: false,
+        message: 'Subscription or payment not found',
+      });
+    }
+
+    // Sync if still pending
+    if (paymentRecord.status === 'pending') {
+      const stripeSubscriptionId =
+        typeof sessionData.subscription === 'string' ? sessionData.subscription : sessionData.subscription?.id || null;
+
+      let currentPeriodStart = new Date();
+      let currentPeriodEnd = calculateNextBillingDate(subscription.billing_cycle);
+
+      if (stripeSubscriptionId) {
+        let stripeSub = typeof sessionData.subscription === 'object'
+          ? sessionData.subscription : await stripe.subscriptions.retrieve(stripeSubscriptionId);
+
+        if (stripeSub && stripeSub.current_period_start && stripeSub.current_period_end) {
+          currentPeriodStart = new Date(stripeSub.current_period_start * 1000);
+          currentPeriodEnd = new Date(stripeSub.current_period_end * 1000);
+        }
+      }
+
+      await Subscription.updateOne(
+        { _id: subscription._id },
+        {
+          stripe_subscription_id: stripeSubscriptionId || undefined,
+          status: 'active',
+          current_period_start: currentPeriodStart,
+          current_period_end: currentPeriodEnd,
+        }
+      );
+
+      await Payment.updateOne(
+        { _id: paymentRecord._id },
+        {
+          status: 'completed',
+          gateway_payment_id: sessionData.payment_intent || sessionData.id,
+          gateway_response: sessionData,
+          completed_at: new Date(),
+        }
+      );
+    }
+
+    const verification = await VerificationRequest.findOne({ user_id: userId }).sort({ created_at: -1 }).lean();
+    const user = await User.findById(userId).select('is_verified').lean();
+
+    return res.status(200).json({
+      success: true,
+      message: 'Payment verified successfully',
+      data: {
+        payment_status: 'completed',
+        subscription_status: 'active',
+        is_verified: user?.is_verified || false,
+        verification_status: verification?.status || null,
+        request_id: verification?._id?.toString() || null,
+      },
+    });
+
+  } catch (error) {
+    console.error('Error handling payment success:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to verify payment',
+      error: error.message,
     });
   }
 };

@@ -84,7 +84,7 @@ async function initPayPalPayment(payment, amount, user) {
   };
 }
 
-async function createStripeSubscription(subscription, payment, user, plan) {
+async function createStripeSubscription(subscription, payment, user, plan, clientType) {
   try {
     let stripeCustomerId = user.stripe_customer_id;
 
@@ -120,13 +120,23 @@ async function createStripeSubscription(subscription, payment, user, plan) {
 
       const price = await stripe.prices.create(priceData);
 
+      let success_url, cancel_url;
+
+      if(clientType === 'mobile'){
+        success_url = `${process.env.BACKEND_REDIRECT_URL}/payment-success?payment=success&session_id={CHECKOUT_SESSION_ID}`;
+        cancel_url = `${process.env.BACKEND_REDIRECT_URL}/payment-success?payment=cancel`;
+      }else{
+        success_url = `${process.env.FRONTEND_URL}/messenger?payment=success&session_id={CHECKOUT_SESSION_ID}`;
+        cancel_url =  `${process.env.FRONTEND_URL}/messenger?payment=cancel`;
+      }
+
       const session = await stripe.checkout.sessions.create({
         customer: stripeCustomerId,
         payment_method_types: ['card'],
         mode: 'subscription',
         line_items: [{ price: price.id, quantity: 1 }],
-        success_url: `${process.env.FRONTEND_URL}/messenger?payment=success&session_id={CHECKOUT_SESSION_ID}`,
-        cancel_url: `${process.env.FRONTEND_URL}/messenger?payment=cancel`,
+        success_url: success_url,
+        cancel_url: cancel_url,
         metadata: {
           subscription_id: subscription._id.toString(),
           user_id: user._id.toString(),
@@ -163,8 +173,12 @@ async function createStripeSubscription(subscription, payment, user, plan) {
       payment_method_types: ['card'],
       mode: 'subscription',
       line_items: [{ price: plan.stripe_price_id, quantity: 1 }],
-      success_url: `${process.env.FRONTEND_URL}/messenger?payment=success&session_id={CHECKOUT_SESSION_ID}`,
-      cancel_url: `${process.env.FRONTEND_URL}/messenger?payment=cancel`,
+      success_url: clientType === 'mobile'
+        ? `${process.env.BACKEND_REDIRECT_URL}/payment-success?payment=success&session_id={CHECKOUT_SESSION_ID}`
+        : `${process.env.FRONTEND_URL}/messenger?payment=success&session_id={CHECKOUT_SESSION_ID}`,
+      cancel_url: clientType === 'mobile'
+        ? `${process.env.BACKEND_REDIRECT_URL}/payment-success?payment=cancel`
+        : `${process.env.FRONTEND_URL}/messenger?payment=cancel`,
       metadata: {
         subscription_id: subscription._id.toString(),
         user_id: user._id.toString(),

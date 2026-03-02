@@ -15,6 +15,7 @@ router.post('/initiate', authenticate, restrictImpersonationActions, userVerific
 router.post('/confirm', authenticate, restrictImpersonationActions, userVerificationController.confirmPayment);
 router.post('/sync-stripe', authenticate, restrictImpersonationActions, userVerificationController.syncStripeSubscription);
 
+router.get('/payment-success', userVerificationController.handlePaymentSuccess);
 router.get('/my-status', authenticate, userVerificationController.getMyVerificationStatus);
 router.post('/upload/doc', authenticate, uploadDocuments, restrictImpersonationActions, userVerificationController.uploadDocuments);
 
