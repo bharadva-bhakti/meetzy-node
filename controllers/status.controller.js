@@ -13,6 +13,7 @@ const fs = require('fs');
 const path = require('path');
 const mongoose = require('mongoose');
 const { getEffectiveLimits } = require('../utils/userLimits');
+const onesignal = require('../utils/onesignal');
 
 function timeAgo(date) {
   const seconds = Math.floor((new Date() - new Date(date)) / 1000);
@@ -520,11 +521,24 @@ exports.createStatus = async (req, res) => {
           : [];
       }
 
-      io.to(`user_${user_id}`).emit('status-uploaded', statusData);
-
       notifyUserIds.forEach(friendId => {
         io.to(`user_${friendId}`).emit('status-uploaded', statusData);
       });
+
+      const recipients = await User.find({ 
+        _id: { $in: Boolean(isSponsored) ? (await User.find().distinct('_id')) : notifyUserIds }, 
+        player_id: { $ne: null } 
+      }).select('player_id').lean();
+      
+      const playerIds = recipients.map(r => r.player_id);
+      if (playerIds.length > 0) {
+        await onesignal.sendToUsers(
+          playerIds, 
+          'New Status Update', 
+          `${user.name} uploaded a new status.`, 
+          { type: 'status_uploaded', statusId: status._id.toString(), userId: user_id.toString() }
+        );
+      }
     }
 
     return res.status(201).json({ message: 'Status uploaded successfully.', status: statusData });
@@ -796,6 +810,22 @@ exports.replyToStatus = async (req, res) => {
     if (io) {
       io.to(`user_${sender_id}`).emit('receive-message', fullMessage);
       io.to(`user_${receiver_id}`).emit('receive-message', fullMessage);
+    }
+
+    const recipientUser = await User.findById(receiver_id).select('player_id').lean();
+    if (recipientUser?.player_id) {
+      const sender = await User.findById(sender_id).select('name').lean();
+      await onesignal.sendToUsers(
+        [recipientUser.player_id], 
+        `Reply to your status from ${sender.name}`, 
+        message.trim(), 
+        { 
+          type: 'status_reply', 
+          messageId: statusReplyMessage._id.toString(), 
+          statusId: status_id,
+          senderId: sender_id
+        }
+      );
     }
 
     return res.status(201).json({ message: 'Reply sent successfully.', fullMessage,});

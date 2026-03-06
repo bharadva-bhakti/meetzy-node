@@ -13,4 +13,6 @@ router.put('/updatePassword', authenticate, restrictImpersonationActions, accoun
 
 router.delete('/delete', authenticate, restrictImpersonationActions, accountController.deleteAccount);
 
+router.post('/save-player-id', authenticate, accountController.savePlayerId);
+
 module.exports = router

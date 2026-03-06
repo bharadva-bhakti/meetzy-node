@@ -29,9 +29,11 @@ const {
   getUserDocuments, getConversationData, processDeleteForMe, processDeleteForEveryone, deleteMessageFiles, handleBroadcastDeletion
 } = require('../helper/messageHelpers');
 const { getEffectiveLimits } = require('../utils/userLimits');
+const onesignal = require('../utils/onesignal');
 
 exports.sendMessage = async (req, res) => {
   const senderId = req.user?._id;
+  const sender = await User.findById(senderId).select('name avatar').lean();
   const files = req.files || [];
   const singleFile = req.file;
 
@@ -261,6 +263,11 @@ exports.sendMessage = async (req, res) => {
         io.to(`user_${memberIdStr}`).emit('receive-message', messageForMember);
       });
 
+      const notifyRecipients = groupMembers.map(m => m.user_id).filter(id => id.toString() !== senderId.toString());
+      if (notifyRecipients.length > 0 && sender) {
+        sendPushNotifications({ sender, message: fullMessages[0], recipientIds: notifyRecipients, groupId });
+      }
+
       return res.status(201).json({ messages: fullMessages });
     }
 
@@ -389,6 +396,10 @@ exports.sendMessage = async (req, res) => {
         }
       });
 
+      if (recipientIds.length > 0 && sender) {
+        sendPushNotifications({ sender, message: fullMessages[0], recipientIds, broadcastId });
+      }
+
       return res.status(201).json({ messages: fullMessages });
     }
 
@@ -448,6 +459,11 @@ exports.sendMessage = async (req, res) => {
 
       io.to(`user_${senderId}`).emit('receive-message', messageForSender);
     });
+
+    const notifyRecipients = recipientId && recipientId.toString() !== senderId.toString() ? [recipientId] : [];
+    if (notifyRecipients.length > 0 && sender) {
+      sendPushNotifications({ sender, message: fullMessages[0], recipientIds: notifyRecipients, recipientId });
+    }
 
     return res.status(201).json({ messages: fullMessages });
   } catch (err) {
@@ -1025,7 +1041,8 @@ exports.getMessages = async (req, res) => {
     
       let messages = await Message.aggregate(pipeline);
       
-      const [iBlockedThem, theyBlockedMe] = await Promise.all([
+      const [recipientSetting, iBlockedThem, theyBlockedMe] = await Promise.all([
+        UserSetting.findOne({ user_id: recipientId }).lean(),
         Block.findOne({ blocker_id: userId, blocked_id: new mongoose.Types.ObjectId(recipientId) }).lean(),        
         Block.findOne({ blocker_id: new mongoose.Types.ObjectId(recipientId), blocked_id: userId }).lean(),
       ]);
@@ -1077,6 +1094,7 @@ exports.getMessages = async (req, res) => {
         deleted_at: recipient.deleted_at || null,
         type: 'direct',
         ...commonMeta,
+        read_receipts: recipientSetting ? recipientSetting.read_receipts : true,
         isBlocked: !!iBlockedThem,
         hasBlockedMe: !!theyBlockedMe,
         blockedBy: theyBlockedMe ? { id: theyBlockedMe.blocker_id.toString() } : null,
@@ -2175,3 +2193,75 @@ exports.searchDocuments = async (req, res) => {
     return res.status(500).json({ message: 'Internal Server Error' });
   }
 };
+
+async function sendPushNotifications({ sender, message, recipientIds, groupId, recipientId, broadcastId }) {
+  try {
+    if (!recipientIds || recipientIds.length === 0) return;
+
+    const recipients = await User.find({
+      _id: { $in: recipientIds },
+      player_id: { $ne: null }
+    }).select('_id player_id').lean();
+
+    if (recipients.length === 0) return;
+
+    const playerIdsToNotify = [];
+    const targetId = groupId || recipientId || broadcastId;
+    const targetType = groupId ? 'group' : (broadcastId ? 'broadcast' : 'user');
+
+    for (const user of recipients) {
+      const isMuted = await MutedChat.findOne({
+        user_id: user._id,
+        target_id: targetId,
+        target_type: targetType,
+        muted_until: { $gt: new Date() }
+      }).lean();
+
+      if (!isMuted) {
+        playerIdsToNotify.push(user.player_id);
+      }
+    }
+
+    if (playerIdsToNotify.length === 0) return;
+
+    let notificationTitle = sender.name;
+    let notificationBody = "";
+
+    if (message.message_type === 'image') {
+      notificationBody = "Sent an image";
+    } else if (message.message_type === 'video') {
+      notificationBody = "Sent a video";
+    } else if (message.message_type === 'audio') {
+      notificationBody = "Sent an audio message";
+    } else if (message.message_type === 'file' || message.message_type === 'document') {
+      notificationBody = "Sent a file";
+    } else if (message.message_type === 'sticker') {
+      notificationBody = "Sent a sticker";
+    } else if (message.message_type === 'location') {
+      notificationBody = "Shared a location";
+    } else {
+      notificationBody = message.content && message.content.length > 100 
+        ? message.content.substring(0, 100) + "..." 
+        : message.content || "Sent a message";
+    }
+
+    const additionalData = {
+      messageId: message.id,
+      senderId: sender.id,
+      senderName: sender.name,
+      groupId: groupId ? groupId.toString() : null,
+      recipientId: recipientId ? recipientId.toString() : null,
+      broadcastId: broadcastId ? broadcastId.toString() : null,
+      message_type: message.message_type,
+      type: "new_message",
+      timestamp: new Date().toISOString(),
+    };
+
+    const result = await onesignal.sendToUsers(playerIdsToNotify, notificationTitle, notificationBody, additionalData);
+    if (result.success) {
+      console.log('✅ Push notification sent successfully');
+    }
+  } catch (error) {
+    console.error("❌ Error sending push notification:", error);
+  }
+}

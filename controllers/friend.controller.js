@@ -5,6 +5,7 @@ const Notification = db.Notification;
 const UserSetting = db.UserSetting;
 const { fetchFriendSuggestions } = require('../helper/chatHelpers');
 const mongoose = require('mongoose')
+const onesignal = require('../utils/onesignal');
 
 exports.getFriendSuggestions = async (req, res) => {
   const currentUserId = req.user?._id;
@@ -105,6 +106,16 @@ exports.sendFriendRequest = async (req, res) => {
       });
     }
 
+    const friend = await User.findById(friendId).select('player_id').lean();
+    if (friend?.player_id) {
+      await onesignal.sendToUsers(
+        [friend.player_id], 
+        'New Friend Request', 
+        `${currentUser.name} sent you a friend request.`,
+        { type: 'friend_request', from_user_id: currentUserId.toString() }
+      );
+    }
+
     res.status(201).json({ message: 'Friend Request Sent Successfully.' });
   } catch (error) {
     console.error('Error in sendFriendRequest:', error);
@@ -178,11 +189,21 @@ exports.respondToFriendRequest = async (req, res) => {
         created_at: new Date(),
       });
 
-      if (action === 'accept') {
-        io.to(`user_${friendRequest.user_id}`).emit('friendListUpdated');
-        io.to(`user_${currentUserId}`).emit('friendListUpdated');
+        if (action === 'accept') {
+          io.to(`user_${friendRequest.user_id}`).emit('friendListUpdated');
+          io.to(`user_${currentUserId}`).emit('friendListUpdated');
+        }
       }
-    }
+
+      const targetUser = await User.findById(friendRequest.user_id).select('player_id').lean();
+      if (targetUser?.player_id) {
+        await onesignal.sendToUsers(
+          [targetUser.player_id], 
+          action === 'accept' ? 'Friend Request Accepted' : 'Friend Request Rejected',
+          notificationMessage,
+          { type: notificationType, from_user_id: currentUserId.toString() }
+        );
+      }
 
     res.status(201).json({ message: `Friend request ${action}ed successfully` });
   } catch (error) {

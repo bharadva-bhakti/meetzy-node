@@ -11,6 +11,7 @@ const Subscription = db.Subscription;
 const { 
   initiateGatewayPayment, verifyGatewayPayment, createStripeSubscription, createPayPalSubscription,calculateNextBillingDate
 } = require('../helper/paymentHelpers');
+const onesignal = require('../utils/onesignal');
 
 exports.initiateVerification = async (req, res) => {
   const userId = req.user._id;
@@ -810,6 +811,16 @@ exports.approveVerificationByAdmin = async (req, res) => {
 
     await User.updateOne({ _id: user_id }, { is_verified: true, verified_at: new Date() });
 
+    const targetUser = await User.findById(user_id).select('player_id').lean();
+    if (targetUser?.player_id) {
+      await onesignal.sendToUsers(
+        [targetUser.player_id], 
+        'Verification Approved', 
+        'Your account has been verified successfully!', 
+        { type: 'verification_approved' }
+      );
+    }
+
     return res.status(201).json({
       success: true,
       message: 'Verification granted and approved successfully',
@@ -885,6 +896,16 @@ exports.approveVerification = async (req, res) => {
       await Subscription.updateOne({ _id: verification.subscription_id }, { status: 'active' });
     }
 
+    const targetUser = await User.findById(verification.user_id).select('player_id').lean();
+    if (targetUser?.player_id) {
+      await onesignal.sendToUsers(
+        [targetUser.player_id], 
+        'Verification Approved', 
+        'Your verification request has been approved!', 
+        { type: 'verification_approved', requestId: verification.request_id }
+      );
+    }
+
     const user = await User.findById(verification.user_id).select('name').lean();
 
     return res.status(200).json({
@@ -941,6 +962,16 @@ exports.rejectVerification = async (req, res) => {
         updated_at: new Date(),
       }
     );
+
+    const targetUser = await User.findById(verification.user_id).select('player_id').lean();
+    if (targetUser?.player_id) {
+      await onesignal.sendToUsers(
+        [targetUser.player_id], 
+        'Verification Rejected', 
+        `Your verification request was rejected. Reason: ${rejection_reason.trim()}`, 
+        { type: 'verification_rejected', requestId: verification.request_id, reason: rejection_reason.trim() }
+      );
+    }
 
     return res.status(200).json({
       message: 'Verification rejected successfully.',

@@ -433,3 +433,24 @@ exports.deleteAccount = async (req, res) => {
     return res.status(500).json({ message: 'Internal server error' });
   }
 };
+
+exports.savePlayerId = async (req, res) => {
+  try {
+    const userId = req.user?._id;
+    const { playerId } = req.body;
+
+    const user = await User.findById(userId);
+    if (!user) return res.status(404).json({ message: 'User not found' });
+
+    await User.updateOne({ _id: userId }, { $set: { player_id: playerId } });
+    
+    return res.status(200).json({ 
+      message: 'Player Id updated successfully', 
+      user: { id: user._id, name: user.name, player_id: playerId } 
+    });
+    
+  } catch (error) {
+    console.error('Error Save Player Id:', error);
+    return res.status(500).json({ message: 'Internal server error' });
+  }
+};

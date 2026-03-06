@@ -88,6 +88,11 @@ const UserSchema = new Schema(
       default: null 
     },
 
+    player_id: { 
+      type: String, 
+      default: null 
+    },
+
     deleted_at: { 
       type: Date, 
       default: null 

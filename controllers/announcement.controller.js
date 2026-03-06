@@ -6,6 +6,7 @@ const UserSetting = db.UserSetting;
 const mongoose = require('mongoose');
 const fs = require('fs');
 const path = require('path');
+const onesignal = require('../utils/onesignal');
 
 exports.sendAnnouncement = async (req, res) => {
   const adminId = req.user._id;
@@ -108,6 +109,12 @@ exports.sendAnnouncement = async (req, res) => {
 
       io.to(`user_${userId}`).emit('receive-message', messageForUser);
     }
+
+    await onesignal.sendToAll(
+      title || 'New Announcement', 
+      content.trim(), 
+      { type: 'announcement', announcementId: announcement._id.toString() }
+    );
 
     const announcementData = {
       id: announcement.id,

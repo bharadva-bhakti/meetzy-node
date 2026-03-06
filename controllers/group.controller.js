@@ -11,6 +11,7 @@ const Archive = db.Archive;
 const Favorite = db.Favorite;
 const Setting = db.Setting;
 const { getEffectiveLimits } = require('../utils/userLimits');
+const onesignal = require('../utils/onesignal');
 
 const createSystemMessage = async (req, groupId, action, metadata = {}, skipEmit = false) => {
   try {
@@ -354,6 +355,20 @@ exports.addMembersToGroup = async (req, res) => {
           io.to(`group_${group_id}`).emit('member-role-updated', { groupId: group_id, userId: member.user_id, newRole: 'admin', });
         }
       });
+
+      const addedUserIds = added.map(m => m.user_id);
+      const addedUsers = await User.find({ _id: { $in: addedUserIds }, player_id: { $ne: null } }).select('player_id').lean();
+      const playerIds = addedUsers.map(u => u.player_id);
+
+      if (playerIds.length > 0) {
+        const adder = await User.findById(requestingUserId).select('name').lean();
+        await onesignal.sendToUsers(
+          playerIds,
+          'Added to Group',
+          `${adder.name} added you to the group "${group.name}"`,
+          { type: 'group_added', groupId: group_id, groupName: group.name }
+        );
+      }
     }
 
     return res.status(200).json({
@@ -421,6 +436,21 @@ exports.removeMemberFromGroup = async (req, res) => {
       io.to(`group_${group_id}`).emit('group-member-removed', { groupId: group_id, userId: uid });
     });
 
+    if (removedUserIds.length > 0) {
+      const removedUsers = await User.find({ _id: { $in: removedUserIds }, player_id: { $ne: null } }).select('player_id').lean();
+      const playerIds = removedUsers.map(u => u.player_id);
+      if (playerIds.length > 0) {
+        const group = await Group.findById(group_id).select('name').lean();
+        const remover = await User.findById(requestingUserId).select('name').lean();
+        await onesignal.sendToUsers(
+          playerIds, 
+          'Removed from Group', 
+          `${remover.name} removed you from the group "${group.name}"`, 
+          { type: 'group_removed', groupId: group_id, groupName: group.name }
+        );
+      }
+    }
+
     return res.status(200).json({
       message: removedUserIds.length > 0 ? 'Members removed successfully' : 'No members were removed',
       removed: removedUserIds,
@@ -469,6 +499,17 @@ exports.changeMemberRole = async (req, res) => {
       groupId: group_id, userId: user_id, newRole: new_role,
     });
 
+    const targetUser = await User.findById(user_id).select('player_id').lean();
+    if (targetUser?.player_id) {
+       const group = await Group.findById(group_id).select('name').lean();
+       const updater = await User.findById(requestingUserId).select('name').lean();
+       await onesignal.sendToUsers(
+         [targetUser.player_id],
+         'Group Role Updated',
+         `${updater.name} assigned you the ${new_role} role in "${group.name}"`,
+         { type: 'group_role_updated', groupId: group_id, newRole: new_role }
+       );
+    }
     res.status(200).json({ message: 'Role updated successfully' });
   } catch (error) {
     console.error('Error in changeMemberRole:', error);
@@ -585,6 +626,22 @@ exports.createGroup = async (req, res) => {
     }
 
     allMembers.forEach(memberId => io.to(`user_${memberId}`).emit('new-group', groupPayload));
+
+    const otherMemberIds = members.filter(id => id.toString() !== userId.toString());
+    if (otherMemberIds.length > 0) {
+      const otherMembersWithPlayers = await User.find({ _id: { $in: otherMemberIds }, player_id: { $ne: null } }).select('player_id').lean();
+      const playerIds = otherMembersWithPlayers.map(u => u.player_id);
+
+      if (playerIds.length > 0) {
+        const creator = await User.findById(userId).select('name').lean();
+        await onesignal.sendToUsers(
+          playerIds,
+          'New Group Created',
+          `${creator.name} added you to a new group "${group.name}"`,
+          { type: 'group_added', groupId: group._id.toString(), groupName: group.name }
+        );
+      }
+    }
 
     return res.status(201).json({ message: 'Group created successfully.', group });
   } catch (error) {

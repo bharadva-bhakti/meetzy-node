@@ -7,6 +7,7 @@ const CallParticipant = db.CallParticipant;
 const Setting = db.Setting;
 const mongoose = require('mongoose');
 const { getCallSectionCounts, groupCallsByDate, createCallMessage, processCallsForHistory, matchesSearchCriteria } = require('../helper/callHelpers');
+const onesignal = require('../utils/onesignal');
 
 const getFullCallData = async (callId) => {
   const objectId = callId instanceof mongoose.Types.ObjectId ? callId : new mongoose.Types.ObjectId(callId);
@@ -30,11 +31,7 @@ const getFullCallData = async (callId) => {
             in: {
               $mergeObjects: [
                 '$$p',
-                {
-                  user: {
-                    $arrayElemAt: [ { $filter: { input: '$participant_users', cond: { $eq: ['$$this._id', '$$p.user_id'] }}}, 0],
-                  },
-                },
+                { user: { $arrayElemAt: [ { $filter: { input: '$participant_users', cond: { $eq: ['$$this._id', '$$p.user_id'] }}}, 0]}},
               ],
             },
           },
@@ -50,12 +47,7 @@ const getFullCallData = async (callId) => {
             { id: '$receiver_doc._id', name: '$receiver_doc.name', avatar: '$receiver_doc.avatar' }, null
           ],
         },
-        group: {
-          $cond: [
-            { $ifNull: ['$group_doc', false] }, 
-            { id: '$group_doc._id', name: '$group_doc.name' }, null
-          ],
-        },
+        group: { $cond: [ { $ifNull: ['$group_doc', false] },  { id: '$group_doc._id', name: '$group_doc.name' }, null ]},
       },
     },
     {
@@ -178,6 +170,20 @@ exports.initiateCall = async (req, res) => {
       });
     }
 
+    const sender = await User.findById(initiatorId).select('name').lean();
+    const recipients = await User.find({ _id: { $in: targetUserIds }, player_id: { $ne: null } }).select('player_id').lean();
+    const playerIds = recipients.map(r => r.player_id);
+
+    if (playerIds.length > 0) {
+      const mode = chatType === 'direct' ? 'Direct' : 'Group';
+      await onesignal.sendToUsers(
+        playerIds,
+        `Incoming ${mode} ${callType === 'video' ? 'Video' : 'Audio'} Call`,
+        `${sender.name} is calling you.`,
+        { type: 'incoming_call', callId: call._id.toString(), callType, chatType, chatId }
+      );
+    }
+
     setTimeout(async () => {
       try {
         const activeCall = await Call.findById(call._id).lean();
@@ -202,6 +208,20 @@ exports.initiateCall = async (req, res) => {
           participantIds.forEach((uid) => {
             io.to(`user_${uid}`).emit('call-ended', { callId: call._id.toString(), reason: 'no_answer' });
           });
+
+          const missedRecipients = await User.find({ 
+            _id: { $in: participantIds.filter(id => id !== initiatorId.toString()) }, 
+            player_id: { $ne: null } 
+          }).select('player_id').lean();
+          const missedPlayerIds = missedRecipients.map(r => r.player_id);
+          if (missedPlayerIds.length > 0) {
+            await onesignal.sendToUsers(
+              missedPlayerIds,
+              'Missed Call',
+              `You have a missed ${call.chat_type === 'direct' ? '' : 'group '}${call.call_type} call from ${sender.name}`,
+              { type: 'missed_call', callId: call._id.toString() }
+            );
+          }
         }
       } catch (err) {
         console.error('Error in unanswered call timeout:', err);
