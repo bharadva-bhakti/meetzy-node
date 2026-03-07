@@ -143,9 +143,9 @@ async function fetchBlockedUsers(userId, { page = 1, limit = 20, search = '' }) 
 }
 
 async function resolveChatObject(conv, currentUserId, relations) {
-  const { pinnedSet,pinnedTimeMap, mutedMap, blockedUsers, blockedGroups, archivedSet, favoriteSet} = relations;
+  const { pinnedSet,pinnedTimeMap, mutedMap, blockedUsers, blockedGroups, archivedSet, favoriteSet, userSetting} = relations;
 
-  let chat = await getLatestMessage( conv, currentUserId, pinnedSet, pinnedTimeMap, mutedMap, blockedUsers, blockedGroups, archivedSet, favoriteSet);
+  let chat = await getLatestMessage( conv, currentUserId, pinnedSet, pinnedTimeMap, mutedMap, blockedUsers, blockedGroups, archivedSet, favoriteSet, userSetting);
 
   const systemSettings = await Setting.findOne().select('app_name');
 
@@ -180,6 +180,7 @@ async function resolveChatObject(conv, currentUserId, relations) {
       is_verified: info.is_verified || false,
       lastMessage: null,
       unreadCount: 0,
+      isLockedChat: isLockedChat(userSetting, conv.type, conv.id),
     };
   }
 
@@ -195,6 +196,7 @@ async function resolveChatObject(conv, currentUserId, relations) {
   chat.isPinned = pinnedSet.has(convKey);
   chat.pinned_at = pinnedTimeMap.get(convKey) || null;
   chat.isArchived = archivedSet.has(convKey);
+  chat.isLockedChat = isLockedChat(userSetting, conv.type, conv.id);
 
   return chat;
 }
@@ -345,7 +347,7 @@ function isLockedChat(userSetting, chatType, chatId) {
 }
 
 async function getUserRelations(userId) {
-  const [ mutedChats, pinnedChats, hidden, blocked, archived, friends, favorites,] = await Promise.all([
+  const [ mutedChats, pinnedChats, hidden, blocked, archived, friends, favorites, userSetting] = await Promise.all([
     MutedChat.find({ user_id: userId }),
     PinnedConversation.find({ user_id: userId }),
     UserDelete.find({ user_id: userId, delete_type: 'hide_chat' }),
@@ -353,6 +355,7 @@ async function getUserRelations(userId) {
     Archive.find({ user_id: userId }),
     Friend.find({ status: 'accepted', $or: [{ user_id: userId }, { friend_id: userId }],}),
     Favorite.find({ user_id: userId }),
+    UserSetting.findOne({ user_id: userId }).select('chat_lock_enabled locked_chat_ids').lean(),
   ]);
 
   const mutedMap = new Set(mutedChats.map(m => `${m.target_type}:${m.target_id}`));
@@ -376,17 +379,19 @@ async function getUserRelations(userId) {
     }
   });
 
-  return { hiddenSet, archivedSet, friendIds, blockedUsers, blockedGroups, pinnedSet, pinnedTimeMap, mutedMap, favoriteSet,};
+  return { hiddenSet, archivedSet, friendIds, blockedUsers, blockedGroups, pinnedSet, pinnedTimeMap, mutedMap, favoriteSet, userSetting };
 }
 
-async function getLatestMessage(conv, currentUserId, pinnedSet, pinnedTimeMap, mutedMap, blockedUsers, blockedGroups, archivedSet, favoriteSet) {
+async function getLatestMessage(conv, currentUserId, pinnedSet, pinnedTimeMap, mutedMap, blockedUsers, blockedGroups, archivedSet, favoriteSet, currentUserSetting = null) {
   const isDM = conv.type === 'direct';
   const isAnnouncement = conv.type === 'announcement';
   const isBroadcast = conv.type === 'broadcast';
   const isGroup = conv.type === 'group';
 
-  const currentUserSetting = await UserSetting.findOne({ user_id: currentUserId })
-    .select('chat_lock_enabled locked_chat_ids').lean();
+  if (!currentUserSetting) {
+    currentUserSetting = await UserSetting.findOne({ user_id: currentUserId })
+      .select('chat_lock_enabled locked_chat_ids').lean();
+  }
 
   const isLocked = isLockedChat(currentUserSetting, conv.type, conv.id);
 
@@ -545,6 +550,7 @@ async function getLatestMessage(conv, currentUserId, pinnedSet, pinnedTimeMap, m
       isBroadcast: true,
       isGroup: false,
       isAnnouncement: false,
+      isLockedChat: isLocked,
       isLocked,
       created_at: broadcast.created_at,
     };
@@ -779,6 +785,7 @@ async function getLatestMessage(conv, currentUserId, pinnedSet, pinnedTimeMap, m
       isGroup: conv.type === 'group',
       isAnnouncement: conv.type === 'announcement',
       isBroadcast: false,
+      isLockedChat: isLocked,
       isLocked,
       disappearing: { enabled: false, duration: null, expire_after_seconds: null },
     };
@@ -894,6 +901,7 @@ async function getLatestMessage(conv, currentUserId, pinnedSet, pinnedTimeMap, m
     isGroup,
     isAnnouncement,
     isBroadcast,
+    isLockedChat: isLocked,
     isLocked,
     disappearing,
   };
@@ -994,7 +1002,7 @@ async function fetchRecentChat(currentUserId, page = 1, limit = 20, options = {}
 
   const messages = (await Promise.all(
     allConvos.map(
-      conv => getLatestMessage(conv, currentUserId, pinnedSet, pinnedTimeMap, mutedMap, blockedUsers, blockedGroups, archivedSet, favoriteSet)
+      conv => getLatestMessage(conv, currentUserId, pinnedSet, pinnedTimeMap, mutedMap, blockedUsers, blockedGroups, archivedSet, favoriteSet, relations.userSetting)
     )  
   )).filter(Boolean);
 
