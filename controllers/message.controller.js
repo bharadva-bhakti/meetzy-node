@@ -2261,6 +2261,7 @@ async function sendPushNotifications({ sender, message, recipientIds, groupId, r
       recipientId: recipientId ? recipientId.toString() : null,
       broadcastId: broadcastId ? broadcastId.toString() : null,
       message_type: message.message_type,
+      content: message.content,
       type: "new_message",
       timestamp: new Date().toISOString(),
     };
