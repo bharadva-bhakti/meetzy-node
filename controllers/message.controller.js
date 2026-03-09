@@ -2195,13 +2195,18 @@ exports.searchDocuments = async (req, res) => {
 };
 
 async function sendPushNotifications({ sender, message, recipientIds, groupId, recipientId, broadcastId }) {
+  console.log('Onesignal called');
+  
   try {
+    console.log("🚀 ~ sendPushNotifications ~ recipientIds:", recipientIds)
+    console.log("🚀 ~ sendPushNotifications ~ recipientIds.length:", recipientIds.length)
     if (!recipientIds || recipientIds.length === 0) return;
 
     const recipients = await User.find({
       _id: { $in: recipientIds },
       player_id: { $ne: null }
     }).select('_id player_id').lean();
+    console.log("🚀 ~ sendPushNotifications ~ recipients:", recipients)
 
     if (recipients.length === 0) return;
 
@@ -2210,18 +2215,21 @@ async function sendPushNotifications({ sender, message, recipientIds, groupId, r
     const targetType = groupId ? 'group' : (broadcastId ? 'broadcast' : 'user');
 
     for (const user of recipients) {
+      console.log("🚀 ~ sendPushNotifications ~ user:", user)
       const isMuted = await MutedChat.findOne({
         user_id: user._id,
         target_id: targetId,
         target_type: targetType,
         muted_until: { $gt: new Date() }
       }).lean();
+      console.log("🚀 ~ sendPushNotifications ~ isMuted:", isMuted)
 
       if (!isMuted) {
         playerIdsToNotify.push(user.player_id);
       }
     }
 
+    console.log("🚀 ~ sendPushNotifications ~ playerIdsToNotify:", playerIdsToNotify)
     if (playerIdsToNotify.length === 0) return;
 
     let notificationTitle = sender.name;
