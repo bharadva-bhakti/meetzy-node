@@ -40,6 +40,7 @@ async function sendToAll(title, message, additionalData = {}) {
 }
 
 async function sendToUsers(playerIds, title, message, additionalData = {}) {
+    console.log("🚀 ~ sendToUsers ~ playerIds:", playerIds)
     try {
         if (!Array.isArray(playerIds) || playerIds.length === 0) {
             throw new Error('playerIds must be a non-empty array');
@@ -51,6 +52,7 @@ async function sendToUsers(playerIds, title, message, additionalData = {}) {
             headings: { en: title },
             contents: { en: message },
         };
+        console.log("🚀 ~ sendToUsers ~ payload:", payload)
 
         if (Object.keys(additionalData).length > 0) {
             payload.data = additionalData;
@@ -62,6 +64,7 @@ async function sendToUsers(playerIds, title, message, additionalData = {}) {
                 'Authorization': `Basic ${ONESIGNAL_REST_API_KEY}`
             }
         });
+        console.log("🚀 ~ sendToUsers ~ response:", response)
 
         console.log(`✓ Notification sent to ${playerIds.length} user(s)`);
         return {
