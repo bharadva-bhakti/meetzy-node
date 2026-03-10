@@ -286,10 +286,42 @@ const uploadSingle = (subfolder = '', fieldName = 'file', isStatus = false) => {
   };
 };
 
+const uploadMultipleStatus = (subfolder = '', fieldName = 'files', maxFiles = 10) => {
+  return async (req, res, next) => {
+    const MAX_STATUS_SIZE = 16 * 1024 * 1024;
+
+    const upload = multer({
+      storage: createUploader(subfolder),
+      fileFilter,
+      limits: { fileSize: MAX_STATUS_SIZE, files: maxFiles },
+    }).array(fieldName, maxFiles);
+
+    upload(req, res, async (err) => {
+      if (err) return res.status(400).json({ message: err.message });
+
+      const files = req.files || [];
+      for (const file of files) {
+        const type = getTypePrefix(file.mimetype);
+        if (!['image', 'video'].includes(type)) {
+          files.forEach(f => { try { fs.unlinkSync(f.path); } catch {} });
+          return res.status(400).json({ message: `Status only supports image and video. "${file.originalname}" is not allowed.` });
+        }
+        if (file.size > MAX_STATUS_SIZE) {
+          files.forEach(f => { try { fs.unlinkSync(f.path); } catch {} });
+          return res.status(400).json({ message: `${file.originalname} exceeds the 16MB size limit.` });
+        }
+      }
+
+      next();
+    });
+  };
+};
+
 module.exports = {
   mimeToExtension,
   uploadFiles,
   uploadSingle,
   uploader,
+  uploadMultipleStatus,
   getTypePrefix,
 };

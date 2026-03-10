@@ -3,32 +3,61 @@
 const ffmpeg = require('fluent-ffmpeg');
 const fs = require('fs');
 
-const checkStatusVideoDuration = (req, res, next) => {
-  if (!req.file) return next();
+const ffmpegInstaller = require('@ffmpeg-installer/ffmpeg');
+const ffprobeInstaller = require('@ffprobe-installer/ffprobe');
 
-  const file = req.file;
-  const isVideo = file.mimetype.startsWith('video/');
-  const MAX_DURATION_SECONDS = 30;
-  const TOLERANCE = 0.9;
+ffmpeg.setFfmpegPath(ffmpegInstaller.path);
+ffmpeg.setFfprobePath(ffprobeInstaller.path);
 
-  if (!isVideo) return next();
+process.env.FFMPEG_PATH = ffmpegInstaller.path;
+process.env.FFPROBE_PATH = ffprobeInstaller.path;
 
-  ffmpeg.ffprobe(file.path, (err, metadata) => {
-    if (err) {
-      console.error('Error reading video metadata');
-      fs.unlinkSync(file.path);
-      return res.status(400).json({ message: 'Invalid video file.' });
-    }
+const MAX_DURATION_SECONDS = 30;
+const TOLERANCE = 0.9;
 
-    const duration = metadata.format.duration;
+function checkVideoFile(file) {
+  return new Promise((resolve, reject) => {
+    const isVideo = file.mimetype.startsWith('video/');
+    if (!isVideo) return resolve(null);
 
-    if (duration > MAX_DURATION_SECONDS + TOLERANCE) {
-      fs.unlinkSync(file.path);
-      return res.status(400).json({ message: 'Video is too long. Upload a video shorter than 30 seconds.' });
+    ffmpeg.ffprobe(file.path, (err, metadata) => {
+      if (err) {
+        return reject({ file, message: 'Invalid or corrupted video file. Could not read metadata.' });
+      }
+
+      const duration = metadata.format?.duration;
+      if (!duration || isNaN(duration)) {
+        return reject({ file, message: 'Could not determine video duration. File may be invalid.' });
+      }
+
+      if (duration > MAX_DURATION_SECONDS + TOLERANCE) {
+        return reject({
+          file,
+          message: `Video "${file.originalname}" is too long (${Math.floor(duration)}s). Maximum allowed: ${MAX_DURATION_SECONDS} seconds.`,
+        });
+      }
+
+      resolve(null);
+    });
+  });
+}
+
+const checkStatusVideoDuration = async (req, res, next) => {
+  const files = req.files?.length ? req.files : (req.file ? [req.file] : []);
+  if (files.length === 0) return next();
+
+  try {
+    for (const file of files) {
+      await checkVideoFile(file);
     }
 
     next();
-  });
+  } catch ({ file, message }) {
+    const allFiles = req.files?.length ? req.files : (req.file ? [req.file] : []);
+    allFiles.forEach(f => { if (fs.existsSync(f.path)) fs.unlinkSync(f.path); });
+
+    return res.status(400).json({ message });
+  }
 };
 
 module.exports = checkStatusVideoDuration;

@@ -2232,25 +2232,7 @@ async function sendPushNotifications({ sender, message, recipientIds, groupId, r
     if (playerIdsToNotify.length === 0) return;
 
     let notificationTitle = sender.name;
-    let notificationBody = "";
-
-    if (message.message_type === 'image') {
-      notificationBody = "Sent an image";
-    } else if (message.message_type === 'video') {
-      notificationBody = "Sent a video";
-    } else if (message.message_type === 'audio') {
-      notificationBody = "Sent an audio message";
-    } else if (message.message_type === 'file' || message.message_type === 'document') {
-      notificationBody = "Sent a file";
-    } else if (message.message_type === 'sticker') {
-      notificationBody = "Sent a sticker";
-    } else if (message.message_type === 'location') {
-      notificationBody = "Shared a location";
-    } else {
-      notificationBody = message.content && message.content.length > 100 
-        ? message.content.substring(0, 100) + "..." 
-        : message.content || "Sent a message";
-    }
+    let notificationBody = `${sender.name} sent you a message`;
 
     const additionalData = {
       messageId: message.id,

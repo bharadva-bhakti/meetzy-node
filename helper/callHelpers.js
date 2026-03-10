@@ -510,12 +510,12 @@ async function getCallSectionCounts(userId, search = '') {
 }
   
 module.exports = {
-createCallMessage,
-matchesSearchCriteria,
-processCallsForHistory,
-getCallInfoForUser,
-formatCallDuration,
-getParticipantNames,
-groupCallsByDate,
-getCallSectionCounts
+  createCallMessage,
+  matchesSearchCriteria,
+  processCallsForHistory,
+  getCallInfoForUser,
+  formatCallDuration,
+  getParticipantNames,
+  groupCallsByDate,
+  getCallSectionCounts
 };

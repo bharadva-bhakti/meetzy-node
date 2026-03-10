@@ -2,7 +2,7 @@ const express = require('express');
 const router = express.Router();
 const statusController = require('../controllers/status.controller');
 const { authenticate, authorizeRoles } = require('../middlewares/auth');
-const { uploadSingle } = require('../utils/upload');
+const { uploadMultipleStatus } = require('../utils/upload');
 const checkStatusVideoDuration = require('../middlewares/checkStatusVideoDuration');
 const { restrictImpersonationActions } = require('../middlewares/impersonation');
 
@@ -10,7 +10,7 @@ router.get('/', authenticate, statusController.getStatusFeed);
 router.get('/fetch/mute', authenticate, statusController.getMutedStatuses);
 router.get('/sponsored', authenticate, authorizeRoles(['super_admin']), statusController.getSponsoredStatuses);
 
-router.post('/create', authenticate, uploadSingle('user-status', 'status'), checkStatusVideoDuration, restrictImpersonationActions, statusController.createStatus);
+router.post('/create', authenticate, uploadMultipleStatus('user-status', 'status', 10), checkStatusVideoDuration, restrictImpersonationActions, statusController.createStatus);
 router.post('/view', authenticate, restrictImpersonationActions, statusController.viewStatus);
 router.delete('/delete', authenticate, restrictImpersonationActions, statusController.deleteStatus);
 

@@ -16,6 +16,8 @@
   "author": "",
   "license": "ISC",
   "dependencies": {
+    "@ffmpeg-installer/ffmpeg": "^1.1.0",
+    "@ffprobe-installer/ffprobe": "^2.1.2",
     "@paypal/checkout-server-sdk": "^1.0.3",
     "archiver": "^7.0.1",
     "axios": "^1.13.2",

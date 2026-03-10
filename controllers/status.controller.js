@@ -417,8 +417,28 @@ exports.createStatus = async (req, res) => {
   const user_id = req.user._id;
 
   try {
-    const { type, caption, isSponsored } = req.body;
-    const allowedTypes = ['text', 'image', 'video'];
+    const { isSponsored } = req.body;
+
+    let captions = [];
+    if (req.body.captions) {
+      try {
+        captions = typeof req.body.captions === 'string' ? JSON.parse(req.body.captions) : req.body.captions;
+      } catch {
+        captions = [req.body.captions];
+      }
+    } else if (req.body.caption) {
+      captions = [req.body.caption];
+    }
+
+    const files = req.files?.length ? req.files : (req.file ? [req.file] : []);
+
+    const isTextOnly = files.length === 0;
+    if (isTextOnly) {
+      const textContent = req.body.caption || req.body.captions;
+      if (!textContent) {
+        return res.status(400).json({ message: 'Caption is required for text status.' });
+      }
+    }
 
     const setting = await Setting.findOne().select('status_expiry_time status_limit').lean();
     const hour = setting?.status_expiry_time ? Number(setting.status_expiry_time) : 24;
@@ -431,18 +451,6 @@ exports.createStatus = async (req, res) => {
       return res.status(403).json({ message: 'Only admin can upload sponsored status.' });
     }
 
-    if (!allowedTypes.includes(type)) {
-      return res.status(400).json({ message: 'Status type must be image, video or text.' });
-    }
-
-    let content_url = null;
-    if (['image', 'video'].includes(type)) {
-      if (!req.file) {
-        return res.status(400).json({ message: 'File required for image and video status type.' });
-      }
-      content_url = req.file.path;
-    }
-
     const limits = await getEffectiveLimits(user_id, user.role);
     if (user.role === 'user') {
       const startOfDay = new Date();
@@ -453,21 +461,48 @@ exports.createStatus = async (req, res) => {
         created_at: { $gte: startOfDay },
       });
 
-      if (statusCount >= limits.status_limit_per_day) {
-        return res.status(429).json({ message: `You can only upload ${limits.status_limit_per_day} statuses per day.` });
+      const totalNew = isTextOnly ? 1 : files.length;
+      if (statusCount + totalNew > limits.status_limit_per_day) {
+        const remaining = limits.status_limit_per_day - statusCount;
+        return res.status(429).json({
+          message: `You can only upload ${limits.status_limit_per_day} statuses per day. You have ${remaining} remaining.`,
+        });
       }
     }
 
-    const status = await Status.create({
-      user_id,
-      type,
-      file_url: content_url,
-      caption,
-      sponsored: Boolean(isSponsored),
-      expires_at,
-    });
+    const createdStatuses = [];
 
-    const statusData = {
+    if (isTextOnly) {
+      const status = await Status.create({
+        user_id,
+        type: 'text',
+        file_url: null,
+        caption: captions[0] || null,
+        sponsored: Boolean(isSponsored),
+        expires_at,
+      });
+      createdStatuses.push(status);
+    } else {
+      for (let i = 0; i < files.length; i++) {
+        const file = files[i];
+        const caption = captions[i] ?? captions[0] ?? null;
+        const fileType = file.mimetype.startsWith('video/') ? 'video' : 'image';
+
+        const status = await Status.create({
+          user_id,
+          type: fileType,
+          file_url: file.path,
+          caption,
+          sponsored: Boolean(isSponsored),
+          expires_at,
+        });
+        createdStatuses.push(status);
+      }
+    }
+
+    const io = req.app.get('io');
+
+    const statusPayloads = createdStatuses.map(status => ({
       status: {
         id: status.id,
         user_id: status.user_id,
@@ -480,41 +515,36 @@ exports.createStatus = async (req, res) => {
         view_count: 0,
         views: [],
       },
-      user: { id: user.id, name: user.name, avatar: user.avatar},
-    };
-
-    const io = req.app.get('io');
+      user: { id: user.id, name: user.name, avatar: user.avatar },
+    }));
 
     if (Boolean(isSponsored)) {
       const allUsers = await User.find().select('id').lean();
       allUsers.forEach(u => {
-        io.to(`user_${u._id}`).emit('status-uploaded', statusData);
+        statusPayloads.forEach(payload => {
+          io.to(`user_${u._id}`).emit('status-uploaded', payload);
+        });
       });
     } else {
       const friends = await Friend.find({
-        $or: [{ user_id, status: 'accepted' },{ friend_id: user_id, status: 'accepted' }],
+        $or: [{ user_id, status: 'accepted' }, { friend_id: user_id, status: 'accepted' }],
       }).lean();
 
       const friendIds = friends.map(f => (f.user_id.toString() === user_id.toString() ? f.friend_id : f.user_id));
 
-      const blocks = await Block.find({$or: [{ blocker_id: user_id }, { blocked_id: user_id }],}).lean();
+      const blocks = await Block.find({ $or: [{ blocker_id: user_id }, { blocked_id: user_id }] }).lean();
       const blockedIds = blocks.map(b => (b.blocker_id.toString() === user_id.toString() ? b.blocked_id : b.blocker_id));
 
       const visibleFriendIds = friendIds.filter(id => !blockedIds.includes(id.toString()));
       const userSetting = await UserSetting.findOne({ user_id }).lean();
 
       let notifyUserIds = [];
-
       if (!userSetting || userSetting.status_privacy === 'my_contacts') {
         notifyUserIds = visibleFriendIds;
       } else if (userSetting.status_privacy === 'only_share_with') {
         let sharedWith = userSetting.shared_with || [];
         if (typeof sharedWith === 'string') {
-          try {
-            sharedWith = JSON.parse(sharedWith);
-          } catch (e) {
-            sharedWith = [];
-          }
+          try { sharedWith = JSON.parse(sharedWith); } catch { sharedWith = []; }
         }
         notifyUserIds = Array.isArray(sharedWith)
           ? sharedWith.filter(id => visibleFriendIds.includes(id.toString()))
@@ -522,26 +552,31 @@ exports.createStatus = async (req, res) => {
       }
 
       notifyUserIds.forEach(friendId => {
-        io.to(`user_${friendId}`).emit('status-uploaded', statusData);
+        statusPayloads.forEach(payload => {
+          io.to(`user_${friendId}`).emit('status-uploaded', payload);
+        });
       });
 
-      const recipients = await User.find({ 
-        _id: { $in: Boolean(isSponsored) ? (await User.find().distinct('_id')) : notifyUserIds }, 
-        player_id: { $ne: null } 
+      const recipients = await User.find({
+        _id: { $in: notifyUserIds },
+        player_id: { $ne: null },
       }).select('player_id').lean();
-      
+
       const playerIds = recipients.map(r => r.player_id);
       if (playerIds.length > 0) {
         await onesignal.sendToUsers(
-          playerIds, 
-          'New Status Update', 
-          `${user.name} uploaded a new status.`, 
-          { type: 'status_uploaded', statusId: status._id.toString(), userId: user_id.toString() }
+          playerIds,
+          'New Status Update',
+          `${user.name} uploaded a new status.`,
+          { type: 'status_uploaded', statusIds: createdStatuses.map(s => s._id.toString()), userId: user_id.toString() }
         );
       }
     }
 
-    return res.status(201).json({ message: 'Status uploaded successfully.', status: statusData });
+    return res.status(201).json({
+      message: `${createdStatuses.length} status(s) uploaded successfully.`,
+      statuses: statusPayloads,
+    });
   } catch (error) {
     console.error('Error in createStatus:', error);
     return res.status(500).json({ message: 'Internal server error' });
