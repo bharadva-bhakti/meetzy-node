@@ -74,6 +74,7 @@ async function formatMessageForDisplay(message, currentUserId) {
 
   if(deleteForEveryone){
     content = 'This message was deleted.';
+    message.file_url = null;
   }
   const isStarred = actions.some(a => a.user_id.toString() === currentUserId.toString() && a.action_type === 'star');
 

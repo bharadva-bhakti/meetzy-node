@@ -780,6 +780,7 @@ exports.getMessages = async (req, res) => {
         if (deletedForMe && !deletedForEveryone) return false;
         if (deletedForEveryone) {
           msg.content = 'This message was deleted';
+          msg.file_url = null;
           msg.isDeleted = true;
           msg.isDeletedForEveryone = true;
         }

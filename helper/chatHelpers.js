@@ -524,6 +524,7 @@ async function getLatestMessage(conv, currentUserId, pinnedSet, pinnedTimeMap, m
 
       if (deletedForEveryone) {
         latest.content = 'This message was deleted';
+        latest.file_url = null
       }
     }
 
@@ -721,6 +722,7 @@ async function getLatestMessage(conv, currentUserId, pinnedSet, pinnedTimeMap, m
 
     if (deletedForEveryone) {
       msg.content = 'This message was deleted';
+      msg.file_url = null;
     }
 
     latest = msg;
@@ -806,6 +808,7 @@ async function getLatestMessage(conv, currentUserId, pinnedSet, pinnedTimeMap, m
 
   if (deletedForEveryone) {
     latest.content = 'This message was deleted';
+    latest.file_url = null
   } else if (latest.message_type === 'system') {
     let metadata = latest.metadata || {};
     if (typeof metadata === 'string') {
