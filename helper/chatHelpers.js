@@ -29,6 +29,9 @@ async function formatLastMessage(message, currentUserId = null) {
     if (metadata.system_action === 'member_left' && currentUserId && metadata.user_id?.toString() === currentUserId?.toString()) {
       return 'You left the group';
     }
+    if (metadata.system_action === 'member_removed' && currentUserId && metadata.removed_user_id?.toString() === currentUserId?.toString()) {
+      return 'You were removed from the group';
+    }
     return content || 'System message';
   }
 
@@ -587,15 +590,17 @@ async function getLatestMessage(conv, currentUserId, pinnedSet, pinnedTimeMap, m
   if (isGroup) {
     const member = await GroupMember.findOne({ group_id: conv.id, user_id: currentUserId }).lean();
     if (!member) {
-      const leaveMessage = await Message.findOne({
+      const departureMessage = await Message.findOne({
         group_id: conv.id,
         message_type: 'system',
-        'metadata.system_action': 'member_left',
-        'metadata.user_id': currentUserId,
+        $or: [
+          { 'metadata.system_action': 'member_left', 'metadata.user_id': currentUserId },
+          { 'metadata.system_action': 'member_removed', 'metadata.removed_user_id': currentUserId }
+        ]
       }).sort({ created_at: -1 }).lean();
-
-      if (leaveMessage) {
-        leftAt = leaveMessage.created_at;
+      
+      if (departureMessage) {
+        leftAt = departureMessage.created_at;
       } else {
         return null;
       }

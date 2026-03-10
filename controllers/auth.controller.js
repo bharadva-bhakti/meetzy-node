@@ -76,6 +76,8 @@ exports.register = async (req, res) => {
     if (email) userData.email = email.toLowerCase().trim();
     if (phone) userData.phone = phone;
     if (countryCode) userData.country_code = countryCode;
+
+    userData.bio = settings.default_bio || 'Hey, I am using meetzy.';
     
     const user = await User.create(userData);
 

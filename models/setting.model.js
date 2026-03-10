@@ -286,6 +286,9 @@ const SettingSchema = new Schema(
       default: 'en', 
       required: true 
     },
+    default_bio: { 
+      type: String, 
+    },
   },
   {
     collection: 'settings',

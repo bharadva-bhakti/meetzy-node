@@ -82,6 +82,7 @@ const defaultSettings = {
   e2e_encryption_enabled: false,
   svg_color: '#FFFFFF',
   default_language: 'en',
+  default_bio: 'Hey, I am using app.',
 };
 
 async function seed() {

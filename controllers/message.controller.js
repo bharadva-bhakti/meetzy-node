@@ -825,6 +825,26 @@ exports.getMessages = async (req, res) => {
     
       const groupObjId = new mongoose.Types.ObjectId(groupId);
     
+      const isMember = await GroupMember.findOne({ group_id: groupObjId, user_id: userId }).lean();
+      let departureFilter = null;
+
+      if (!isMember) {
+        const departureEvent = await Message.findOne({
+          group_id: groupObjId,
+          message_type: 'system',
+          $or: [
+            { 'metadata.system_action': 'member_left', 'metadata.user_id': userId },
+            { 'metadata.system_action': 'member_removed', 'metadata.removed_user_id': userId }
+          ]
+        }).sort({ created_at: -1 }).lean();
+
+        if (departureEvent) {
+          departureFilter = { created_at: { $lte: departureEvent.created_at } };
+        } else {
+          return res.status(403).json({ message: 'Access denied. You are not a member of this group.' });
+        }
+      }
+
       if (isChatLocked) {
         const pin = req.query.pin;
         if (!pin) return res.status(400).json({ message: 'PIN_REQUIRED' });
@@ -836,6 +856,7 @@ exports.getMessages = async (req, res) => {
       const pipeline = [
         { $match: { group_id: groupObjId } },
         ...(clearFilter ? [{ $match: clearFilter }] : []),
+        ...(departureFilter ? [{ $match: departureFilter }] : []),
         { $sort: { created_at: -1 } },
         { $skip: parseInt(offset) },
         { $limit: parseInt(limit) },
