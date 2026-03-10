@@ -79,10 +79,14 @@ async function formatMessageForDisplay(message, currentUserId) {
 
   if (deleteForMe) return null;
 
-  if ( message.disappearing?.enabled && (message.disappearing.expire_at ||  message.disappearing?.metadata?.immediate_disappear)) {
-    const expireTime = new Date(message.disappearing.expire_at);
-    const now = new Date();
-    if (expireTime <= now) return null;
+  if (message.disappearing?.enabled) {
+    const expireAt = message.disappearing.expire_at;
+    const isImmediate = message.disappearing.metadata?.immediate_disappear;
+    if (expireAt) {
+      if (new Date(expireAt) <= new Date()) return null;
+    } else if (isImmediate) {
+      return null;
+    }
   }
 
   const isEdited = actions.some(a => a.action_type === 'edit');
@@ -385,9 +389,13 @@ async function getUserDocuments(userId, { search = '', page = 1, limit = 20 }) {
 }
 
 function getConversationKey(message) {
-  return message.group_id
-    ? `group_${message.group_id}`
-    : `dm_${Math.min(message.sender_id, message.recipient_id)}_${Math.max(message.sender_id, message.recipient_id)}`;
+  if (message.group_id) return `group_${message.group_id}`;
+  
+  const senderId = (message.sender_id || message.sender?.id || '').toString();
+  const recipientId = (message.recipient_id || message.recipient?.id || '').toString();
+  
+  const ids = [senderId, recipientId].sort();
+  return `dm_${ids[0]}_${ids[1]}`;
 }
 
 async function findNewPrevMessage(message, excludedIds) {
@@ -576,6 +584,64 @@ async function createSocketPayload(message, targetUserId, newPrevMessagesMap, de
   }
 
   return payload;
+}
+
+async function handleMessageDisappearing(message, userId, io) {
+  const senderId = message.sender_id?.toString() || message.sender?.id?.toString();
+  if (senderId === userId.toString()) return;
+
+  const disappearing = await MessageDisappearing.findOne({ message_id: message._id || message.id });
+  if (!disappearing || !disappearing.enabled || disappearing.expire_at) return;
+
+  if (message.group_id) {
+    const memberCount = await GroupMember.countDocuments({ group_id: message.group_id, user_id: { $ne: senderId } });
+    const seenCount = await MessageStatus.countDocuments({
+      message_id: message._id || message.id,
+      user_id: { $ne: senderId },
+      status: 'seen'
+    });
+
+    if (seenCount < memberCount) return;
+  }
+
+  const now = new Date();
+  let expireAt = null;
+  let isImmediate = disappearing.expire_after_seconds === null;
+
+  if (isImmediate) {
+    const gracePeriod = 2000;
+    expireAt = new Date(now.getTime() + gracePeriod);
+
+    setTimeout(async () => {
+      try {
+        const freshMessage = await Message.findById(message._id || message.id).lean();
+        if (!freshMessage) return;
+    
+        const { newPrevMessagesMap } = await getConversationData([freshMessage], [freshMessage._id]);
+        const targetUsers = await getTargetUsers(freshMessage);
+    
+        for (const targetUserId of targetUsers) {
+          const payload = await createSocketPayload(freshMessage, targetUserId, newPrevMessagesMap, 'disappeared');
+          
+          if (!freshMessage.group_id && freshMessage.sender_id && freshMessage.recipient_id) {
+            payload.sender_id = freshMessage.sender_id.toString();
+            payload.recipient_id = freshMessage.recipient_id.toString();
+          }
+    
+          io.to(`user_${targetUserId}`).emit('message-disappeared', payload);
+        }
+      } catch (err) {
+        console.error('Error in handleMessageDisappearing timeout:', err);
+      }
+    }, gracePeriod + 100);
+  } else {
+    expireAt = new Date(now.getTime() + disappearing.expire_after_seconds * 1000);
+  }
+
+  await MessageDisappearing.updateOne(
+    { message_id: message._id || message.id },
+    { expire_at: expireAt, metadata: isImmediate ? { ...disappearing.metadata, immediate_disappear: true } : disappearing.metadata }
+  );
 }
 
 async function deleteMessageFiles(messages) {
@@ -908,4 +974,5 @@ module.exports = {
   createMessageWithStatus,
   groupBroadcastMessages,
   handleBroadcastDeletion,
+  handleMessageDisappearing,
 };

@@ -13,6 +13,7 @@ const MessageDisappearing = db.MessageDisappearing;
 const Block = db.Block;
 const mongoose = require('mongoose');
 const { updateUserStatus } = require('../utils/userStatusHelper');
+const { handleMessageDisappearing } = require('../helper/messageHelpers');
 
 const resetOnlineStatuses = async () => {
   const now = new Date();
@@ -545,22 +546,8 @@ module.exports = function initSocket(io) {
           { status: 'seen', updated_at: new Date() }
         );
 
-        const now = new Date();
-
         for (const msg of messagesToMark) {
-          const disappearing = await MessageDisappearing.findOne({ message_id: msg._id }).lean();
-
-          if (!disappearing || !disappearing.enabled || disappearing.expire_at) continue;
-
-          if (disappearing.expire_after_seconds === null) {
-            await MessageDisappearing.updateOne({ message_id: msg._id },{ expire_at: now, metadata: { immediate_disappear: true } });
-          } else {
-            const expireAt = new Date(now.getTime() + disappearing.expire_after_seconds * 1000);
-            await MessageDisappearing.updateOne(
-              { message_id: msg._id },
-              { expire_at: expireAt }
-            );
-          }
+          await handleMessageDisappearing(msg, socket.userId, io);
         }
 
         messagesToMark.forEach((msg) => {
@@ -654,16 +641,10 @@ module.exports = function initSocket(io) {
           { status: 'seen', updated_at: new Date() }
         );
 
-        for (const messageId of messageIds) {
-          const disappearing = await MessageDisappearing.findOne({ message_id: messageId }).lean();
+        const messagesForDisappearing = await Message.find({ _id: { $in: messageIds } }).select('sender_id group_id recipient_id').lean();
 
-          if (disappearing && disappearing.enabled && !disappearing.expire_at) {
-            const expireAt = new Date(Date.now() + disappearing.expire_after_seconds * 1000);
-            await MessageDisappearing.updateOne(
-              { message_id: messageId },
-              { expire_at: expireAt }
-            );
-          }
+        for (const msg of messagesForDisappearing) {
+          await handleMessageDisappearing(msg, socket.userId, io);
         }
 
         if (result.modifiedCount > 0) {
@@ -690,18 +671,38 @@ module.exports = function initSocket(io) {
       if (!userId) return;
 
       try {
-        let query = { user_id: userId, status: { $ne: 'seen' } };
-
+        let messageQuery = { message_type: { $ne: 'system' } };
         if (type === 'group') {
-          query['message.group_id'] = chatId;
+          messageQuery.group_id = new mongoose.Types.ObjectId(chatId);
         } else {
-          query.$or = [
-            { 'message.sender_id': chatId, 'message.recipient_id': userId },
-            { 'message.sender_id': userId, 'message.recipient_id': chatId },
+          messageQuery.$or = [
+            { sender_id: new mongoose.Types.ObjectId(chatId), recipient_id: new mongoose.Types.ObjectId(userId) },
+            { sender_id: new mongoose.Types.ObjectId(userId), recipient_id: new mongoose.Types.ObjectId(chatId) },
           ];
         }
 
-        await MessageStatus.updateMany(query, { status: 'seen' });
+        const messagesToMark = await Message.find(messageQuery).select('_id sender_id group_id recipient_id').lean();
+        const messageIds = messagesToMark.map(m => m._id);
+
+        const unreadStatuses = await MessageStatus.find({
+          message_id: { $in: messageIds },
+          user_id: userId,
+          status: { $ne: 'seen' }
+        }).select('_id message_id').lean();
+
+        if (unreadStatuses.length > 0) {
+          await MessageStatus.updateMany(
+            { _id: { $in: unreadStatuses.map(s => s._id) } },
+            { status: 'seen', updated_at: new Date() }
+          );
+
+          for (const status of unreadStatuses) {
+            const msg = messagesToMark.find(m => m._id.toString() === status.message_id.toString());
+            if (msg) {
+              await handleMessageDisappearing(msg, userId, io);
+            }
+          }
+        }
 
         if (type === 'direct') {
           io.to(`user_${chatId}`).emit('messages-read', { readerId: userId.toString() });

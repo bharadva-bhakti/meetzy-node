@@ -26,7 +26,8 @@ const bcrypt = require('bcryptjs');
 const mongoose = require('mongoose')
 const {
   groupMessagesBySender, groupMessagesByDate, getMessageReactionCount, buildMessagePayloads, createMessageWithStatus, groupBroadcastMessages,
-  getUserDocuments, getConversationData, processDeleteForMe, processDeleteForEveryone, deleteMessageFiles, handleBroadcastDeletion
+  getUserDocuments, getConversationData, processDeleteForMe, processDeleteForEveryone, deleteMessageFiles, handleBroadcastDeletion,
+  handleMessageDisappearing
 } = require('../helper/messageHelpers');
 const { getEffectiveLimits } = require('../utils/userLimits');
 const onesignal = require('../utils/onesignal');
@@ -1176,38 +1177,15 @@ exports.markMessagesAsRead = async (req, res) => {
     );
 
     const now = new Date();
+    const io = req.app.get('io');
 
-    for (const status of unreadStatuses) {
-      const disappearing = await MessageDisappearing.findOne({ message_id: status.message_id });
-      if (!disappearing || !disappearing.enabled || disappearing.expire_at) continue;
-
-      const now = new Date();
-
-      if (disappearing.expire_after_seconds === null) {
-        await MessageDisappearing.updateOne(
-          { _id: disappearing._id },
-          {
-            $set: {
-              expire_at: now,
-              metadata: { 
-                ...(disappearing.metadata || {}), 
-                immediate_disappear: true 
-              }
-            }
-          }
-        );
-      } else {
-        const expireAt = new Date(now.getTime() + disappearing.expire_after_seconds * 1000);
-        await MessageDisappearing.updateOne(
-          { _id: disappearing._id },
-          { $set: { expire_at: expireAt } }
-        );
-      }
+    const messagesToProcess = await Message.find({ _id: { $in: unreadStatuses.map(s => s.message_id) } }).select('sender_id group_id recipient_id').lean();
+    for (const msg of messagesToProcess) {
+      await handleMessageDisappearing(msg, userId, io);
     }
 
     await Message.updateMany({ ...match, has_unread_mentions: true },{ has_unread_mentions: false });
-
-    const io = req.app.get('io');
+    
     if (io) {
       if (chat_type === 'group') {
         io.to(`user_${userId}`).emit('messages-read', {
